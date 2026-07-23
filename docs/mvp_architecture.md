@@ -151,3 +151,42 @@ Règles :
 
 La modification volontaire du graphe incrémente `GENERATION_VERSION` et produit
 un nouveau fingerprint de référence pour la seed MVP.
+
+
+## MVP-007 — Vue Univers limitée au voisinage découvert
+
+La scène Bevy ne représente plus systématiquement tous les systèmes générés.
+
+```text
+Systèmes connus
+        │
+        ├── affichage complet
+        └── voisins directs
+                │
+                ▼
+        systèmes détectés
+                │ silhouette / signal
+                ▼
+Frontière visible de la carte
+```
+
+Règles :
+
+- les systèmes connus utilisent leur classe et leur nom ;
+- les voisins directs inconnus sont représentés comme signaux détectés ;
+- les systèmes situés au-delà de cette frontière ne sont pas instanciés ;
+- seules les routes connu↔connu et connu↔détecté sont affichées ;
+- le mode debug `F3` permet d'afficher temporairement tout le graphe ;
+- le preset actif reste `Low` avec un mesh partagé très simple ;
+- le zoom utilise trois niveaux sémantiques :
+  - `Overview` : sélection et colonies seulement ;
+  - `Regional` : labels des systèmes connus ;
+  - `Local` : tous les labels de la frontière visible ;
+- `WASD` déplace la caméra et `Q/E` contrôle le zoom ;
+- `Tab` sélectionne le prochain système visible et `F` le recentre ;
+- `Entrée` ouvre une vue Système légère et `Échap` revient à l'Univers ;
+- le retour à l'Univers conserve le focus, le zoom et la sélection.
+
+Les niveaux persistants `Inconnu`, `Détecté`, `Sondé`, `Analysé` et
+`Colonisé` seront introduits par `MVP-009`. Pour MVP-007, la détection est une
+frontière dérivée du graphe et ne modifie pas encore le format de sauvegarde.

@@ -1,7 +1,7 @@
-// MVP-006: mutable discoveries control which immutable routes are visible
-use galactic_domain::{
-    ColonyId, FactionId, PlanetId, ResourceStock, Route, SystemId, UniverseDefinition,
-};
+// MVP-007: universe visibility is derived from the discovered neighborhood
+use std::collections::BTreeSet;
+
+use galactic_domain::{ColonyId, FactionId, PlanetId, ResourceStock, Route, SystemId};
 
 use crate::{SelectionTarget, StrategicClock, UniverseRepository};
 
@@ -9,6 +9,12 @@ use crate::{SelectionTarget, StrategicClock, UniverseRepository};
 ///
 /// Version 2 replaces floating elapsed seconds with a deterministic tick clock.
 pub const GAME_STATE_VERSION: u32 = 2;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SystemVisibility {
+    Known,
+    Detected,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct GameState {
@@ -62,17 +68,79 @@ impl GameState {
         self.known_systems.contains(&system_id)
     }
 
-    /// A route becomes visible only when both endpoint systems are known.
-    ///
-    /// Detailed knowledge levels are introduced later by MVP-009.
-    pub fn visible_routes<'a>(
-        &'a self,
-        universe: &'a UniverseDefinition,
-    ) -> impl Iterator<Item = &'a Route> + 'a {
+    /// Systems directly adjacent to known systems form the current detection
+    /// frontier. This is presentation-oriented until MVP-009 stores explicit
+    /// knowledge levels.
+    pub fn detected_systems(&self, universe: &UniverseRepository) -> Vec<SystemId> {
+        let mut detected = BTreeSet::new();
+
+        for known_system in &self.known_systems {
+            for neighbor in universe.neighboring_systems(*known_system) {
+                if !self.is_system_known(neighbor) {
+                    detected.insert(neighbor);
+                }
+            }
+        }
+
+        detected.into_iter().collect()
+    }
+
+    pub fn system_visibility(
+        &self,
+        universe: &UniverseRepository,
+        system_id: SystemId,
+    ) -> Option<SystemVisibility> {
+        if self.is_system_known(system_id) {
+            return Some(SystemVisibility::Known);
+        }
+
+        self.detected_systems(universe)
+            .binary_search(&system_id)
+            .ok()
+            .map(|_| SystemVisibility::Detected)
+    }
+
+    pub fn visible_systems(
+        &self,
+        universe: &UniverseRepository,
+    ) -> Vec<(SystemId, SystemVisibility)> {
+        let mut systems = self
+            .known_systems
+            .iter()
+            .copied()
+            .map(|system_id| (system_id, SystemVisibility::Known))
+            .collect::<Vec<_>>();
+
+        systems.extend(
+            self.detected_systems(universe)
+                .into_iter()
+                .map(|system_id| (system_id, SystemVisibility::Detected)),
+        );
+        systems.sort_by_key(|(system_id, _)| *system_id);
+        systems
+    }
+
+    pub fn is_system_visible(&self, universe: &UniverseRepository, system_id: SystemId) -> bool {
+        self.system_visibility(universe, system_id).is_some()
+    }
+
+    /// Visible routes connect known systems to each other or to the immediate
+    /// detected frontier. Routes between two merely detected systems remain
+    /// hidden so the map never reveals information beyond that frontier.
+    pub fn visible_routes<'a>(&self, universe: &'a UniverseRepository) -> Vec<&'a Route> {
         universe
+            .definition()
             .routes
             .iter()
-            .filter(|route| self.is_system_known(route.from) && self.is_system_known(route.to))
+            .filter(|route| {
+                let from = self.system_visibility(universe, route.from);
+                let to = self.system_visibility(universe, route.to);
+
+                (from == Some(SystemVisibility::Known) && to.is_some())
+                    || (from == Some(SystemVisibility::Detected)
+                        && to == Some(SystemVisibility::Known))
+            })
+            .collect()
     }
 }
 
@@ -88,7 +156,7 @@ pub struct ColonyState {
 
 #[cfg(test)]
 mod tests {
-    use galactic_domain::{ColonyId, SystemId, UniverseConfig};
+    use galactic_domain::{ColonyId, UniverseConfig};
 
     use super::*;
 
@@ -114,25 +182,51 @@ mod tests {
     }
 
     #[test]
-    fn visible_routes_never_reveal_unknown_endpoints() {
+    fn detection_frontier_contains_only_neighbors_of_known_systems() {
         let repository = UniverseRepository::generate(UniverseConfig::mvp());
-        let home = SystemId::from_index(0);
-        let neighbor = repository
-            .neighboring_systems(home)
-            .into_iter()
-            .next()
-            .expect("home system has a route");
-        let mut state = GameState::new(&repository);
-        state.known_systems = vec![home, neighbor];
-        let visible = state
-            .visible_routes(repository.definition())
-            .collect::<Vec<_>>();
+        let state = GameState::new(&repository);
+        let detected = state.detected_systems(&repository);
 
-        assert_eq!(visible.len(), 1);
-        assert!(
-            visible.iter().all(|route| {
-                state.is_system_known(route.from) && state.is_system_known(route.to)
-            })
-        );
+        assert!(detected.iter().all(|system_id| {
+            !state.is_system_known(*system_id)
+                && state
+                    .known_systems
+                    .iter()
+                    .any(|known| repository.route_exists(*known, *system_id))
+        }));
+    }
+
+    #[test]
+    fn normal_visibility_never_reveals_beyond_the_detection_frontier() {
+        let repository = UniverseRepository::generate(UniverseConfig::mvp());
+        let state = GameState::new(&repository);
+        let visible = state.visible_systems(&repository);
+        let visible_ids = visible
+            .iter()
+            .map(|(system_id, _)| *system_id)
+            .collect::<BTreeSet<_>>();
+
+        assert!(visible.len() <= repository.definition().systems.len());
+        for (system_id, visibility) in visible {
+            match visibility {
+                SystemVisibility::Known => {
+                    assert!(state.is_system_known(system_id));
+                }
+                SystemVisibility::Detected => {
+                    assert!(
+                        state
+                            .known_systems
+                            .iter()
+                            .any(|known| { repository.route_exists(*known, system_id) })
+                    );
+                }
+            }
+        }
+
+        assert!(state.visible_routes(&repository).iter().all(|route| {
+            visible_ids.contains(&route.from)
+                && visible_ids.contains(&route.to)
+                && (state.is_system_known(route.from) || state.is_system_known(route.to))
+        }));
     }
 }

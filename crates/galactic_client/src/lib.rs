@@ -2,8 +2,10 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 use bevy::window::PresentMode;
-use galactic_domain::{StarClass, SystemId, UniverseConfig, WorldPosition};
-use galactic_sim::{GameCommand, GameEvent, SelectionTarget, Simulation, TimeSpeed};
+use galactic_domain::{PlanetKind, StarClass, SystemId, UniverseConfig, WorldPosition};
+use galactic_sim::{
+    GameCommand, GameEvent, SelectionTarget, Simulation, SystemVisibility, TimeSpeed,
+};
 
 pub fn run() {
     App::new().add_plugins(ClientPlugin).run();
@@ -30,6 +32,8 @@ impl Plugin for ClientPlugin {
         })
         .init_resource::<PresentationLog>()
         .init_resource::<VisualAssets>()
+        .init_resource::<StrategicNavigation>()
+        .init_resource::<ViewRebuildRequest>()
         .add_plugins(SimulationBridgePlugin)
         .add_plugins(PresentationPlugin)
         .add_systems(Startup, log_startup);
@@ -40,7 +44,10 @@ pub struct SimulationBridgePlugin;
 
 impl Plugin for SimulationBridgePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (handle_simulation_input, tick_simulation).chain());
+        app.add_systems(
+            Update,
+            (handle_simulation_input, handle_view_input, tick_simulation).chain(),
+        );
     }
 }
 
@@ -50,15 +57,17 @@ impl Plugin for PresentationPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             Startup,
-            (spawn_scene, spawn_universe_view, spawn_ui).chain(),
+            (spawn_scene, spawn_strategic_view, spawn_ui).chain(),
         )
         .add_systems(
             Update,
             (
-                rebuild_universe_view_on_input,
+                rebuild_strategic_view_if_requested,
+                update_strategic_camera,
                 collect_presentation_events,
                 update_system_visuals,
-                draw_routes,
+                update_system_labels,
+                draw_strategic_overlays,
                 update_ui,
             ),
         );
@@ -82,38 +91,135 @@ struct PresentationLog {
     last_event: Option<GameEvent>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum GraphicsPreset {
+    #[default]
+    Low,
+}
+
 #[derive(Resource)]
 struct VisualAssets {
     system_mesh: Handle<Mesh>,
-    star_materials: HashMap<StarClass, Handle<StandardMaterial>>,
+    known_star_materials: HashMap<StarClass, Handle<StandardMaterial>>,
+    detected_material: Handle<StandardMaterial>,
+    planet_materials: HashMap<PlanetKind, Handle<StandardMaterial>>,
 }
 
 impl FromWorld for VisualAssets {
     fn from_world(world: &mut World) -> Self {
+        // Low preset: a very small shared mesh is sufficient at universe scale.
         let system_mesh = {
             let mut meshes = world.resource_mut::<Assets<Mesh>>();
-            meshes.add(Sphere::default().mesh().ico(3).unwrap())
+            meshes.add(Sphere::default().mesh().ico(1).unwrap())
         };
+
         let mut materials = world.resource_mut::<Assets<StandardMaterial>>();
-        let star_materials = StarClass::ALL
+        let known_star_materials = StarClass::ALL
             .into_iter()
             .map(|class| (class, materials.add(star_material(class))))
+            .collect();
+        let detected_material = materials.add(StandardMaterial {
+            base_color: Color::srgba(0.34, 0.48, 0.62, 0.75),
+            emissive: LinearRgba::rgb(0.28, 0.42, 0.62),
+            unlit: true,
+            alpha_mode: AlphaMode::Blend,
+            ..default()
+        });
+        let planet_materials = PlanetKind::ALL
+            .into_iter()
+            .map(|kind| (kind, materials.add(planet_material(kind))))
             .collect();
 
         Self {
             system_mesh,
-            star_materials,
+            known_star_materials,
+            detected_material,
+            planet_materials,
         }
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StrategicViewMode {
+    Universe,
+    System(SystemId),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UniverseLod {
+    Overview,
+    Regional,
+    Local,
+}
+
+impl UniverseLod {
+    fn from_distance(distance: f32) -> Self {
+        if distance >= 88.0 {
+            Self::Overview
+        } else if distance >= 48.0 {
+            Self::Regional
+        } else {
+            Self::Local
+        }
+    }
+}
+
+#[derive(Resource)]
+struct StrategicNavigation {
+    mode: StrategicViewMode,
+    universe_focus: Vec3,
+    universe_distance: f32,
+    system_distance: f32,
+    lod: UniverseLod,
+    debug_full_graph: bool,
+    preset: GraphicsPreset,
+}
+
+impl Default for StrategicNavigation {
+    fn default() -> Self {
+        let universe_distance = 108.0;
+        Self {
+            mode: StrategicViewMode::Universe,
+            universe_focus: Vec3::ZERO,
+            universe_distance,
+            system_distance: 34.0,
+            lod: UniverseLod::from_distance(universe_distance),
+            debug_full_graph: false,
+            preset: GraphicsPreset::Low,
+        }
+    }
+}
+
+impl StrategicNavigation {
+    fn enter_system(&mut self, system_id: SystemId) {
+        self.mode = StrategicViewMode::System(system_id);
+    }
+
+    fn exit_system(&mut self) {
+        self.mode = StrategicViewMode::Universe;
+    }
+}
+
+#[derive(Resource, Default)]
+struct ViewRebuildRequest(bool);
+
 #[derive(Component)]
-struct UniverseViewEntity;
+struct StrategicViewEntity;
+
+#[derive(Component)]
+struct StrategicCamera;
 
 #[derive(Component)]
 struct SystemVisual {
     id: SystemId,
+    visibility: SystemVisibility,
     base_scale: Vec3,
+}
+
+#[derive(Component)]
+struct SystemLabel {
+    id: SystemId,
+    visibility: SystemVisibility,
 }
 
 #[derive(Component)]
@@ -134,6 +240,7 @@ fn spawn_scene(mut commands: Commands) {
             ..default()
         },
         Transform::from_xyz(0.0, 62.0, 88.0).looking_at(Vec3::ZERO, Vec3::Y),
+        StrategicCamera,
     ));
 
     commands.spawn((
@@ -147,44 +254,84 @@ fn spawn_scene(mut commands: Commands) {
     ));
 }
 
-fn spawn_universe_view(
+fn spawn_strategic_view(
     mut commands: Commands,
     simulation: Res<SimulationResource>,
     assets: Res<VisualAssets>,
-    existing: Query<Entity, With<UniverseViewEntity>>,
+    navigation: Res<StrategicNavigation>,
+    existing: Query<Entity, With<StrategicViewEntity>>,
 ) {
-    rebuild_universe_view(&mut commands, &simulation, &assets, &existing);
+    rebuild_strategic_view(&mut commands, &simulation, &assets, &navigation, &existing);
 }
 
-fn rebuild_universe_view_on_input(
-    keyboard: Res<ButtonInput<KeyCode>>,
+fn rebuild_strategic_view_if_requested(
     mut commands: Commands,
     simulation: Res<SimulationResource>,
     assets: Res<VisualAssets>,
-    existing: Query<Entity, With<UniverseViewEntity>>,
+    navigation: Res<StrategicNavigation>,
+    mut request: ResMut<ViewRebuildRequest>,
+    existing: Query<Entity, With<StrategicViewEntity>>,
 ) {
-    if keyboard.just_pressed(KeyCode::KeyR) {
-        rebuild_universe_view(&mut commands, &simulation, &assets, &existing);
+    if !request.0 {
+        return;
     }
+
+    rebuild_strategic_view(&mut commands, &simulation, &assets, &navigation, &existing);
+    request.0 = false;
 }
 
-fn rebuild_universe_view(
+fn rebuild_strategic_view(
     commands: &mut Commands,
     simulation: &SimulationResource,
     assets: &VisualAssets,
-    existing: &Query<Entity, With<UniverseViewEntity>>,
+    navigation: &StrategicNavigation,
+    existing: &Query<Entity, With<StrategicViewEntity>>,
 ) {
     for entity in existing.iter() {
         commands.entity(entity).despawn();
     }
 
-    for system in &simulation.simulation().universe().systems {
-        let material = assets
-            .star_materials
-            .get(&system.star.class)
-            .expect("star material exists")
-            .clone();
-        let scale = Vec3::splat(0.8 + system.star.luminosity.min(2.4) * 0.18);
+    match navigation.mode {
+        StrategicViewMode::Universe => {
+            spawn_universe_view(commands, simulation, assets, navigation);
+        }
+        StrategicViewMode::System(system_id) => {
+            spawn_system_view(commands, simulation, assets, system_id);
+        }
+    }
+}
+
+fn spawn_universe_view(
+    commands: &mut Commands,
+    simulation: &SimulationResource,
+    assets: &VisualAssets,
+    navigation: &StrategicNavigation,
+) {
+    let simulation = simulation.simulation();
+    let universe = simulation.universe();
+    let repository = simulation.universe_repository();
+    let state = simulation.state();
+
+    let visible_systems = systems_for_universe_view(simulation, navigation.debug_full_graph);
+
+    for (system_id, visibility) in visible_systems {
+        let Some(system) = universe.system(system_id) else {
+            continue;
+        };
+
+        let material = match visibility {
+            SystemVisibility::Known => assets
+                .known_star_materials
+                .get(&system.star.class)
+                .expect("star material exists")
+                .clone(),
+            SystemVisibility::Detected => assets.detected_material.clone(),
+        };
+        let visibility_scale = match visibility {
+            SystemVisibility::Known => 1.0,
+            SystemVisibility::Detected => 0.72,
+        };
+        let scale = Vec3::splat((0.72 + system.star.luminosity.min(2.4) * 0.16) * visibility_scale);
         let position = to_vec3(system.position);
 
         commands.spawn((
@@ -193,21 +340,139 @@ fn rebuild_universe_view(
             Transform::from_translation(position).with_scale(scale),
             SystemVisual {
                 id: system.id,
+                visibility,
                 base_scale: scale,
             },
-            UniverseViewEntity,
+            StrategicViewEntity,
         ));
 
+        let label = match visibility {
+            SystemVisibility::Known => system.name.clone(),
+            SystemVisibility::Detected => format!("Signal {}", system.id.index()),
+        };
+
         commands.spawn((
-            Text2d::new(system.name.clone()),
+            Text2d::new(label),
             TextFont {
                 font_size: FontSize::Px(12.0),
                 ..default()
             },
-            TextColor(Color::srgba(0.76, 0.88, 1.0, 0.84)),
+            TextColor(match visibility {
+                SystemVisibility::Known => Color::srgba(0.76, 0.88, 1.0, 0.90),
+                SystemVisibility::Detected => Color::srgba(0.48, 0.66, 0.82, 0.72),
+            }),
             Transform::from_translation(position + Vec3::new(0.0, 1.8, 0.0))
                 .with_scale(Vec3::splat(0.28)),
-            UniverseViewEntity,
+            SystemLabel {
+                id: system.id,
+                visibility,
+            },
+            StrategicViewEntity,
+        ));
+    }
+
+    debug_assert!(
+        navigation.debug_full_graph
+            || state
+                .visible_systems(repository)
+                .iter()
+                .all(|(system_id, _)| { state.is_system_visible(repository, *system_id) })
+    );
+}
+
+fn systems_for_universe_view(
+    simulation: &Simulation,
+    debug_full_graph: bool,
+) -> Vec<(SystemId, SystemVisibility)> {
+    if debug_full_graph {
+        return simulation
+            .universe()
+            .systems
+            .iter()
+            .map(|system| {
+                (
+                    system.id,
+                    simulation
+                        .state()
+                        .system_visibility(simulation.universe_repository(), system.id)
+                        .unwrap_or(SystemVisibility::Detected),
+                )
+            })
+            .collect();
+    }
+
+    simulation
+        .state()
+        .visible_systems(simulation.universe_repository())
+}
+
+fn spawn_system_view(
+    commands: &mut Commands,
+    simulation: &SimulationResource,
+    assets: &VisualAssets,
+    system_id: SystemId,
+) {
+    let simulation = simulation.simulation();
+    let Some(system) = simulation.universe().system(system_id) else {
+        return;
+    };
+
+    let star_material = assets
+        .known_star_materials
+        .get(&system.star.class)
+        .expect("star material exists")
+        .clone();
+
+    commands.spawn((
+        Mesh3d(assets.system_mesh.clone()),
+        MeshMaterial3d(star_material),
+        Transform::from_scale(Vec3::splat(2.8)),
+        StrategicViewEntity,
+    ));
+
+    commands.spawn((
+        Text2d::new(system.name.clone()),
+        TextFont {
+            font_size: FontSize::Px(18.0),
+            ..default()
+        },
+        TextColor(Color::srgb(0.94, 0.97, 1.0)),
+        Transform::from_xyz(0.0, 3.6, 0.0).with_scale(Vec3::splat(0.34)),
+        StrategicViewEntity,
+    ));
+
+    for (index, planet) in system.planets.iter().enumerate() {
+        let radius = 6.0 + index as f32 * 4.8;
+        let angle = index as f32 * 1.37;
+        let position = Vec3::new(angle.cos() * radius, 0.0, angle.sin() * radius);
+        let material = assets
+            .planet_materials
+            .get(&planet.kind)
+            .expect("planet material exists")
+            .clone();
+        let scale = if planet.kind == PlanetKind::GasGiant {
+            1.25
+        } else {
+            0.72
+        };
+
+        commands.spawn((
+            Mesh3d(assets.system_mesh.clone()),
+            MeshMaterial3d(material),
+            Transform::from_translation(position).with_scale(Vec3::splat(scale)),
+            StrategicViewEntity,
+        ));
+
+        commands.spawn((
+            Text2d::new(planet.name.clone()),
+            TextFont {
+                font_size: FontSize::Px(11.0),
+                ..default()
+            },
+            TextColor(Color::srgba(0.72, 0.82, 0.92, 0.86)),
+            Transform::from_translation(position + Vec3::new(0.0, 1.35, 0.0))
+                .with_scale(Vec3::splat(0.25)),
+            StrategicViewEntity,
         ));
     }
 }
@@ -234,7 +499,7 @@ fn spawn_ui(mut commands: Commands) {
 
     commands.spawn((
         Text::new(
-            "Space pause | 1 x1 | 2 x2 | 3 x4 | R rebuild views | only discovered routes are visible",
+            "Space pause | 1/2/3 speed | WASD pan | Q/E zoom | Tab select | F focus | Enter system | Esc universe | F3 debug graph | R rebuild",
         ),
         TextFont {
             font_size: FontSize::Px(13.0),
@@ -276,9 +541,177 @@ fn handle_simulation_input(
     simulation.pending_events.extend(events);
 }
 
+fn handle_view_input(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut simulation: ResMut<SimulationResource>,
+    mut navigation: ResMut<StrategicNavigation>,
+    mut rebuild: ResMut<ViewRebuildRequest>,
+) {
+    if keyboard.just_pressed(KeyCode::KeyR) {
+        rebuild.0 = true;
+    }
+
+    if keyboard.just_pressed(KeyCode::F3) {
+        navigation.debug_full_graph = !navigation.debug_full_graph;
+        rebuild.0 = true;
+    }
+
+    if keyboard.just_pressed(KeyCode::Tab) && matches!(navigation.mode, StrategicViewMode::Universe)
+    {
+        cycle_visible_selection(&mut simulation, navigation.debug_full_graph);
+    }
+
+    if keyboard.just_pressed(KeyCode::KeyF)
+        && matches!(navigation.mode, StrategicViewMode::Universe)
+    {
+        focus_selected_system(&simulation, &mut navigation);
+    }
+
+    if keyboard.just_pressed(KeyCode::Enter)
+        && matches!(navigation.mode, StrategicViewMode::Universe)
+        && let Some(system_id) = enterable_selected_system(&simulation, navigation.debug_full_graph)
+    {
+        navigation.enter_system(system_id);
+        rebuild.0 = true;
+    }
+
+    if keyboard.just_pressed(KeyCode::Escape)
+        && matches!(navigation.mode, StrategicViewMode::System(_))
+    {
+        navigation.exit_system();
+        rebuild.0 = true;
+    }
+}
+
+fn focus_selected_system(simulation: &SimulationResource, navigation: &mut StrategicNavigation) {
+    let Some(system_id) = selected_system(simulation.simulation.state().selected) else {
+        return;
+    };
+    let Some(system) = simulation.simulation.universe().system(system_id) else {
+        return;
+    };
+
+    navigation.universe_focus = to_vec3(system.position);
+}
+
+fn enterable_selected_system(
+    simulation: &SimulationResource,
+    debug_full_graph: bool,
+) -> Option<SystemId> {
+    let system_id = selected_system(simulation.simulation.state().selected)?;
+
+    if debug_full_graph || simulation.simulation.state().is_system_known(system_id) {
+        Some(system_id)
+    } else {
+        None
+    }
+}
+
+fn cycle_visible_selection(simulation: &mut SimulationResource, debug_full_graph: bool) {
+    let systems = systems_for_universe_view(simulation.simulation(), debug_full_graph);
+    if systems.is_empty() {
+        return;
+    }
+
+    let current = selected_system(simulation.simulation.state().selected);
+    let current_index = current.and_then(|current_id| {
+        systems
+            .iter()
+            .position(|(system_id, _)| *system_id == current_id)
+    });
+    let next_index = current_index
+        .map(|index| (index + 1) % systems.len())
+        .unwrap_or(0);
+    let next_system = systems[next_index].0;
+
+    let events = simulation
+        .simulation
+        .apply_command(GameCommand::SelectSystem(next_system));
+    simulation.pending_events.extend(events);
+}
+
+fn selected_system(selection: SelectionTarget) -> Option<SystemId> {
+    match selection {
+        SelectionTarget::None => None,
+        SelectionTarget::System(system_id) => Some(system_id),
+        SelectionTarget::Planet { system_id, .. } => Some(system_id),
+    }
+}
+
 fn tick_simulation(time: Res<Time>, mut simulation: ResMut<SimulationResource>) {
     let events = simulation.simulation.advance(time.delta());
     simulation.pending_events.extend(events);
+}
+
+fn update_strategic_camera(
+    time: Res<Time>,
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut navigation: ResMut<StrategicNavigation>,
+    mut query: Query<&mut Transform, With<StrategicCamera>>,
+) {
+    let Ok(mut transform) = query.single_mut() else {
+        return;
+    };
+
+    let delta_seconds = time.delta_secs();
+    match navigation.mode {
+        StrategicViewMode::Universe => {
+            let pan_speed = (navigation.universe_distance * 0.55).max(18.0);
+            let mut pan = Vec3::ZERO;
+
+            if keyboard.pressed(KeyCode::KeyA) {
+                pan.x -= 1.0;
+            }
+            if keyboard.pressed(KeyCode::KeyD) {
+                pan.x += 1.0;
+            }
+            if keyboard.pressed(KeyCode::KeyW) {
+                pan.z -= 1.0;
+            }
+            if keyboard.pressed(KeyCode::KeyS) {
+                pan.z += 1.0;
+            }
+            if pan.length_squared() > 0.0 {
+                navigation.universe_focus += pan.normalize() * pan_speed * delta_seconds;
+            }
+
+            let zoom_speed = (navigation.universe_distance * 0.85).max(22.0);
+            if keyboard.pressed(KeyCode::KeyQ) {
+                navigation.universe_distance -= zoom_speed * delta_seconds;
+            }
+            if keyboard.pressed(KeyCode::KeyE) {
+                navigation.universe_distance += zoom_speed * delta_seconds;
+            }
+            navigation.universe_distance = navigation.universe_distance.clamp(20.0, 150.0);
+            navigation.lod = UniverseLod::from_distance(navigation.universe_distance);
+
+            let eye = navigation.universe_focus
+                + Vec3::new(
+                    0.0,
+                    navigation.universe_distance * 0.58,
+                    navigation.universe_distance * 0.82,
+                );
+            *transform =
+                Transform::from_translation(eye).looking_at(navigation.universe_focus, Vec3::Y);
+        }
+        StrategicViewMode::System(_) => {
+            let zoom_speed = (navigation.system_distance * 0.9).max(12.0);
+            if keyboard.pressed(KeyCode::KeyQ) {
+                navigation.system_distance -= zoom_speed * delta_seconds;
+            }
+            if keyboard.pressed(KeyCode::KeyE) {
+                navigation.system_distance += zoom_speed * delta_seconds;
+            }
+            navigation.system_distance = navigation.system_distance.clamp(14.0, 68.0);
+
+            let eye = Vec3::new(
+                0.0,
+                navigation.system_distance * 0.58,
+                navigation.system_distance * 0.82,
+            );
+            *transform = Transform::from_translation(eye).looking_at(Vec3::ZERO, Vec3::Y);
+        }
+    }
 }
 
 fn collect_presentation_events(
@@ -290,8 +723,160 @@ fn collect_presentation_events(
     }
 }
 
+fn update_system_visuals(
+    simulation: Res<SimulationResource>,
+    navigation: Res<StrategicNavigation>,
+    mut query: Query<(&SystemVisual, &mut Transform)>,
+) {
+    if !matches!(navigation.mode, StrategicViewMode::Universe) {
+        return;
+    }
+
+    let selected_system = selected_system(simulation.simulation().state().selected);
+
+    for (visual, mut transform) in &mut query {
+        let selected_multiplier = if Some(visual.id) == selected_system {
+            1.55
+        } else {
+            1.0
+        };
+        let lod_multiplier = match navigation.lod {
+            UniverseLod::Overview => 0.78,
+            UniverseLod::Regional => 0.92,
+            UniverseLod::Local => 1.08,
+        };
+        let visibility_multiplier = match visual.visibility {
+            SystemVisibility::Known => 1.0,
+            SystemVisibility::Detected => 0.84,
+        };
+
+        transform.scale =
+            visual.base_scale * selected_multiplier * lod_multiplier * visibility_multiplier;
+    }
+}
+
+fn update_system_labels(
+    simulation: Res<SimulationResource>,
+    navigation: Res<StrategicNavigation>,
+    mut query: Query<(&SystemLabel, &mut Visibility)>,
+) {
+    if !matches!(navigation.mode, StrategicViewMode::Universe) {
+        return;
+    }
+
+    let state = simulation.simulation().state();
+    let selected = selected_system(state.selected);
+
+    for (label, mut visibility) in &mut query {
+        let is_selected = Some(label.id) == selected;
+        let is_colony = state
+            .colonies
+            .iter()
+            .any(|colony| colony.system_id == label.id);
+
+        let should_show = is_selected
+            || is_colony
+            || match navigation.lod {
+                UniverseLod::Overview => false,
+                UniverseLod::Regional => label.visibility == SystemVisibility::Known,
+                UniverseLod::Local => true,
+            };
+
+        *visibility = if should_show {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+    }
+}
+
+fn draw_strategic_overlays(
+    mut gizmos: Gizmos,
+    simulation: Res<SimulationResource>,
+    navigation: Res<StrategicNavigation>,
+) {
+    match navigation.mode {
+        StrategicViewMode::Universe => {
+            draw_universe_routes(&mut gizmos, simulation.simulation(), &navigation);
+        }
+        StrategicViewMode::System(system_id) => {
+            draw_system_orbits(&mut gizmos, simulation.simulation(), system_id);
+        }
+    }
+}
+
+fn draw_universe_routes(
+    gizmos: &mut Gizmos,
+    simulation: &Simulation,
+    navigation: &StrategicNavigation,
+) {
+    let universe = simulation.universe();
+    let state = simulation.state();
+
+    if navigation.debug_full_graph {
+        for route in &universe.routes {
+            draw_route(
+                gizmos,
+                universe,
+                route.from,
+                route.to,
+                Color::srgba(0.42, 0.24, 0.62, 0.28),
+            );
+        }
+        return;
+    }
+
+    for route in state.visible_routes(simulation.universe_repository()) {
+        let both_known = state.is_system_known(route.from) && state.is_system_known(route.to);
+        let color = if both_known {
+            Color::srgba(0.28, 0.62, 0.94, 0.58)
+        } else {
+            Color::srgba(0.30, 0.48, 0.66, 0.38)
+        };
+        draw_route(gizmos, universe, route.from, route.to, color);
+    }
+}
+
+fn draw_route(
+    gizmos: &mut Gizmos,
+    universe: &galactic_domain::UniverseDefinition,
+    from_id: SystemId,
+    to_id: SystemId,
+    color: Color,
+) {
+    let Some(from) = universe.system(from_id) else {
+        return;
+    };
+    let Some(to) = universe.system(to_id) else {
+        return;
+    };
+    gizmos.line(to_vec3(from.position), to_vec3(to.position), color);
+}
+
+fn draw_system_orbits(gizmos: &mut Gizmos, simulation: &Simulation, system_id: SystemId) {
+    let Some(system) = simulation.universe().system(system_id) else {
+        return;
+    };
+
+    for index in 0..system.planets.len() {
+        let radius = 6.0 + index as f32 * 4.8;
+        draw_circle_xz(gizmos, radius, 48, Color::srgba(0.32, 0.46, 0.62, 0.26));
+    }
+}
+
+fn draw_circle_xz(gizmos: &mut Gizmos, radius: f32, segments: usize, color: Color) {
+    for segment in 0..segments {
+        let start_angle = segment as f32 / segments as f32 * std::f32::consts::TAU;
+        let end_angle = (segment + 1) as f32 / segments as f32 * std::f32::consts::TAU;
+        let start = Vec3::new(start_angle.cos() * radius, 0.0, start_angle.sin() * radius);
+        let end = Vec3::new(end_angle.cos() * radius, 0.0, end_angle.sin() * radius);
+        gizmos.line(start, end, color);
+    }
+}
+
 fn update_ui(
     simulation: Res<SimulationResource>,
+    navigation: Res<StrategicNavigation>,
     log: Res<PresentationLog>,
     mut query: Query<&mut Text, With<TopBarText>>,
 ) {
@@ -300,70 +885,47 @@ fn update_ui(
     };
     let simulation = simulation.simulation();
     let universe = simulation.universe();
+    let repository = simulation.universe_repository();
     let state = simulation.state();
     let selected = selection_label(state.selected);
     let last_event = log
         .last_event
         .map(event_label)
         .unwrap_or_else(|| "ready".to_string());
-    let visible_route_count = state.visible_routes(universe).count();
+    let visible_route_count = if navigation.debug_full_graph {
+        universe.routes.len()
+    } else {
+        state.visible_routes(repository).len()
+    };
+    let visible_system_count = if navigation.debug_full_graph {
+        universe.systems.len()
+    } else {
+        state.visible_systems(repository).len()
+    };
+    let view_label = match navigation.mode {
+        StrategicViewMode::Universe => format!("universe/{:?}", navigation.lod),
+        StrategicViewMode::System(system_id) => {
+            format!("system {}", system_id.index())
+        }
+    };
 
     text.0 = format!(
-        "Galactic MVP | Bevy 0.19 | seed {} | gen v{} | fp {:016x} | systems {} | routes {}/{} | colonies {} | known {} | tick {} | t {:.1}s | speed {} | selected {} | event {}",
+        "Galactic MVP | preset {:?} | view {} | seed {} | systems {}/{} | routes {}/{} | known {} | tick {} | t {:.1}s | speed {} | selected {} | debug {} | event {}",
+        navigation.preset,
+        view_label,
         universe.seed,
-        universe.generation_version,
-        universe.generation_fingerprint,
+        visible_system_count,
         universe.systems.len(),
         visible_route_count,
         universe.routes.len(),
-        state.colonies.len(),
         state.known_systems.len(),
         state.clock.current_tick(),
         state.clock.elapsed_seconds(),
         state.clock.speed(),
         selected,
+        navigation.debug_full_graph,
         last_event
     );
-}
-
-fn update_system_visuals(
-    simulation: Res<SimulationResource>,
-    mut query: Query<(&SystemVisual, &mut Transform)>,
-) {
-    let selected_system = match simulation.simulation().state().selected {
-        SelectionTarget::None => None,
-        SelectionTarget::System(system_id) => Some(system_id),
-        SelectionTarget::Planet { system_id, .. } => Some(system_id),
-    };
-
-    for (visual, mut transform) in &mut query {
-        transform.scale = if Some(visual.id) == selected_system {
-            visual.base_scale * 1.45
-        } else {
-            visual.base_scale
-        };
-    }
-}
-
-fn draw_routes(mut gizmos: Gizmos, simulation: Res<SimulationResource>) {
-    let simulation = simulation.simulation();
-    let universe = simulation.universe();
-    let state = simulation.state();
-
-    for route in state.visible_routes(universe) {
-        let Some(from) = universe.system(route.from) else {
-            continue;
-        };
-        let Some(to) = universe.system(route.to) else {
-            continue;
-        };
-
-        gizmos.line(
-            to_vec3(from.position),
-            to_vec3(to.position),
-            Color::srgba(0.28, 0.62, 0.94, 0.52),
-        );
-    }
 }
 
 fn to_vec3(position: WorldPosition) -> Vec3 {
@@ -374,6 +936,21 @@ fn star_material(class: StarClass) -> StandardMaterial {
     StandardMaterial {
         base_color: star_color(class),
         emissive: star_emissive(class),
+        unlit: true,
+        ..default()
+    }
+}
+
+fn planet_material(kind: PlanetKind) -> StandardMaterial {
+    StandardMaterial {
+        base_color: match kind {
+            PlanetKind::Rocky => Color::srgb(0.48, 0.42, 0.36),
+            PlanetKind::Ocean => Color::srgb(0.18, 0.46, 0.72),
+            PlanetKind::Desert => Color::srgb(0.72, 0.52, 0.28),
+            PlanetKind::Ice => Color::srgb(0.62, 0.78, 0.90),
+            PlanetKind::GasGiant => Color::srgb(0.62, 0.50, 0.68),
+            PlanetKind::Volcanic => Color::srgb(0.72, 0.24, 0.12),
+        },
         unlit: true,
         ..default()
     }
@@ -402,7 +979,9 @@ fn star_emissive(class: StarClass) -> LinearRgba {
 fn selection_label(selection: SelectionTarget) -> String {
     match selection {
         SelectionTarget::None => "none".to_string(),
-        SelectionTarget::System(system_id) => format!("system {}", system_id.index()),
+        SelectionTarget::System(system_id) => {
+            format!("system {}", system_id.index())
+        }
         SelectionTarget::Planet {
             system_id,
             planet_id,
@@ -426,6 +1005,42 @@ fn event_label(event: GameEvent) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn semantic_lod_uses_stable_distance_bands() {
+        assert_eq!(UniverseLod::from_distance(120.0), UniverseLod::Overview);
+        assert_eq!(UniverseLod::from_distance(64.0), UniverseLod::Regional);
+        assert_eq!(UniverseLod::from_distance(32.0), UniverseLod::Local);
+    }
+
+    #[test]
+    fn normal_view_instantiates_fewer_systems_than_debug_view() {
+        let simulation = Simulation::new(UniverseConfig::mvp());
+
+        let normal = systems_for_universe_view(&simulation, false);
+        let debug = systems_for_universe_view(&simulation, true);
+
+        assert!(normal.len() <= debug.len());
+        assert_eq!(debug.len(), simulation.universe().systems.len());
+    }
+
+    #[test]
+    fn universe_camera_context_survives_system_transition() {
+        let mut navigation = StrategicNavigation {
+            universe_focus: Vec3::new(12.0, 0.0, -7.0),
+            universe_distance: 73.0,
+            ..default()
+        };
+        let focus = navigation.universe_focus;
+        let distance = navigation.universe_distance;
+
+        navigation.enter_system(SystemId::from_index(3));
+        navigation.exit_system();
+
+        assert_eq!(navigation.mode, StrategicViewMode::Universe);
+        assert_eq!(navigation.universe_focus, focus);
+        assert_eq!(navigation.universe_distance, distance);
+    }
 
     #[test]
     fn presentation_labels_use_domain_selection_ids() {
