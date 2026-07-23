@@ -190,3 +190,58 @@ Règles :
 Les niveaux persistants `Inconnu`, `Détecté`, `Sondé`, `Analysé` et
 `Colonisé` seront introduits par `MVP-009`. Pour MVP-007, la détection est une
 frontière dérivée du graphe et ne modifie pas encore le format de sauvegarde.
+
+
+## MVP-008 — Système de départ et planète mère
+
+Les paramètres de nouvelle partie sont maintenant séparés de la génération de
+l'univers :
+
+```text
+UniverseConfig
+    seed / nombre de systèmes
+            │
+            ▼
+UniverseDefinition immuable
+
+StartingScenario
+    faction joueur
+    système et planète de départ
+    colonie et stocks
+    bâtiments initiaux
+    profil de ressources
+    connaissances initiales
+            │
+            ▼
+GameState mutable
+```
+
+Configuration MVP :
+
+- système natal : `SystemId(0)` ;
+- planète mère : première planète de ce système, `Aster Prime` ;
+- habitabilité minimale validée : 80 ;
+- faction joueur : `Aster Expedition` ;
+- une colonie initiale ;
+- stocks initiaux : 600 métal, 300 cristal, 220 carburant, 80 énergie ;
+- profil planétaire équilibré : 100/100/100/100 ;
+- bâtiments niveau 1 :
+  - mine de métal ;
+  - extracteur de cristal ;
+  - raffinerie de carburant ;
+  - centrale énergétique ;
+  - entrepôt ;
+  - centre de construction ;
+- laboratoire et chantier spatial au niveau 0 ;
+- seul le système natal est connu ;
+- ses voisins apparaissent comme signaux détectés via la frontière MVP-007 ;
+- la sélection initiale vise directement la planète mère ;
+- la vue initiale du client est la vue Système.
+
+`StartingScenario` est configurable sans modifier la seed, la version de
+génération ou le fingerprint de l'univers.
+
+Versions après migration :
+
+- `GAME_STATE_VERSION = 3` ;
+- `SAVE_VERSION = 4`.

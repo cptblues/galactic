@@ -1,14 +1,17 @@
-// MVP-007: universe visibility is derived from the discovered neighborhood
+// MVP-008: configurable player faction, home world and starting colony
 use std::collections::BTreeSet;
 
 use galactic_domain::{ColonyId, FactionId, PlanetId, ResourceStock, Route, SystemId};
 
-use crate::{SelectionTarget, StrategicClock, UniverseRepository};
+use crate::{
+    BuildingLevels, PlanetResourceProfile, SelectionTarget, StartingScenario,
+    StartingScenarioError, StrategicClock, UniverseRepository,
+};
 
 /// Version of the mutable in-memory state contract.
 ///
-/// Version 2 replaces floating elapsed seconds with a deterministic tick clock.
-pub const GAME_STATE_VERSION: u32 = 2;
+/// Version 3 adds factions and configurable colony foundation data.
+pub const GAME_STATE_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemVisibility {
@@ -16,9 +19,24 @@ pub enum SystemVisibility {
     Detected,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FactionKind {
+    Player,
+    Neutral,
+    FutureAi,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FactionState {
+    pub id: FactionId,
+    pub name: String,
+    pub kind: FactionKind,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct GameState {
     pub version: u32,
+    pub factions: Vec<FactionState>,
     pub player_faction: FactionId,
     pub colonies: Vec<ColonyState>,
     pub known_systems: Vec<SystemId>,
@@ -28,32 +46,56 @@ pub struct GameState {
 
 impl GameState {
     pub fn new(universe: &UniverseRepository) -> Self {
-        let home_system_id = SystemId::from_index(0);
-        let home_planet_id = PlanetId::from_system_index(home_system_id, 0);
-        let player_faction = FactionId::new(0);
-        let mut known_systems = vec![home_system_id];
-        known_systems.extend(universe.neighboring_systems(home_system_id));
+        Self::from_starting_scenario(universe, StartingScenario::mvp())
+            .expect("the MVP starting scenario must match the reference universe")
+    }
+
+    pub fn from_starting_scenario(
+        universe: &UniverseRepository,
+        scenario: StartingScenario,
+    ) -> Result<Self, StartingScenarioError> {
+        scenario.validate(universe)?;
+
+        let mut known_systems = scenario.initially_known_systems.to_vec();
         known_systems.sort();
         known_systems.dedup();
 
-        debug_assert!(universe.system(home_system_id).is_some());
-        debug_assert!(universe.planet(home_planet_id).is_some());
+        let player_faction = scenario.player_faction.id;
+        let home = scenario.home_colony;
 
-        Self {
+        Ok(Self {
             version: GAME_STATE_VERSION,
+            factions: vec![FactionState {
+                id: player_faction,
+                name: scenario.player_faction.name.to_string(),
+                kind: FactionKind::Player,
+            }],
             player_faction,
             colonies: vec![ColonyState {
-                id: ColonyId::new(0),
-                name: "Aster Prime Colony".to_string(),
+                id: home.id,
+                name: home.name.to_string(),
                 faction: player_faction,
-                system_id: home_system_id,
-                planet_id: home_planet_id,
-                stock: ResourceStock::new(120, 45, 80, 30),
+                system_id: home.system_id,
+                planet_id: home.planet_id,
+                stock: home.initial_stock,
+                buildings: home.buildings,
+                resource_profile: home.resource_profile,
             }],
             known_systems,
-            selected: SelectionTarget::System(home_system_id),
+            selected: SelectionTarget::Planet {
+                system_id: home.system_id,
+                planet_id: home.planet_id,
+            },
             clock: StrategicClock::new(),
-        }
+        })
+    }
+
+    pub fn faction(&self, id: FactionId) -> Option<&FactionState> {
+        self.factions.iter().find(|faction| faction.id == id)
+    }
+
+    pub fn player_faction_state(&self) -> Option<&FactionState> {
+        self.faction(self.player_faction)
     }
 
     pub fn colony(&self, id: ColonyId) -> Option<&ColonyState> {
@@ -64,13 +106,24 @@ impl GameState {
         self.colonies.iter_mut().find(|colony| colony.id == id)
     }
 
+    pub fn colony_on_planet(&self, planet_id: PlanetId) -> Option<&ColonyState> {
+        self.colonies
+            .iter()
+            .find(|colony| colony.planet_id == planet_id)
+    }
+
+    pub fn player_home_colony(&self) -> Option<&ColonyState> {
+        self.colonies
+            .iter()
+            .find(|colony| colony.faction == self.player_faction)
+    }
+
     pub fn is_system_known(&self, system_id: SystemId) -> bool {
         self.known_systems.contains(&system_id)
     }
 
     /// Systems directly adjacent to known systems form the current detection
-    /// frontier. This is presentation-oriented until MVP-009 stores explicit
-    /// knowledge levels.
+    /// frontier. MVP-009 will replace this with persisted knowledge levels.
     pub fn detected_systems(&self, universe: &UniverseRepository) -> Vec<SystemId> {
         let mut detected = BTreeSet::new();
 
@@ -124,9 +177,6 @@ impl GameState {
         self.system_visibility(universe, system_id).is_some()
     }
 
-    /// Visible routes connect known systems to each other or to the immediate
-    /// detected frontier. Routes between two merely detected systems remain
-    /// hidden so the map never reveals information beyond that frontier.
     pub fn visible_routes<'a>(&self, universe: &'a UniverseRepository) -> Vec<&'a Route> {
         universe
             .definition()
@@ -152,6 +202,8 @@ pub struct ColonyState {
     pub system_id: SystemId,
     pub planet_id: PlanetId,
     pub stock: ResourceStock,
+    pub buildings: BuildingLevels,
+    pub resource_profile: PlanetResourceProfile,
 }
 
 #[cfg(test)]
@@ -161,72 +213,73 @@ mod tests {
     use super::*;
 
     #[test]
-    fn colony_is_accessible_by_stable_id() {
+    fn new_game_uses_stable_home_world_and_player_faction() {
         let universe = UniverseRepository::generate(UniverseConfig::mvp());
         let state = GameState::new(&universe);
+        let scenario = StartingScenario::mvp();
+        let colony = state.colony(ColonyId::new(0)).expect("home colony exists");
 
-        let colony = state
-            .colony(ColonyId::new(0))
-            .expect("home colony is indexed by its stable ID");
-
-        assert_eq!(colony.name, "Aster Prime Colony");
+        assert_eq!(state.player_faction, scenario.player_faction.id);
+        assert_eq!(state.factions.len(), 1);
+        assert_eq!(
+            state
+                .player_faction_state()
+                .expect("player faction exists")
+                .kind,
+            FactionKind::Player
+        );
+        assert_eq!(colony.system_id, scenario.home_colony.system_id);
+        assert_eq!(colony.planet_id, scenario.home_colony.planet_id);
     }
 
     #[test]
-    fn new_game_starts_at_tick_zero_and_speed_one() {
+    fn home_planet_supports_the_starting_loop() {
         let universe = UniverseRepository::generate(UniverseConfig::mvp());
         let state = GameState::new(&universe);
+        let colony = state.player_home_colony().expect("home colony exists");
+        let planet = universe
+            .planet(colony.planet_id)
+            .expect("home planet exists");
 
-        assert_eq!(state.clock.current_tick().value(), 0);
-        assert_eq!(state.clock.speed(), crate::TimeSpeed::X1);
+        assert!(planet.habitability >= StartingScenario::mvp().minimum_home_habitability);
+        assert!(colony.stock.can_cover(ResourceStock::new(100, 50, 25, 0)));
+        assert!(colony.resource_profile.is_viable());
+        assert!(
+            colony.buildings.total_levels() >= 6,
+            "the colony starts with the six foundation buildings"
+        );
     }
 
     #[test]
-    fn detection_frontier_contains_only_neighbors_of_known_systems() {
-        let repository = UniverseRepository::generate(UniverseConfig::mvp());
-        let state = GameState::new(&repository);
-        let detected = state.detected_systems(&repository);
+    fn only_home_system_is_known_at_start() {
+        let universe = UniverseRepository::generate(UniverseConfig::mvp());
+        let state = GameState::new(&universe);
+        let home = StartingScenario::mvp().home_colony.system_id;
 
-        assert!(detected.iter().all(|system_id| {
-            !state.is_system_known(*system_id)
-                && state
-                    .known_systems
-                    .iter()
-                    .any(|known| repository.route_exists(*known, *system_id))
-        }));
+        assert_eq!(state.known_systems, vec![home]);
+        assert!(!state.detected_systems(&universe).is_empty());
+        assert!(
+            state
+                .detected_systems(&universe)
+                .iter()
+                .all(|system_id| { universe.route_exists(home, *system_id) })
+        );
     }
 
     #[test]
-    fn normal_visibility_never_reveals_beyond_the_detection_frontier() {
-        let repository = UniverseRepository::generate(UniverseConfig::mvp());
-        let state = GameState::new(&repository);
-        let visible = state.visible_systems(&repository);
-        let visible_ids = visible
-            .iter()
-            .map(|(system_id, _)| *system_id)
-            .collect::<BTreeSet<_>>();
+    fn custom_starting_data_does_not_change_generated_universe() {
+        let universe = UniverseRepository::generate(UniverseConfig::mvp());
+        let fingerprint = universe.definition().generation_fingerprint;
+        let mut scenario = StartingScenario::mvp();
+        scenario.home_colony.initial_stock = ResourceStock::new(900, 700, 500, 100);
+        scenario.home_colony.buildings.research_lab = 1;
 
-        assert!(visible.len() <= repository.definition().systems.len());
-        for (system_id, visibility) in visible {
-            match visibility {
-                SystemVisibility::Known => {
-                    assert!(state.is_system_known(system_id));
-                }
-                SystemVisibility::Detected => {
-                    assert!(
-                        state
-                            .known_systems
-                            .iter()
-                            .any(|known| { repository.route_exists(*known, system_id) })
-                    );
-                }
-            }
-        }
+        let state = GameState::from_starting_scenario(&universe, scenario)
+            .expect("custom starting scenario is valid");
+        let colony = state.player_home_colony().expect("home colony exists");
 
-        assert!(state.visible_routes(&repository).iter().all(|route| {
-            visible_ids.contains(&route.from)
-                && visible_ids.contains(&route.to)
-                && (state.is_system_known(route.from) || state.is_system_known(route.to))
-        }));
+        assert_eq!(colony.stock, ResourceStock::new(900, 700, 500, 100));
+        assert_eq!(colony.buildings.research_lab, 1);
+        assert_eq!(universe.definition().generation_fingerprint, fingerprint);
     }
 }

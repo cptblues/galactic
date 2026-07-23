@@ -4,7 +4,8 @@ use bevy::prelude::*;
 use bevy::window::PresentMode;
 use galactic_domain::{PlanetKind, StarClass, SystemId, UniverseConfig, WorldPosition};
 use galactic_sim::{
-    GameCommand, GameEvent, SelectionTarget, Simulation, SystemVisibility, TimeSpeed,
+    GameCommand, GameEvent, MVP_HOME_SYSTEM_ID, SelectionTarget, Simulation, SystemVisibility,
+    TimeSpeed,
 };
 
 pub fn run() {
@@ -69,6 +70,7 @@ impl Plugin for PresentationPlugin {
                 update_system_labels,
                 draw_strategic_overlays,
                 update_ui,
+                update_home_summary,
             ),
         );
     }
@@ -179,7 +181,7 @@ impl Default for StrategicNavigation {
     fn default() -> Self {
         let universe_distance = 108.0;
         Self {
-            mode: StrategicViewMode::Universe,
+            mode: StrategicViewMode::System(MVP_HOME_SYSTEM_ID),
             universe_focus: Vec3::ZERO,
             universe_distance,
             system_distance: 34.0,
@@ -227,6 +229,9 @@ struct TopBarText;
 
 #[derive(Component)]
 struct HelpText;
+
+#[derive(Component)]
+struct HomeSummaryText;
 
 fn log_startup() {
     info!("Galactic MVP client starting on Bevy 0.19");
@@ -441,19 +446,30 @@ fn spawn_system_view(
         StrategicViewEntity,
     ));
 
+    let state = simulation.state();
     for (index, planet) in system.planets.iter().enumerate() {
         let radius = 6.0 + index as f32 * 4.8;
         let angle = index as f32 * 1.37;
         let position = Vec3::new(angle.cos() * radius, 0.0, angle.sin() * radius);
-        let material = assets
-            .planet_materials
-            .get(&planet.kind)
-            .expect("planet material exists")
-            .clone();
-        let scale = if planet.kind == PlanetKind::GasGiant {
+        let colonized = state.colony_on_planet(planet.id);
+        let material = if colonized.is_some() {
+            assets
+                .planet_materials
+                .get(&planet.kind)
+                .expect("planet material exists")
+                .clone()
+        } else {
+            assets.detected_material.clone()
+        };
+        let scale = if colonized.is_some() && planet.kind == PlanetKind::GasGiant {
             1.25
         } else {
             0.72
+        };
+        let label = if let Some(colony) = colonized {
+            format!("{} — {}", planet.name, colony.name)
+        } else {
+            format!("Corps non sondé {}", index + 1)
         };
 
         commands.spawn((
@@ -464,7 +480,7 @@ fn spawn_system_view(
         ));
 
         commands.spawn((
-            Text2d::new(planet.name.clone()),
+            Text2d::new(label),
             TextFont {
                 font_size: FontSize::Px(11.0),
                 ..default()
@@ -495,6 +511,25 @@ fn spawn_ui(mut commands: Commands) {
         },
         BackgroundColor(Color::srgba(0.014, 0.022, 0.034, 0.78)),
         TopBarText,
+    ));
+
+    commands.spawn((
+        Text::new(""),
+        TextFont {
+            font_size: FontSize::Px(14.0),
+            ..default()
+        },
+        TextColor(Color::srgb(0.82, 0.90, 0.98)),
+        Node {
+            position_type: PositionType::Absolute,
+            right: Val::Px(14.0),
+            top: Val::Px(78.0),
+            width: Val::Px(330.0),
+            padding: UiRect::all(Val::Px(12.0)),
+            ..default()
+        },
+        BackgroundColor(Color::srgba(0.014, 0.022, 0.034, 0.78)),
+        HomeSummaryText,
     ));
 
     commands.spawn((
@@ -925,6 +960,55 @@ fn update_ui(
         selected,
         navigation.debug_full_graph,
         last_event
+    );
+}
+
+fn update_home_summary(
+    simulation: Res<SimulationResource>,
+    mut query: Query<&mut Text, With<HomeSummaryText>>,
+) {
+    let Ok(mut text) = query.single_mut() else {
+        return;
+    };
+    let simulation = simulation.simulation();
+    let state = simulation.state();
+    let Some(faction) = state.player_faction_state() else {
+        text.0 = "Faction joueur invalide".to_string();
+        return;
+    };
+    let Some(colony) = state.player_home_colony() else {
+        text.0 = "Colonie mère introuvable".to_string();
+        return;
+    };
+    let Some(system) = simulation.universe().system(colony.system_id) else {
+        return;
+    };
+    let Some(planet) = simulation.universe_repository().planet(colony.planet_id) else {
+        return;
+    };
+
+    text.0 = format!(
+        "{}\n{} / {}\nHabitabilité : {}%\n\nStocks\nMétal {}  Cristal {}\nCarburant {}  Énergie {}\n\nPotentiel planète\nM {}  C {}  F {}  E {}\n\nBâtiments\nMines {}/{}/{}  Centrale {}\nEntrepôt {}  Construction {}\nLaboratoire {}  Chantier {}",
+        faction.name,
+        system.name,
+        planet.name,
+        planet.habitability,
+        colony.stock.metal,
+        colony.stock.crystal,
+        colony.stock.fuel,
+        colony.stock.energy,
+        colony.resource_profile.metal,
+        colony.resource_profile.crystal,
+        colony.resource_profile.fuel,
+        colony.resource_profile.energy,
+        colony.buildings.metal_mine,
+        colony.buildings.crystal_extractor,
+        colony.buildings.fuel_refinery,
+        colony.buildings.power_plant,
+        colony.buildings.warehouse,
+        colony.buildings.construction_center,
+        colony.buildings.research_lab,
+        colony.buildings.shipyard,
     );
 }
 

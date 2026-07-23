@@ -1,16 +1,16 @@
-// MVP-005: strategic tick clock is persisted without frame-time floats
+// MVP-008: save the player faction and configurable colony foundation
 use galactic_domain::{
     ColonyId, FactionId, PlanetId, ResourceStock, SystemId, UniverseConfig, UniverseId,
     generate_universe,
 };
 use galactic_sim::{
-    ColonyState, GameState, SelectionTarget, Simulation, SimulationBuildError, StrategicClock,
-    StrategicClockError, StrategicTick, TimeSpeed,
+    BuildingLevels, ColonyState, FactionKind, FactionState, GameState, PlanetResourceProfile,
+    SelectionTarget, Simulation, SimulationBuildError, StrategicClock, StrategicClockError,
+    StrategicTick, TimeSpeed,
 };
 
-pub const SAVE_VERSION: u32 = 3;
+pub const SAVE_VERSION: u32 = 4;
 
-/// Persistence envelope: generated data is referenced, not duplicated.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SaveGame {
     pub version: u32,
@@ -30,11 +30,19 @@ pub struct UniverseReference {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MutableGameSave {
     pub version: u32,
+    pub factions: Vec<FactionSave>,
     pub player_faction: FactionId,
     pub clock: StrategicClockSave,
     pub selected: SelectionTarget,
     pub known_systems: Vec<SystemId>,
     pub colonies: Vec<ColonySave>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FactionSave {
+    pub id: FactionId,
+    pub name: String,
+    pub kind: FactionKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,6 +61,8 @@ pub struct ColonySave {
     pub system_id: SystemId,
     pub planet_id: PlanetId,
     pub stock: ResourceStock,
+    pub buildings: BuildingLevels,
+    pub resource_profile: PlanetResourceProfile,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,6 +99,15 @@ pub fn snapshot_from_simulation(simulation: &Simulation) -> SaveGame {
         },
         state: MutableGameSave {
             version: state.version,
+            factions: state
+                .factions
+                .iter()
+                .map(|faction| FactionSave {
+                    id: faction.id,
+                    name: faction.name.clone(),
+                    kind: faction.kind,
+                })
+                .collect(),
             player_faction: state.player_faction,
             clock: StrategicClockSave {
                 current_tick: state.clock.current_tick(),
@@ -108,6 +127,8 @@ pub fn snapshot_from_simulation(simulation: &Simulation) -> SaveGame {
                     system_id: colony.system_id,
                     planet_id: colony.planet_id,
                     stock: colony.stock,
+                    buildings: colony.buildings,
+                    resource_profile: colony.resource_profile,
                 })
                 .collect(),
         },
@@ -153,6 +174,16 @@ pub fn restore_from_snapshot(save: &SaveGame) -> Result<Simulation, SaveError> {
 
     let state = GameState {
         version: save.state.version,
+        factions: save
+            .state
+            .factions
+            .iter()
+            .map(|faction| FactionState {
+                id: faction.id,
+                name: faction.name.clone(),
+                kind: faction.kind,
+            })
+            .collect(),
         player_faction: save.state.player_faction,
         colonies: save
             .state
@@ -165,6 +196,8 @@ pub fn restore_from_snapshot(save: &SaveGame) -> Result<Simulation, SaveError> {
                 system_id: colony.system_id,
                 planet_id: colony.planet_id,
                 stock: colony.stock,
+                buildings: colony.buildings,
+                resource_profile: colony.resource_profile,
             })
             .collect(),
         known_systems: save.state.known_systems.clone(),
@@ -181,13 +214,14 @@ mod tests {
 
     use galactic_domain::UniverseConfig;
     use galactic_sim::{
-        GAME_STATE_VERSION, GameCommand, STRATEGIC_TICK_NANOS, StrategicTick, TimeSpeed,
+        GAME_STATE_VERSION, GameCommand, STRATEGIC_TICK_NANOS, StartingScenario, StrategicTick,
+        TimeSpeed,
     };
 
     use super::*;
 
     #[test]
-    fn snapshot_round_trips_mutable_state_and_regenerates_universe() {
+    fn snapshot_round_trips_complete_starting_state() {
         let mut simulation = Simulation::new(UniverseConfig::new(99, 14));
         simulation.advance(Duration::from_millis(125));
         simulation.apply_command(GameCommand::SetSpeed(TimeSpeed::X4));
@@ -206,20 +240,24 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_contains_a_universe_reference_and_strategic_clock() {
+    fn snapshot_contains_player_faction_and_home_foundation() {
         let simulation = Simulation::new(UniverseConfig::mvp());
         let save = snapshot_from_simulation(&simulation);
+        let scenario = StartingScenario::mvp();
+        let colony = save.state.colonies.first().expect("home colony is saved");
 
-        assert_eq!(
-            save.universe.system_count,
-            simulation.universe().systems.len()
-        );
-        assert_eq!(
-            save.universe.generation_fingerprint,
-            simulation.universe().generation_fingerprint
-        );
         assert_eq!(save.state.version, GAME_STATE_VERSION);
-        assert_eq!(save.state.clock.current_tick, StrategicTick::ZERO);
+        assert_eq!(save.state.factions.len(), 1);
+        assert_eq!(save.state.player_faction, scenario.player_faction.id);
+        assert_eq!(colony.buildings, scenario.home_colony.buildings);
+        assert_eq!(
+            colony.resource_profile,
+            scenario.home_colony.resource_profile
+        );
+        assert_eq!(
+            save.state.known_systems.as_slice(),
+            scenario.initially_known_systems
+        );
     }
 
     #[test]

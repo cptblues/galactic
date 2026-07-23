@@ -2,11 +2,13 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
-use galactic_domain::{ColonyId, PlanetId, SystemId, UniverseConfig, UniverseDefinition};
+use galactic_domain::{
+    ColonyId, FactionId, PlanetId, SystemId, UniverseConfig, UniverseDefinition,
+};
 
 use crate::{
-    GAME_STATE_VERSION, GameCommand, GameEvent, GameState, SelectionTarget, TimeSpeed,
-    UniverseIndexError, UniverseRepository,
+    FactionKind, GAME_STATE_VERSION, GameCommand, GameEvent, GameState, SelectionTarget,
+    StartingScenario, StartingScenarioError, TimeSpeed, UniverseIndexError, UniverseRepository,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,7 +18,15 @@ pub enum SimulationBuildError {
         expected: u32,
         found: u32,
     },
+    InvalidStartingScenario(StartingScenarioError),
+    DuplicateFaction(FactionId),
+    UnknownPlayerFaction(FactionId),
+    PlayerFactionIsNotPlayer(FactionId),
     DuplicateColony(ColonyId),
+    UnknownColonyFaction {
+        colony_id: ColonyId,
+        faction_id: FactionId,
+    },
     UnknownKnownSystem(SystemId),
     UnknownColonySystem {
         colony_id: ColonyId,
@@ -52,9 +62,19 @@ pub struct Simulation {
 
 impl Simulation {
     pub fn new(config: UniverseConfig) -> Self {
+        Self::new_with_scenario(config, StartingScenario::mvp())
+            .expect("the MVP starting scenario must produce a valid simulation")
+    }
+
+    pub fn new_with_scenario(
+        config: UniverseConfig,
+        scenario: StartingScenario,
+    ) -> Result<Self, SimulationBuildError> {
         let universe = UniverseRepository::generate(config);
-        let state = GameState::new(&universe);
-        Self { universe, state }
+        let state = GameState::from_starting_scenario(&universe, scenario)
+            .map_err(SimulationBuildError::InvalidStartingScenario)?;
+        validate_state(&universe, &state)?;
+        Ok(Self { universe, state })
     }
 
     pub fn from_parts(
@@ -168,6 +188,24 @@ fn validate_state(
         });
     }
 
+    let mut faction_ids = HashSet::with_capacity(state.factions.len());
+    for faction in &state.factions {
+        if !faction_ids.insert(faction.id) {
+            return Err(SimulationBuildError::DuplicateFaction(faction.id));
+        }
+    }
+
+    let Some(player_faction) = state.faction(state.player_faction) else {
+        return Err(SimulationBuildError::UnknownPlayerFaction(
+            state.player_faction,
+        ));
+    };
+    if player_faction.kind != FactionKind::Player {
+        return Err(SimulationBuildError::PlayerFactionIsNotPlayer(
+            state.player_faction,
+        ));
+    }
+
     for system_id in &state.known_systems {
         if universe.system(*system_id).is_none() {
             return Err(SimulationBuildError::UnknownKnownSystem(*system_id));
@@ -178,6 +216,12 @@ fn validate_state(
     for colony in &state.colonies {
         if !colony_ids.insert(colony.id) {
             return Err(SimulationBuildError::DuplicateColony(colony.id));
+        }
+        if state.faction(colony.faction).is_none() {
+            return Err(SimulationBuildError::UnknownColonyFaction {
+                colony_id: colony.id,
+                faction_id: colony.faction,
+            });
         }
         if universe.system(colony.system_id).is_none() {
             return Err(SimulationBuildError::UnknownColonySystem {
@@ -310,6 +354,10 @@ mod tests {
         let system_id = SystemId::from_index(0);
         let planet_id = PlanetId::from_system_index(system_id, 0);
 
+        assert_eq!(
+            simulation.apply_command(GameCommand::ClearSelection),
+            vec![GameEvent::SelectionChanged(SelectionTarget::None)]
+        );
         let events = simulation.apply_command(GameCommand::SelectPlanet {
             system_id,
             planet_id,
@@ -327,14 +375,12 @@ mod tests {
     #[test]
     fn invalid_selection_is_ignored() {
         let mut simulation = Simulation::new(UniverseConfig::new(42, 16));
+        let initial_selection = simulation.state().selected;
 
         let events = simulation.apply_command(GameCommand::SelectSystem(SystemId::new(999)));
 
         assert!(events.is_empty());
-        assert_eq!(
-            simulation.state().selected,
-            SelectionTarget::System(SystemId::from_index(0))
-        );
+        assert_eq!(simulation.state().selected, initial_selection);
     }
 
     #[test]
