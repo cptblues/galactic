@@ -4,8 +4,7 @@ use galactic_domain::{
     generate_universe,
 };
 use galactic_sim::{
-    ColonyState, GAME_STATE_VERSION, GameState, SelectionTarget, Simulation, SimulationBuildError,
-    TimeSpeed,
+    ColonyState, GameState, SelectionTarget, Simulation, SimulationBuildError, TimeSpeed,
 };
 
 pub const SAVE_VERSION: u32 = 2;
