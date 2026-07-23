@@ -1,0 +1,9 @@
+[package]
+name = "galactic_client"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+bevy.workspace = true
+galactic_domain = { path = "../galactic_domain" }
+galactic_sim = { path = "../galactic_sim" }

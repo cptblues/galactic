@@ -1,0 +1,33 @@
+[package]
+name = "galactic"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+members = [
+    "crates/galactic_client",
+    "crates/galactic_domain",
+    "crates/galactic_persistence",
+    "crates/galactic_sim",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+bevy = { version = "0.19", default-features = false, features = [
+    "3d",
+    "ui",
+    "mesh_picking",
+    "default_font",
+    "tonemapping_luts",
+    "x11",
+    "wayland",
+] }
+rand = "0.9"
+rand_chacha = "0.9"
+
+[dependencies]
+galactic_client = { path = "crates/galactic_client" }

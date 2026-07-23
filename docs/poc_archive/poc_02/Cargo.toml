@@ -1,0 +1,17 @@
+[package]
+name = "galactic-poc"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bevy = { version = "0.19", default-features = false, features = [
+    "3d",
+    "ui",
+    "mesh_picking",
+    "default_font",
+    "tonemapping_luts",
+    "x11",
+    "wayland",
+] }
+rand = "0.9"
+rand_chacha = "0.9"

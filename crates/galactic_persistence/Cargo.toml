@@ -1,0 +1,8 @@
+[package]
+name = "galactic_persistence"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+galactic_domain = { path = "../galactic_domain" }
+galactic_sim = { path = "../galactic_sim" }
