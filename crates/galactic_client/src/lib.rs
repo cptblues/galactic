@@ -70,8 +70,10 @@ impl Plugin for PresentationPlugin {
                 update_system_visuals,
                 update_system_labels,
                 draw_strategic_overlays,
+                handle_action_buttons,
+                update_action_buttons,
                 update_ui,
-                update_home_summary,
+                update_info_panel,
             ),
         );
     }
@@ -242,7 +244,51 @@ struct TopBarText;
 struct HelpText;
 
 #[derive(Component)]
-struct HomeSummaryText;
+struct InfoPanelText;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UiAction {
+    TogglePause,
+    SetSpeed(TimeSpeed),
+    CycleTarget,
+    FocusSelection,
+    EnterSystem,
+    ExitSystem,
+    AdvanceKnowledge,
+    ToggleDebugGraph,
+    RebuildView,
+}
+
+#[derive(Component)]
+struct ActionButton {
+    action: UiAction,
+}
+
+type ActionButtonInteractionQuery<'w, 's> = Query<
+    'w,
+    's,
+    (&'static Interaction, &'static ActionButton),
+    (Changed<Interaction>, With<Button>),
+>;
+type ActionButtonStyleQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static ActionButton,
+        &'static Interaction,
+        &'static mut BackgroundColor,
+        &'static mut Outline,
+    ),
+>;
+
+// Bevy `KeyCode` values are physical key positions. These constants name the
+// labels printed on an AZERTY keyboard for the movement cluster.
+const AZERTY_FORWARD_KEY: KeyCode = KeyCode::KeyW;
+const AZERTY_LEFT_KEY: KeyCode = KeyCode::KeyA;
+const AZERTY_BACKWARD_KEY: KeyCode = KeyCode::KeyS;
+const AZERTY_RIGHT_KEY: KeyCode = KeyCode::KeyD;
+const AZERTY_ZOOM_IN_KEY: KeyCode = KeyCode::KeyQ;
+const AZERTY_ZOOM_OUT_KEY: KeyCode = KeyCode::KeyE;
 
 fn log_startup() {
     info!("Galactic MVP client starting on Bevy 0.19");
@@ -527,7 +573,7 @@ fn spawn_ui(mut commands: Commands) {
     commands.spawn((
         Text::new(""),
         TextFont {
-            font_size: FontSize::Px(16.0),
+            font_size: FontSize::Px(14.0),
             ..default()
         },
         TextColor(Color::srgb(0.9, 0.96, 1.0)),
@@ -537,75 +583,219 @@ fn spawn_ui(mut commands: Commands) {
             right: Val::Px(12.0),
             top: Val::Px(10.0),
             padding: UiRect::all(Val::Px(10.0)),
+            border: UiRect::all(Val::Px(1.0)),
+            border_radius: BorderRadius::all(Val::Px(6.0)),
             ..default()
         },
-        BackgroundColor(Color::srgba(0.014, 0.022, 0.034, 0.78)),
+        BackgroundColor(panel_background()),
+        Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
         TopBarText,
     ));
 
-    commands.spawn((
-        Text::new(""),
-        TextFont {
-            font_size: FontSize::Px(14.0),
-            ..default()
-        },
-        TextColor(Color::srgb(0.82, 0.90, 0.98)),
-        Node {
-            position_type: PositionType::Absolute,
-            right: Val::Px(14.0),
-            top: Val::Px(78.0),
-            width: Val::Px(330.0),
-            padding: UiRect::all(Val::Px(12.0)),
-            ..default()
-        },
-        BackgroundColor(Color::srgba(0.014, 0.022, 0.034, 0.78)),
-        HomeSummaryText,
-    ));
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(14.0),
+                top: Val::Px(72.0),
+                width: Val::Px(268.0),
+                padding: UiRect::all(Val::Px(12.0)),
+                border: UiRect::all(Val::Px(1.0)),
+                border_radius: BorderRadius::all(Val::Px(6.0)),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(8.0),
+                ..default()
+            },
+            BackgroundColor(panel_background()),
+            Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
+        ))
+        .with_children(|parent| {
+            spawn_panel_heading(parent, "COMMANDES");
+            spawn_action_button(parent, UiAction::TogglePause, "Pause", "Space");
+            spawn_action_button(parent, UiAction::SetSpeed(TimeSpeed::X1), "Vitesse x1", "1");
+            spawn_action_button(parent, UiAction::SetSpeed(TimeSpeed::X2), "Vitesse x2", "2");
+            spawn_action_button(parent, UiAction::SetSpeed(TimeSpeed::X4), "Vitesse x4", "3");
+            spawn_action_button(parent, UiAction::CycleTarget, "Cible suivante", "Tab");
+            spawn_action_button(parent, UiAction::FocusSelection, "Recentrer", "F");
+            spawn_action_button(parent, UiAction::EnterSystem, "Entrer système", "Enter");
+            spawn_action_button(parent, UiAction::ExitSystem, "Retour univers", "Esc");
+            spawn_action_button(parent, UiAction::AdvanceKnowledge, "Analyser cible", "K");
+            spawn_action_button(parent, UiAction::ToggleDebugGraph, "Debug graphe", "G");
+            spawn_action_button(parent, UiAction::RebuildView, "Reconstruire", "R");
+        });
+
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                right: Val::Px(14.0),
+                top: Val::Px(72.0),
+                width: Val::Px(348.0),
+                padding: UiRect::all(Val::Px(14.0)),
+                border: UiRect::all(Val::Px(1.0)),
+                border_radius: BorderRadius::all(Val::Px(6.0)),
+                flex_direction: FlexDirection::Column,
+                ..default()
+            },
+            BackgroundColor(panel_background()),
+            Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
+        ))
+        .with_children(|parent| {
+            parent.spawn((
+                Text::new(""),
+                TextFont {
+                    font_size: FontSize::Px(14.0),
+                    ..default()
+                },
+                TextColor(Color::srgb(0.82, 0.90, 0.98)),
+                Node {
+                    width: Val::Percent(100.0),
+                    ..default()
+                },
+                InfoPanelText,
+            ));
+        });
 
     commands.spawn((
         Text::new(
-            "Space pause | 1/2/3 speed | RMB orbit | MMB pan | wheel zoom | WASD/QE fallback | Tab select | K advance knowledge | Enter/Esc views | F3 debug",
+            "AZERTY ZQSD navigation | A/E zoom | souris: droit orbite, milieu déplacement, molette zoom",
         ),
         TextFont {
-            font_size: FontSize::Px(13.0),
+            font_size: FontSize::Px(12.0),
             ..default()
         },
-        TextColor(Color::srgb(0.72, 0.82, 0.92)),
+        TextColor(Color::srgb(0.76, 0.84, 0.90)),
         Node {
             position_type: PositionType::Absolute,
             left: Val::Px(14.0),
+            right: Val::Px(14.0),
             bottom: Val::Px(14.0),
-            padding: UiRect::all(Val::Px(10.0)),
+            padding: UiRect::axes(Val::Px(12.0), Val::Px(8.0)),
+            border: UiRect::all(Val::Px(1.0)),
+            border_radius: BorderRadius::all(Val::Px(6.0)),
             ..default()
         },
-        BackgroundColor(Color::srgba(0.014, 0.022, 0.034, 0.66)),
+        BackgroundColor(Color::srgba(0.022, 0.026, 0.030, 0.72)),
+        Outline::new(Val::Px(1.0), Val::ZERO, Color::srgba(0.60, 0.50, 0.34, 0.35)),
         HelpText,
     ));
+}
+
+fn spawn_panel_heading(parent: &mut ChildSpawnerCommands<'_>, label: &str) {
+    parent.spawn((
+        Text::new(label),
+        TextFont {
+            font_size: FontSize::Px(11.0),
+            ..default()
+        },
+        TextColor(Color::srgb(0.62, 0.86, 0.78)),
+        Node {
+            margin: UiRect::bottom(Val::Px(2.0)),
+            ..default()
+        },
+    ));
+}
+
+fn spawn_action_button(
+    parent: &mut ChildSpawnerCommands<'_>,
+    action: UiAction,
+    label: &str,
+    shortcut: &str,
+) {
+    parent
+        .spawn((
+            Button,
+            Node {
+                width: Val::Percent(100.0),
+                min_height: Val::Px(34.0),
+                padding: UiRect::axes(Val::Px(10.0), Val::Px(6.0)),
+                border: UiRect::all(Val::Px(1.0)),
+                border_radius: BorderRadius::all(Val::Px(6.0)),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::SpaceBetween,
+                column_gap: Val::Px(8.0),
+                ..default()
+            },
+            BackgroundColor(action_button_color(true, false, &Interaction::None)),
+            Outline::new(
+                Val::Px(1.0),
+                Val::ZERO,
+                Color::srgba(0.58, 0.72, 0.76, 0.30),
+            ),
+            ActionButton { action },
+        ))
+        .with_children(|button| {
+            button.spawn((
+                Text::new(label),
+                TextFont {
+                    font_size: FontSize::Px(13.0),
+                    ..default()
+                },
+                TextColor(Color::srgb(0.90, 0.95, 0.96)),
+                Node {
+                    flex_grow: 1.0,
+                    ..default()
+                },
+            ));
+            button.spawn((
+                Text::new(shortcut),
+                TextFont {
+                    font_size: FontSize::Px(11.0),
+                    ..default()
+                },
+                TextColor(Color::srgb(0.70, 0.76, 0.72)),
+            ));
+        });
+}
+
+fn panel_background() -> Color {
+    Color::srgba(0.016, 0.020, 0.024, 0.84)
+}
+
+fn panel_outline() -> Color {
+    Color::srgba(0.28, 0.56, 0.62, 0.42)
+}
+
+fn action_button_color(available: bool, active: bool, interaction: &Interaction) -> Color {
+    if !available {
+        return Color::srgba(0.050, 0.052, 0.052, 0.56);
+    }
+    if active {
+        return match interaction {
+            Interaction::Pressed => Color::srgba(0.22, 0.62, 0.52, 0.95),
+            Interaction::Hovered => Color::srgba(0.18, 0.52, 0.46, 0.92),
+            Interaction::None => Color::srgba(0.14, 0.42, 0.38, 0.88),
+        };
+    }
+    match interaction {
+        Interaction::Pressed => Color::srgba(0.26, 0.36, 0.42, 0.94),
+        Interaction::Hovered => Color::srgba(0.18, 0.30, 0.35, 0.90),
+        Interaction::None => Color::srgba(0.075, 0.095, 0.105, 0.86),
+    }
+}
+
+fn action_button_outline(available: bool, active: bool, interaction: &Interaction) -> Color {
+    if !available {
+        return Color::srgba(0.30, 0.32, 0.32, 0.24);
+    }
+    if active {
+        return Color::srgba(0.34, 0.92, 0.72, 0.70);
+    }
+    match interaction {
+        Interaction::Pressed | Interaction::Hovered => Color::srgba(0.72, 0.74, 0.52, 0.64),
+        Interaction::None => Color::srgba(0.58, 0.72, 0.76, 0.30),
+    }
 }
 
 fn handle_simulation_input(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut simulation: ResMut<SimulationResource>,
+    mut navigation: ResMut<StrategicNavigation>,
+    mut rebuild: ResMut<ViewRebuildRequest>,
 ) {
-    let command = if keyboard.just_pressed(KeyCode::Space) {
-        Some(GameCommand::TogglePause)
-    } else if keyboard.just_pressed(KeyCode::Digit1) {
-        Some(GameCommand::SetSpeed(TimeSpeed::X1))
-    } else if keyboard.just_pressed(KeyCode::Digit2) {
-        Some(GameCommand::SetSpeed(TimeSpeed::X2))
-    } else if keyboard.just_pressed(KeyCode::Digit3) {
-        Some(GameCommand::SetSpeed(TimeSpeed::X4))
-    } else if keyboard.just_pressed(KeyCode::KeyK) {
-        Some(GameCommand::DebugAdvanceSelectedKnowledge)
-    } else {
-        None
-    };
-
-    let Some(command) = command else {
-        return;
-    };
-    let events = simulation.simulation.apply_command(command);
-    simulation.pending_events.extend(events);
+    if let Some(action) = simulation_shortcut(&keyboard) {
+        apply_ui_action(action, &mut simulation, &mut navigation, &mut rebuild);
+    }
 }
 
 fn handle_view_input(
@@ -614,45 +804,188 @@ fn handle_view_input(
     mut navigation: ResMut<StrategicNavigation>,
     mut rebuild: ResMut<ViewRebuildRequest>,
 ) {
-    if keyboard.just_pressed(KeyCode::KeyR) {
-        rebuild.0 = true;
+    if let Some(action) = view_shortcut(&keyboard) {
+        apply_ui_action(action, &mut simulation, &mut navigation, &mut rebuild);
     }
+}
 
-    if keyboard.just_pressed(KeyCode::F3) {
-        navigation.debug_full_graph = !navigation.debug_full_graph;
-        rebuild.0 = true;
-    }
-
-    if keyboard.just_pressed(KeyCode::Tab) {
-        match navigation.mode {
-            StrategicViewMode::Universe => {
-                cycle_visible_selection(&mut simulation, navigation.debug_full_graph);
-            }
-            StrategicViewMode::System(system_id) => {
-                cycle_planet_selection(&mut simulation, system_id);
-            }
+fn handle_action_buttons(
+    mut interactions: ActionButtonInteractionQuery,
+    mut simulation: ResMut<SimulationResource>,
+    mut navigation: ResMut<StrategicNavigation>,
+    mut rebuild: ResMut<ViewRebuildRequest>,
+) {
+    for (interaction, button) in &mut interactions {
+        if matches!(interaction, Interaction::Pressed) {
+            apply_ui_action(
+                button.action,
+                &mut simulation,
+                &mut navigation,
+                &mut rebuild,
+            );
         }
     }
+}
 
-    if keyboard.just_pressed(KeyCode::KeyF)
-        && matches!(navigation.mode, StrategicViewMode::Universe)
-    {
-        focus_selected_system(&simulation, &mut navigation);
+fn update_action_buttons(
+    simulation: Res<SimulationResource>,
+    navigation: Res<StrategicNavigation>,
+    mut buttons: ActionButtonStyleQuery,
+) {
+    for (button, interaction, mut background, mut outline) in &mut buttons {
+        let available = action_available(button.action, &simulation, &navigation);
+        let active = action_active(button.action, &simulation, &navigation);
+        background.0 = action_button_color(available, active, interaction);
+        outline.color = action_button_outline(available, active, interaction);
+    }
+}
+
+fn simulation_shortcut(keyboard: &ButtonInput<KeyCode>) -> Option<UiAction> {
+    if keyboard.just_pressed(KeyCode::Space) {
+        Some(UiAction::TogglePause)
+    } else if keyboard.just_pressed(KeyCode::Digit1) {
+        Some(UiAction::SetSpeed(TimeSpeed::X1))
+    } else if keyboard.just_pressed(KeyCode::Digit2) {
+        Some(UiAction::SetSpeed(TimeSpeed::X2))
+    } else if keyboard.just_pressed(KeyCode::Digit3) {
+        Some(UiAction::SetSpeed(TimeSpeed::X4))
+    } else if keyboard.just_pressed(KeyCode::KeyK) {
+        Some(UiAction::AdvanceKnowledge)
+    } else {
+        None
+    }
+}
+
+fn view_shortcut(keyboard: &ButtonInput<KeyCode>) -> Option<UiAction> {
+    if keyboard.just_pressed(KeyCode::KeyR) {
+        Some(UiAction::RebuildView)
+    } else if keyboard.just_pressed(KeyCode::KeyG) {
+        Some(UiAction::ToggleDebugGraph)
+    } else if keyboard.just_pressed(KeyCode::Tab) {
+        Some(UiAction::CycleTarget)
+    } else if keyboard.just_pressed(KeyCode::KeyF) {
+        Some(UiAction::FocusSelection)
+    } else if keyboard.just_pressed(KeyCode::Enter) {
+        Some(UiAction::EnterSystem)
+    } else if keyboard.just_pressed(KeyCode::Escape) {
+        Some(UiAction::ExitSystem)
+    } else {
+        None
+    }
+}
+
+fn apply_ui_action(
+    action: UiAction,
+    simulation: &mut SimulationResource,
+    navigation: &mut StrategicNavigation,
+    rebuild: &mut ViewRebuildRequest,
+) {
+    if !action_available(action, simulation, navigation) {
+        return;
     }
 
-    if keyboard.just_pressed(KeyCode::Enter)
-        && matches!(navigation.mode, StrategicViewMode::Universe)
-        && let Some(system_id) = enterable_selected_system(&simulation, navigation.debug_full_graph)
-    {
-        navigation.enter_system(system_id);
-        rebuild.0 = true;
+    match action {
+        UiAction::TogglePause => apply_simulation_command(simulation, GameCommand::TogglePause),
+        UiAction::SetSpeed(speed) => {
+            apply_simulation_command(simulation, GameCommand::SetSpeed(speed));
+        }
+        UiAction::CycleTarget => match navigation.mode {
+            StrategicViewMode::Universe => {
+                cycle_visible_selection(simulation, navigation.debug_full_graph);
+            }
+            StrategicViewMode::System(system_id) => {
+                cycle_planet_selection(simulation, system_id);
+            }
+        },
+        UiAction::FocusSelection => {
+            focus_selected_system(simulation, navigation);
+        }
+        UiAction::EnterSystem => {
+            if let Some(system_id) =
+                enterable_selected_system(simulation, navigation.debug_full_graph)
+            {
+                navigation.enter_system(system_id);
+                rebuild.0 = true;
+            }
+        }
+        UiAction::ExitSystem => {
+            navigation.exit_system();
+            rebuild.0 = true;
+        }
+        UiAction::AdvanceKnowledge => {
+            apply_simulation_command(simulation, GameCommand::DebugAdvanceSelectedKnowledge);
+        }
+        UiAction::ToggleDebugGraph => {
+            navigation.debug_full_graph = !navigation.debug_full_graph;
+            rebuild.0 = true;
+        }
+        UiAction::RebuildView => {
+            rebuild.0 = true;
+        }
     }
+}
 
-    if keyboard.just_pressed(KeyCode::Escape)
-        && matches!(navigation.mode, StrategicViewMode::System(_))
-    {
-        navigation.exit_system();
-        rebuild.0 = true;
+fn apply_simulation_command(simulation: &mut SimulationResource, command: GameCommand) {
+    let events = simulation.simulation.apply_command(command);
+    simulation.pending_events.extend(events);
+}
+
+fn action_available(
+    action: UiAction,
+    simulation: &SimulationResource,
+    navigation: &StrategicNavigation,
+) -> bool {
+    match action {
+        UiAction::TogglePause
+        | UiAction::SetSpeed(_)
+        | UiAction::ToggleDebugGraph
+        | UiAction::RebuildView => true,
+        UiAction::CycleTarget => match navigation.mode {
+            StrategicViewMode::Universe => {
+                !systems_for_universe_view(simulation.simulation(), navigation.debug_full_graph)
+                    .is_empty()
+            }
+            StrategicViewMode::System(system_id) => {
+                !visible_planet_ids(simulation.simulation(), system_id).is_empty()
+            }
+        },
+        UiAction::FocusSelection => {
+            matches!(navigation.mode, StrategicViewMode::Universe)
+                && selected_system(simulation.simulation.state().selected)
+                    .and_then(|system_id| simulation.simulation.universe().system(system_id))
+                    .is_some()
+        }
+        UiAction::EnterSystem => {
+            matches!(navigation.mode, StrategicViewMode::Universe)
+                && enterable_selected_system(simulation, navigation.debug_full_graph).is_some()
+        }
+        UiAction::ExitSystem => matches!(navigation.mode, StrategicViewMode::System(_)),
+        UiAction::AdvanceKnowledge => selected_knowledge_level(simulation.simulation())
+            .and_then(KnowledgeLevel::next_exploration_level)
+            .is_some(),
+    }
+}
+
+fn action_active(
+    action: UiAction,
+    simulation: &SimulationResource,
+    navigation: &StrategicNavigation,
+) -> bool {
+    match action {
+        UiAction::TogglePause => simulation.simulation.state().clock.speed().is_paused(),
+        UiAction::SetSpeed(speed) => simulation.simulation.state().clock.speed() == speed,
+        UiAction::ToggleDebugGraph => navigation.debug_full_graph,
+        UiAction::ExitSystem => matches!(navigation.mode, StrategicViewMode::System(_)),
+        _ => false,
+    }
+}
+
+fn selected_knowledge_level(simulation: &Simulation) -> Option<KnowledgeLevel> {
+    let state = simulation.state();
+    match state.selected {
+        SelectionTarget::None => None,
+        SelectionTarget::System(system_id) => Some(state.system_knowledge_level(system_id)),
+        SelectionTarget::Planet { planet_id, .. } => Some(state.planet_knowledge_level(planet_id)),
     }
 }
 
@@ -709,21 +1042,7 @@ fn cycle_visible_selection(simulation: &mut SimulationResource, debug_full_graph
 }
 
 fn cycle_planet_selection(simulation: &mut SimulationResource, system_id: SystemId) {
-    let Some(system) = simulation.simulation.universe().system(system_id) else {
-        return;
-    };
-    let visible_planets = system
-        .planets
-        .iter()
-        .filter(|planet| {
-            simulation
-                .simulation
-                .state()
-                .planet_knowledge_level(planet.id)
-                .is_visible()
-        })
-        .map(|planet| planet.id)
-        .collect::<Vec<_>>();
+    let visible_planets = visible_planet_ids(simulation.simulation(), system_id);
     if visible_planets.is_empty() {
         return;
     }
@@ -749,6 +1068,27 @@ fn cycle_planet_selection(simulation: &mut SimulationResource, system_id: System
             planet_id,
         });
     simulation.pending_events.extend(events);
+}
+
+fn visible_planet_ids(
+    simulation: &Simulation,
+    system_id: SystemId,
+) -> Vec<galactic_domain::PlanetId> {
+    let Some(system) = simulation.universe().system(system_id) else {
+        return Vec::new();
+    };
+
+    system
+        .planets
+        .iter()
+        .filter(|planet| {
+            simulation
+                .state()
+                .planet_knowledge_level(planet.id)
+                .is_visible()
+        })
+        .map(|planet| planet.id)
+        .collect()
 }
 
 fn selected_system(selection: SelectionTarget) -> Option<SystemId> {
@@ -885,16 +1225,16 @@ fn mouse_pan_delta(yaw: f32, motion: Vec2, distance: f32) -> Vec3 {
 
 fn keyboard_pan_direction(keyboard: &ButtonInput<KeyCode>, yaw: f32) -> Vec3 {
     let mut input = Vec2::ZERO;
-    if keyboard.pressed(KeyCode::KeyA) {
+    if keyboard.pressed(AZERTY_LEFT_KEY) {
         input.x -= 1.0;
     }
-    if keyboard.pressed(KeyCode::KeyD) {
+    if keyboard.pressed(AZERTY_RIGHT_KEY) {
         input.x += 1.0;
     }
-    if keyboard.pressed(KeyCode::KeyW) {
+    if keyboard.pressed(AZERTY_FORWARD_KEY) {
         input.y += 1.0;
     }
-    if keyboard.pressed(KeyCode::KeyS) {
+    if keyboard.pressed(AZERTY_BACKWARD_KEY) {
         input.y -= 1.0;
     }
 
@@ -910,10 +1250,10 @@ fn apply_keyboard_zoom(
     maximum: f32,
 ) {
     let zoom_speed = (*distance * 0.85).max(12.0);
-    if keyboard.pressed(KeyCode::KeyQ) {
+    if keyboard.pressed(AZERTY_ZOOM_IN_KEY) {
         *distance -= zoom_speed * delta_seconds;
     }
-    if keyboard.pressed(KeyCode::KeyE) {
+    if keyboard.pressed(AZERTY_ZOOM_OUT_KEY) {
         *distance += zoom_speed * delta_seconds;
     }
     *distance = (*distance).clamp(minimum, maximum);
@@ -1128,17 +1468,19 @@ fn update_ui(
     };
     let knowledge = state.system_knowledge_counts();
     let view_label = match navigation.mode {
-        StrategicViewMode::Universe => format!("universe/{:?}", navigation.lod),
+        StrategicViewMode::Universe => format!("univers {:?}", navigation.lod),
         StrategicViewMode::System(system_id) => {
-            format!("system {}", system_id.index())
+            format!("système {}", system_id.index())
         }
     };
 
     text.0 = format!(
-        "Galactic MVP | preset {:?} | view {} | seed {} | systems {}/{} | routes {}/{} | knowledge d{} p{} a{} c{} | tick {} | t {:.1}s | speed {} | selected {} | debug {} | event {}",
+        "Galactic MVP | preset {:?} | {} | tick {} | vitesse {} | cible {}\nSystèmes {}/{} | Routes {}/{} | Connaissance D/P/A/C {}/{}/{}/{} | debug {} | {}",
         navigation.preset,
         view_label,
-        universe.seed,
+        state.clock.current_tick(),
+        state.clock.speed(),
+        selected,
         visible_system_count,
         universe.systems.len(),
         visible_route_count,
@@ -1147,41 +1489,50 @@ fn update_ui(
         knowledge.probed,
         knowledge.analyzed,
         knowledge.colonized,
-        state.clock.current_tick(),
-        state.clock.elapsed_seconds(),
-        state.clock.speed(),
-        selected,
         navigation.debug_full_graph,
         last_event
     );
 }
 
-fn update_home_summary(
+fn update_info_panel(
     simulation: Res<SimulationResource>,
-    mut query: Query<&mut Text, With<HomeSummaryText>>,
+    navigation: Res<StrategicNavigation>,
+    mut query: Query<&mut Text, With<InfoPanelText>>,
 ) {
     let Ok(mut text) = query.single_mut() else {
         return;
     };
-    let simulation = simulation.simulation();
+    text.0 = information_panel_text(simulation.simulation(), &navigation);
+}
+
+fn information_panel_text(simulation: &Simulation, navigation: &StrategicNavigation) -> String {
+    match simulation.state().selected {
+        SelectionTarget::System(system_id) => system_panel_text(simulation, navigation, system_id),
+        SelectionTarget::Planet {
+            system_id,
+            planet_id,
+        } => planet_panel_text(simulation, system_id, planet_id),
+        SelectionTarget::None => home_panel_text(simulation),
+    }
+}
+
+fn home_panel_text(simulation: &Simulation) -> String {
     let state = simulation.state();
     let Some(faction) = state.player_faction_state() else {
-        text.0 = "Faction joueur invalide".to_string();
-        return;
+        return "BASE\nFaction joueur invalide".to_string();
     };
     let Some(colony) = state.player_home_colony() else {
-        text.0 = "Colonie mère introuvable".to_string();
-        return;
+        return "BASE\nColonie mère introuvable".to_string();
     };
     let Some(system) = simulation.universe().system(colony.system_id) else {
-        return;
+        return "BASE\nSystème mère introuvable".to_string();
     };
     let Some(planet) = simulation.universe_repository().planet(colony.planet_id) else {
-        return;
+        return "BASE\nPlanète mère introuvable".to_string();
     };
 
-    text.0 = format!(
-        "{}\n{} / {}\nHabitabilité : {}%\n\nStocks\nMétal {}  Cristal {}\nCarburant {}  Énergie {}\n\nPotentiel planète\nM {}  C {}  F {}  E {}\n\nBâtiments\nMines {}/{}/{}  Centrale {}\nEntrepôt {}  Construction {}\nLaboratoire {}  Chantier {}",
+    format!(
+        "BASE JOUEUR\n{}\n{} / {}\nHabitabilité: {}%\n\nSTOCKS\nMétal {}   Cristal {}\nCarburant {}   Énergie {}\n\nPOTENTIEL\nMétal {}   Cristal {}\nCarburant {}   Énergie {}\n\nINFRASTRUCTURE\nMines {}/{}/{}   Centrale {}\nEntrepôt {}   Construction {}\nLaboratoire {}   Chantier {}",
         faction.name,
         system.name,
         planet.name,
@@ -1202,7 +1553,155 @@ fn update_home_summary(
         colony.buildings.construction_center,
         colony.buildings.research_lab,
         colony.buildings.shipyard,
+    )
+}
+
+fn system_panel_text(
+    simulation: &Simulation,
+    navigation: &StrategicNavigation,
+    system_id: SystemId,
+) -> String {
+    let state = simulation.state();
+    let Some(system) = simulation.universe().system(system_id) else {
+        return format!("SYSTÈME\nRéférence invalide {}", system_id.index());
+    };
+
+    let level = state.system_knowledge_level(system_id);
+    let reveals_identity = navigation.debug_full_graph || level.reveals_identity();
+    let title = if reveals_identity {
+        system.name.clone()
+    } else {
+        format!("Signal {}", system.id.index())
+    };
+    let star_class = if reveals_identity {
+        format!("{:?}", system.star.class)
+    } else {
+        "inconnue".to_string()
+    };
+    let visible_planets = system
+        .planets
+        .iter()
+        .filter(|planet| state.planet_knowledge_level(planet.id).is_visible())
+        .count();
+    let route_count = simulation
+        .universe_repository()
+        .neighboring_systems(system_id)
+        .len();
+    let visible_route_count = simulation
+        .universe_repository()
+        .neighboring_systems(system_id)
+        .into_iter()
+        .filter(|neighbor| navigation.debug_full_graph || state.is_system_visible(*neighbor))
+        .count();
+    let enter_label = if navigation.debug_full_graph || level.can_enter_system() {
+        "oui"
+    } else {
+        "analyse requise"
+    };
+    let view_label = if matches!(navigation.mode, StrategicViewMode::System(id) if id == system_id)
+    {
+        "ouverte"
+    } else {
+        "univers"
+    };
+
+    format!(
+        "SYSTÈME\n{}\nNiveau: {}\nVue: {}\nClasse stellaire: {}\nPlanètes visibles: {}/{}\nRoutes visibles: {}/{}\nEntrée système: {}\n\nPOSITION CARTE\nx {:.1}   y {:.1}   z {:.1}",
+        title,
+        level,
+        view_label,
+        star_class,
+        visible_planets,
+        system.planets.len(),
+        visible_route_count,
+        route_count,
+        enter_label,
+        system.position.x,
+        system.position.y,
+        system.position.z,
+    )
+}
+
+fn planet_panel_text(
+    simulation: &Simulation,
+    selected_system_id: SystemId,
+    planet_id: galactic_domain::PlanetId,
+) -> String {
+    let state = simulation.state();
+    let Some((system_id, planet)) = simulation.universe_repository().planet_location(planet_id)
+    else {
+        return format!("PLANÈTE\nRéférence invalide {}", planet_id.index());
+    };
+    let Some(system) = simulation.universe().system(system_id) else {
+        return "PLANÈTE\nSystème introuvable".to_string();
+    };
+
+    let level = state.planet_knowledge_level(planet_id);
+    let colony = state.colony_on_planet(planet_id);
+    let reveals_identity = level.reveals_identity();
+    let reveals_details = level.reveals_exact_details() || colony.is_some();
+    let title = if reveals_identity {
+        planet.name.clone()
+    } else {
+        format!("Corps détecté {}", planet_id.index())
+    };
+    let kind = if reveals_identity {
+        format!("{:?}", planet.kind)
+    } else {
+        "inconnu".to_string()
+    };
+    let habitability = if reveals_details {
+        format!("{}%", planet.habitability)
+    } else {
+        "à analyser".to_string()
+    };
+    let system_label = if state.system_knowledge_level(system_id).reveals_identity() {
+        system.name.clone()
+    } else {
+        format!("Signal {}", system_id.index())
+    };
+    let selection_note = if selected_system_id == system_id {
+        "sélection cohérente"
+    } else {
+        "sélection recoupée"
+    };
+
+    let mut body = format!(
+        "PLANÈTE\n{}\nNiveau: {}\nSystème: {}\nType: {}\nHabitabilité: {}\nStatut: {}\n{}",
+        title,
+        level,
+        system_label,
+        kind,
+        habitability,
+        colony
+            .map(|value| value.name.as_str())
+            .unwrap_or("non colonisée"),
+        selection_note,
     );
+
+    if let Some(colony) = colony {
+        body.push_str(&format!(
+            "\n\nSTOCKS\nMétal {}   Cristal {}\nCarburant {}   Énergie {}\n\nPOTENTIEL\nMétal {}   Cristal {}\nCarburant {}   Énergie {}\n\nINFRASTRUCTURE\nMines {}/{}/{}   Centrale {}\nEntrepôt {}   Construction {}\nLaboratoire {}   Chantier {}",
+            colony.stock.metal,
+            colony.stock.crystal,
+            colony.stock.fuel,
+            colony.stock.energy,
+            colony.resource_profile.metal,
+            colony.resource_profile.crystal,
+            colony.resource_profile.fuel,
+            colony.resource_profile.energy,
+            colony.buildings.metal_mine,
+            colony.buildings.crystal_extractor,
+            colony.buildings.fuel_refinery,
+            colony.buildings.power_plant,
+            colony.buildings.warehouse,
+            colony.buildings.construction_center,
+            colony.buildings.research_lab,
+            colony.buildings.shipyard,
+        ));
+    }
+
+    body
 }
 
 fn to_vec3(position: WorldPosition) -> Vec3 {
@@ -1359,5 +1858,93 @@ mod tests {
         });
 
         assert_eq!(label, "planet 2:1");
+    }
+
+    #[test]
+    fn debug_shortcut_uses_g_instead_of_function_keys() {
+        let mut keyboard = ButtonInput::<KeyCode>::default();
+        keyboard.press(KeyCode::KeyG);
+
+        assert_eq!(view_shortcut(&keyboard), Some(UiAction::ToggleDebugGraph));
+
+        let mut keyboard = ButtonInput::<KeyCode>::default();
+        keyboard.press(KeyCode::F3);
+
+        assert_eq!(view_shortcut(&keyboard), None);
+    }
+
+    #[test]
+    fn azerty_pan_keys_match_visible_zqsd_labels() {
+        let mut keyboard = ButtonInput::<KeyCode>::default();
+        keyboard.press(AZERTY_FORWARD_KEY);
+        assert_eq!(keyboard_pan_direction(&keyboard, 0.0), Vec3::NEG_Z);
+
+        let mut keyboard = ButtonInput::<KeyCode>::default();
+        keyboard.press(AZERTY_LEFT_KEY);
+        assert_eq!(keyboard_pan_direction(&keyboard, 0.0), Vec3::NEG_X);
+
+        let mut keyboard = ButtonInput::<KeyCode>::default();
+        keyboard.press(AZERTY_BACKWARD_KEY);
+        assert_eq!(keyboard_pan_direction(&keyboard, 0.0), Vec3::Z);
+
+        let mut keyboard = ButtonInput::<KeyCode>::default();
+        keyboard.press(AZERTY_RIGHT_KEY);
+        assert_eq!(keyboard_pan_direction(&keyboard, 0.0), Vec3::X);
+    }
+
+    #[test]
+    fn enter_system_action_requires_revealed_system_or_debug_graph() {
+        let mut simulation = SimulationResource {
+            simulation: Simulation::new(UniverseConfig::mvp()),
+            pending_events: Vec::new(),
+        };
+        let mut navigation = StrategicNavigation {
+            mode: StrategicViewMode::Universe,
+            ..default()
+        };
+
+        assert!(action_available(
+            UiAction::EnterSystem,
+            &simulation,
+            &navigation
+        ));
+
+        let neighbor = simulation
+            .simulation()
+            .universe_repository()
+            .neighboring_systems(MVP_HOME_SYSTEM_ID)
+            .into_iter()
+            .next()
+            .expect("home system has a frontier neighbor");
+        let events = simulation
+            .simulation
+            .apply_command(GameCommand::SelectSystem(neighbor));
+        simulation.pending_events.extend(events);
+
+        assert!(!action_available(
+            UiAction::EnterSystem,
+            &simulation,
+            &navigation
+        ));
+
+        navigation.debug_full_graph = true;
+
+        assert!(action_available(
+            UiAction::EnterSystem,
+            &simulation,
+            &navigation
+        ));
+    }
+
+    #[test]
+    fn planet_information_panel_includes_home_colony_details() {
+        let simulation = Simulation::new(UniverseConfig::mvp());
+        let navigation = StrategicNavigation::default();
+        let panel = information_panel_text(&simulation, &navigation);
+
+        assert!(panel.contains("PLANÈTE"));
+        assert!(panel.contains("Aster Prime Colony"));
+        assert!(panel.contains("STOCKS"));
+        assert!(panel.contains("INFRASTRUCTURE"));
     }
 }
