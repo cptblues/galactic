@@ -22,6 +22,7 @@ bevy = { version = "0.19", default-features = false, features = [
     "ui",
     "mesh_picking",
     "default_font",
+    "system_font_discovery",
     "tonemapping_luts",
     "x11",
     "wayland",

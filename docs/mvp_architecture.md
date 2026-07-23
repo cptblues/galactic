@@ -307,3 +307,43 @@ Versions après migration :
 
 La seed, la version de génération et le fingerprint de l'univers ne changent
 pas.
+
+
+## MVP-010 — Inspecteurs et informations partielles
+
+Le panneau d'informations est désormais piloté par un contenu d'inspection
+structuré plutôt que par un simple dump des objets du domaine.
+
+Matrice d'affichage :
+
+```text
+Unknown    aucune donnée exploitable
+Detected   signal et placeholders
+Probed     identité et estimations
+Analyzed   valeurs exactes disponibles
+Colonized  valeurs exactes et données économiques
+```
+
+Règles :
+
+- un système détecté ne révèle ni son nom, ni sa classe, ni ses coordonnées
+  chiffrées, ni le nombre exact de routes ou de corps ;
+- un système sondé révèle son identité et des estimations clairement étiquetées ;
+- un système analysé révèle les valeurs exactes disponibles ;
+- une planète détectée masque nom, type et habitabilité ;
+- une planète sondée révèle son identité et une fourchette qualitative
+  d'habitabilité ;
+- une planète analysée révèle son habitabilité exacte ;
+- les stocks, potentiels et bâtiments ne sont affichés que pour une colonie ;
+- chaque niveau indique explicitement l'action nécessaire pour progresser ;
+- la couleur et le badge de l'inspecteur changent avec le niveau de connaissance ;
+- les données absentes du modèle courant, notamment les lunes, sont annoncées
+  comme indisponibles au lieu d'être inventées.
+
+La police embarquée par défaut de Bevy est remplacée dans l'interface par
+`FontSource::SansSerif`, avec la fonctionnalité `system_font_discovery`.
+Les caractères français tels que `é`, `è`, `à`, `É` et `Métal` sont ainsi
+rendus par une police installée sur le système.
+
+Cette étape ne modifie ni l'état de simulation, ni les versions de sauvegarde,
+ni la génération de l'univers.

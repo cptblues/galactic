@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit};
 use bevy::prelude::*;
+use bevy::text::FontSource;
 use bevy::window::PresentMode;
 use galactic_domain::{PlanetKind, StarClass, SystemId, UniverseConfig, WorldPosition};
 use galactic_sim::{
@@ -246,6 +247,25 @@ struct HelpText;
 #[derive(Component)]
 struct InfoPanelText;
 
+// MVP-010: partial-information inspectors must never reveal hidden data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InspectorContent {
+    level: Option<KnowledgeLevel>,
+    badge: String,
+    title: String,
+    body: String,
+    hint: String,
+}
+
+impl InspectorContent {
+    fn render(&self) -> String {
+        format!(
+            "{}\n{}\n\n{}\n\n{}",
+            self.badge, self.title, self.body, self.hint,
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UiAction {
     TogglePause,
@@ -414,10 +434,7 @@ fn spawn_universe_view(
 
         commands.spawn((
             Text2d::new(label),
-            TextFont {
-                font_size: FontSize::Px(12.0),
-                ..default()
-            },
+            ui_text_font(12.0),
             TextColor(match visibility {
                 SystemVisibility::Known => Color::srgba(0.76, 0.88, 1.0, 0.90),
                 SystemVisibility::Detected => Color::srgba(0.48, 0.66, 0.82, 0.72),
@@ -491,10 +508,7 @@ fn spawn_system_view(
 
     commands.spawn((
         Text2d::new(system.name.clone()),
-        TextFont {
-            font_size: FontSize::Px(18.0),
-            ..default()
-        },
+        ui_text_font(18.0),
         TextColor(Color::srgb(0.94, 0.97, 1.0)),
         Transform::from_xyz(0.0, 3.6, 0.0).with_scale(Vec3::splat(0.34)),
         StrategicViewEntity,
@@ -557,10 +571,7 @@ fn spawn_system_view(
 
         commands.spawn((
             Text2d::new(label),
-            TextFont {
-                font_size: FontSize::Px(11.0),
-                ..default()
-            },
+            ui_text_font(11.0),
             TextColor(Color::srgba(0.72, 0.82, 0.92, 0.86)),
             Transform::from_translation(position + Vec3::new(0.0, 1.35, 0.0))
                 .with_scale(Vec3::splat(0.25)),
@@ -572,10 +583,7 @@ fn spawn_system_view(
 fn spawn_ui(mut commands: Commands) {
     commands.spawn((
         Text::new(""),
-        TextFont {
-            font_size: FontSize::Px(14.0),
-            ..default()
-        },
+        ui_text_font(14.0),
         TextColor(Color::srgb(0.9, 0.96, 1.0)),
         Node {
             position_type: PositionType::Absolute,
@@ -643,10 +651,7 @@ fn spawn_ui(mut commands: Commands) {
         .with_children(|parent| {
             parent.spawn((
                 Text::new(""),
-                TextFont {
-                    font_size: FontSize::Px(14.0),
-                    ..default()
-                },
+                ui_text_font(14.0),
                 TextColor(Color::srgb(0.82, 0.90, 0.98)),
                 Node {
                     width: Val::Percent(100.0),
@@ -660,10 +665,7 @@ fn spawn_ui(mut commands: Commands) {
         Text::new(
             "AZERTY ZQSD navigation | A/E zoom | souris: droit orbite, milieu déplacement, molette zoom",
         ),
-        TextFont {
-            font_size: FontSize::Px(12.0),
-            ..default()
-        },
+        ui_text_font(12.0),
         TextColor(Color::srgb(0.76, 0.84, 0.90)),
         Node {
             position_type: PositionType::Absolute,
@@ -684,10 +686,7 @@ fn spawn_ui(mut commands: Commands) {
 fn spawn_panel_heading(parent: &mut ChildSpawnerCommands<'_>, label: &str) {
     parent.spawn((
         Text::new(label),
-        TextFont {
-            font_size: FontSize::Px(11.0),
-            ..default()
-        },
+        ui_text_font(11.0),
         TextColor(Color::srgb(0.62, 0.86, 0.78)),
         Node {
             margin: UiRect::bottom(Val::Px(2.0)),
@@ -727,10 +726,7 @@ fn spawn_action_button(
         .with_children(|button| {
             button.spawn((
                 Text::new(label),
-                TextFont {
-                    font_size: FontSize::Px(13.0),
-                    ..default()
-                },
+                ui_text_font(13.0),
                 TextColor(Color::srgb(0.90, 0.95, 0.96)),
                 Node {
                     flex_grow: 1.0,
@@ -739,13 +735,18 @@ fn spawn_action_button(
             ));
             button.spawn((
                 Text::new(shortcut),
-                TextFont {
-                    font_size: FontSize::Px(11.0),
-                    ..default()
-                },
+                ui_text_font(11.0),
                 TextColor(Color::srgb(0.70, 0.76, 0.72)),
             ));
         });
+}
+
+fn ui_text_font(size: f32) -> TextFont {
+    TextFont {
+        font: FontSource::SansSerif,
+        font_size: FontSize::Px(size),
+        ..default()
+    }
 }
 
 fn panel_background() -> Color {
@@ -1475,7 +1476,7 @@ fn update_ui(
     };
 
     text.0 = format!(
-        "Galactic MVP | preset {:?} | {} | tick {} | vitesse {} | cible {}\nSystèmes {}/{} | Routes {}/{} | Connaissance D/P/A/C {}/{}/{}/{} | debug {} | {}",
+        "Galactic MVP | preset {:?} | {} | tick {} | vitesse {} | cible {}\nSystèmes {}/{} | Routes {}/{} | Détectés/Sondés/Analysés/Colonisés {}/{}/{}/{} | debug {} | {}",
         navigation.preset,
         view_label,
         state.clock.current_tick(),
@@ -1496,192 +1497,221 @@ fn update_ui(
 
 fn update_info_panel(
     simulation: Res<SimulationResource>,
-    navigation: Res<StrategicNavigation>,
-    mut query: Query<&mut Text, With<InfoPanelText>>,
+    mut query: Query<(&mut Text, &mut TextColor), With<InfoPanelText>>,
 ) {
-    let Ok(mut text) = query.single_mut() else {
+    let Ok((mut text, mut color)) = query.single_mut() else {
         return;
     };
-    text.0 = information_panel_text(simulation.simulation(), &navigation);
+    let content = information_panel_content(simulation.simulation());
+    text.0 = content.render();
+    color.0 = knowledge_color(content.level);
 }
 
-fn information_panel_text(simulation: &Simulation, navigation: &StrategicNavigation) -> String {
+fn information_panel_content(simulation: &Simulation) -> InspectorContent {
     match simulation.state().selected {
-        SelectionTarget::System(system_id) => system_panel_text(simulation, navigation, system_id),
+        SelectionTarget::System(system_id) => system_inspector_content(simulation, system_id),
         SelectionTarget::Planet {
             system_id,
             planet_id,
-        } => planet_panel_text(simulation, system_id, planet_id),
-        SelectionTarget::None => home_panel_text(simulation),
+        } => planet_inspector_content(simulation, system_id, planet_id),
+        SelectionTarget::None => home_inspector_content(simulation),
     }
 }
 
-fn home_panel_text(simulation: &Simulation) -> String {
+fn home_inspector_content(simulation: &Simulation) -> InspectorContent {
     let state = simulation.state();
     let Some(faction) = state.player_faction_state() else {
-        return "BASE\nFaction joueur invalide".to_string();
+        return inspector_error("Faction joueur invalide");
     };
     let Some(colony) = state.player_home_colony() else {
-        return "BASE\nColonie mère introuvable".to_string();
+        return inspector_error("Colonie mère introuvable");
     };
     let Some(system) = simulation.universe().system(colony.system_id) else {
-        return "BASE\nSystème mère introuvable".to_string();
+        return inspector_error("Système mère introuvable");
     };
     let Some(planet) = simulation.universe_repository().planet(colony.planet_id) else {
-        return "BASE\nPlanète mère introuvable".to_string();
+        return inspector_error("Planète mère introuvable");
     };
 
-    format!(
-        "BASE JOUEUR\n{}\n{} / {}\nHabitabilité: {}%\n\nSTOCKS\nMétal {}   Cristal {}\nCarburant {}   Énergie {}\n\nPOTENTIEL\nMétal {}   Cristal {}\nCarburant {}   Énergie {}\n\nINFRASTRUCTURE\nMines {}/{}/{}   Centrale {}\nEntrepôt {}   Construction {}\nLaboratoire {}   Chantier {}",
-        faction.name,
-        system.name,
-        planet.name,
-        planet.habitability,
-        colony.stock.metal,
-        colony.stock.crystal,
-        colony.stock.fuel,
-        colony.stock.energy,
-        colony.resource_profile.metal,
-        colony.resource_profile.crystal,
-        colony.resource_profile.fuel,
-        colony.resource_profile.energy,
-        colony.buildings.metal_mine,
-        colony.buildings.crystal_extractor,
-        colony.buildings.fuel_refinery,
-        colony.buildings.power_plant,
-        colony.buildings.warehouse,
-        colony.buildings.construction_center,
-        colony.buildings.research_lab,
-        colony.buildings.shipyard,
-    )
+    InspectorContent {
+        level: Some(KnowledgeLevel::Colonized),
+        badge: knowledge_badge_fr(KnowledgeLevel::Colonized).to_string(),
+        title: format!("{} — {}", system.name, planet.name),
+        body: format!(
+            "Faction : {}\nHabitabilité : {}%\n\nSTOCKS EXACTS\nMétal : {}\nCristal : {}\nCarburant : {}\nÉnergie : {}\n\nPOTENTIEL EXACT\nMétal : {}\nCristal : {}\nCarburant : {}\nÉnergie : {}\n\nINFRASTRUCTURE\nMines : {}/{}/{}\nCentrale : {}\nEntrepôt : {}\nConstruction : {}\nLaboratoire : {}\nChantier : {}",
+            faction.name,
+            planet.habitability,
+            colony.stock.metal,
+            colony.stock.crystal,
+            colony.stock.fuel,
+            colony.stock.energy,
+            colony.resource_profile.metal,
+            colony.resource_profile.crystal,
+            colony.resource_profile.fuel,
+            colony.resource_profile.energy,
+            colony.buildings.metal_mine,
+            colony.buildings.crystal_extractor,
+            colony.buildings.fuel_refinery,
+            colony.buildings.power_plant,
+            colony.buildings.warehouse,
+            colony.buildings.construction_center,
+            colony.buildings.research_lab,
+            colony.buildings.shipyard,
+        ),
+        hint: "Colonie active : les valeurs affichées sont exactes.".to_string(),
+    }
 }
 
-fn system_panel_text(
-    simulation: &Simulation,
-    navigation: &StrategicNavigation,
-    system_id: SystemId,
-) -> String {
+fn system_inspector_content(simulation: &Simulation, system_id: SystemId) -> InspectorContent {
     let state = simulation.state();
     let Some(system) = simulation.universe().system(system_id) else {
-        return format!("SYSTÈME\nRéférence invalide {}", system_id.index());
+        return inspector_error(&format!(
+            "Référence système invalide : {}",
+            system_id.index(),
+        ));
     };
 
     let level = state.system_knowledge_level(system_id);
-    let reveals_identity = navigation.debug_full_graph || level.reveals_identity();
-    let title = if reveals_identity {
-        system.name.clone()
-    } else {
-        format!("Signal {}", system.id.index())
-    };
-    let star_class = if reveals_identity {
-        format!("{:?}", system.star.class)
-    } else {
-        "inconnue".to_string()
-    };
     let visible_planets = system
         .planets
         .iter()
         .filter(|planet| state.planet_knowledge_level(planet.id).is_visible())
         .count();
-    let route_count = simulation
-        .universe_repository()
-        .neighboring_systems(system_id)
-        .len();
-    let visible_route_count = simulation
+    let visible_routes = simulation
         .universe_repository()
         .neighboring_systems(system_id)
         .into_iter()
-        .filter(|neighbor| navigation.debug_full_graph || state.is_system_visible(*neighbor))
+        .filter(|neighbor| state.is_system_visible(*neighbor))
         .count();
-    let enter_label = if navigation.debug_full_graph || level.can_enter_system() {
-        "oui"
-    } else {
-        "analyse requise"
-    };
-    let view_label = if matches!(navigation.mode, StrategicViewMode::System(id) if id == system_id)
-    {
-        "ouverte"
-    } else {
-        "univers"
+
+    let (title, body) = match level {
+        KnowledgeLevel::Unknown => (
+            "Système inconnu".to_string(),
+            "Identité : ???\nClasse stellaire : ???\nCorps célestes : ???\nRoutes : ???\nPosition : inconnue"
+                .to_string(),
+        ),
+        KnowledgeLevel::Detected => (
+            format!("Signal {}", system_id.index()),
+            "Identité : ???\nClasse stellaire : ???\nCorps célestes : non sondés\nRoutes : signaux partiels\nPosition : repérée sur la carte"
+                .to_string(),
+        ),
+        KnowledgeLevel::Probed => (
+            system.name.clone(),
+            format!(
+                "Classe stellaire : {:?}\nLuminosité estimée : {}\nCorps détectés : {}\nRoutes cartographiées : {}\nPosition estimée : x {:.0}  y {:.0}  z {:.0}",
+                system.star.class,
+                luminosity_estimate(system.star.luminosity),
+                visible_planets,
+                visible_routes,
+                approximate_position(system.position.x),
+                approximate_position(system.position.y),
+                approximate_position(system.position.z),
+            ),
+        ),
+        KnowledgeLevel::Analyzed | KnowledgeLevel::Colonized => (
+            system.name.clone(),
+            format!(
+                "Classe stellaire : {:?}\nLuminosité exacte : {:.2}\nCorps recensés : {}\nRoutes cartographiées : {}\nPosition exacte : x {:.1}  y {:.1}  z {:.1}",
+                system.star.class,
+                system.star.luminosity,
+                system.planets.len(),
+                visible_routes,
+                system.position.x,
+                system.position.y,
+                system.position.z,
+            ),
+        ),
     };
 
-    format!(
-        "SYSTÈME\n{}\nNiveau: {}\nVue: {}\nClasse stellaire: {}\nPlanètes visibles: {}/{}\nRoutes visibles: {}/{}\nEntrée système: {}\n\nPOSITION CARTE\nx {:.1}   y {:.1}   z {:.1}",
+    InspectorContent {
+        level: Some(level),
+        badge: knowledge_badge_fr(level).to_string(),
         title,
-        level,
-        view_label,
-        star_class,
-        visible_planets,
-        system.planets.len(),
-        visible_route_count,
-        route_count,
-        enter_label,
-        system.position.x,
-        system.position.y,
-        system.position.z,
-    )
+        body,
+        hint: system_knowledge_hint(level).to_string(),
+    }
 }
 
-fn planet_panel_text(
+fn planet_inspector_content(
     simulation: &Simulation,
     selected_system_id: SystemId,
     planet_id: galactic_domain::PlanetId,
-) -> String {
+) -> InspectorContent {
     let state = simulation.state();
     let Some((system_id, planet)) = simulation.universe_repository().planet_location(planet_id)
     else {
-        return format!("PLANÈTE\nRéférence invalide {}", planet_id.index());
+        return inspector_error(&format!(
+            "Référence planète invalide : {}",
+            planet_id.index(),
+        ));
     };
     let Some(system) = simulation.universe().system(system_id) else {
-        return "PLANÈTE\nSystème introuvable".to_string();
+        return inspector_error("Système de la planète introuvable");
     };
 
     let level = state.planet_knowledge_level(planet_id);
     let colony = state.colony_on_planet(planet_id);
-    let reveals_identity = level.reveals_identity();
-    let reveals_details = level.reveals_exact_details() || colony.is_some();
-    let title = if reveals_identity {
-        planet.name.clone()
-    } else {
-        format!("Corps détecté {}", planet_id.index())
-    };
-    let kind = if reveals_identity {
-        format!("{:?}", planet.kind)
-    } else {
-        "inconnu".to_string()
-    };
-    let habitability = if reveals_details {
-        format!("{}%", planet.habitability)
-    } else {
-        "à analyser".to_string()
-    };
     let system_label = if state.system_knowledge_level(system_id).reveals_identity() {
         system.name.clone()
     } else {
         format!("Signal {}", system_id.index())
     };
     let selection_note = if selected_system_id == system_id {
-        "sélection cohérente"
+        "Sélection : cohérente"
     } else {
-        "sélection recoupée"
+        "Sélection : recoupée avec le système réel"
     };
 
-    let mut body = format!(
-        "PLANÈTE\n{}\nNiveau: {}\nSystème: {}\nType: {}\nHabitabilité: {}\nStatut: {}\n{}",
-        title,
-        level,
-        system_label,
-        kind,
-        habitability,
-        colony
-            .map(|value| value.name.as_str())
-            .unwrap_or("non colonisée"),
-        selection_note,
-    );
+    let (title, mut body) = match level {
+        KnowledgeLevel::Unknown => (
+            "Corps inconnu".to_string(),
+            format!(
+                "Système : {}\nNom : ???\nType : ???\nHabitabilité : ???\nPotentiel : ???\nLunes : ???\n{}",
+                system_label, selection_note,
+            ),
+        ),
+        KnowledgeLevel::Detected => (
+            format!("Corps détecté {}", planet_id.index()),
+            format!(
+                "Système : {}\nNom : ???\nType : ???\nHabitabilité : ???\nPotentiel : analyse requise\nLunes : non recensées\n{}",
+                system_label, selection_note,
+            ),
+        ),
+        KnowledgeLevel::Probed => (
+            planet.name.clone(),
+            format!(
+                "Système : {}\nType : {:?}\nHabitabilité estimée : {}\nPotentiel : analyse requise\nLunes : non recensées\n{}",
+                system_label,
+                planet.kind,
+                habitability_estimate(planet.habitability),
+                selection_note,
+            ),
+        ),
+        KnowledgeLevel::Analyzed => (
+            planet.name.clone(),
+            format!(
+                "Système : {}\nType : {:?}\nHabitabilité exacte : {}%\nStatut : non colonisée\nPotentiel : aucune valeur économique générée pour ce corps\nLunes : aucune donnée disponible\n{}",
+                system_label, planet.kind, planet.habitability, selection_note,
+            ),
+        ),
+        KnowledgeLevel::Colonized => (
+            planet.name.clone(),
+            format!(
+                "Système : {}\nType : {:?}\nHabitabilité exacte : {}%\nStatut : {}\nLunes : aucune donnée disponible\n{}",
+                system_label,
+                planet.kind,
+                planet.habitability,
+                colony
+                    .map(|value| value.name.as_str())
+                    .unwrap_or("colonie non référencée"),
+                selection_note,
+            ),
+        ),
+    };
 
     if let Some(colony) = colony {
         body.push_str(&format!(
-            "\n\nSTOCKS\nMétal {}   Cristal {}\nCarburant {}   Énergie {}\n\nPOTENTIEL\nMétal {}   Cristal {}\nCarburant {}   Énergie {}\n\nINFRASTRUCTURE\nMines {}/{}/{}   Centrale {}\nEntrepôt {}   Construction {}\nLaboratoire {}   Chantier {}",
+            "\n\nSTOCKS EXACTS\nMétal : {}\nCristal : {}\nCarburant : {}\nÉnergie : {}\n\nPOTENTIEL EXACT\nMétal : {}\nCristal : {}\nCarburant : {}\nÉnergie : {}\n\nINFRASTRUCTURE\nMines : {}/{}/{}\nCentrale : {}\nEntrepôt : {}\nConstruction : {}\nLaboratoire : {}\nChantier : {}",
             colony.stock.metal,
             colony.stock.crystal,
             colony.stock.fuel,
@@ -1701,7 +1731,95 @@ fn planet_panel_text(
         ));
     }
 
-    body
+    InspectorContent {
+        level: Some(level),
+        badge: knowledge_badge_fr(level).to_string(),
+        title,
+        body,
+        hint: planet_knowledge_hint(level).to_string(),
+    }
+}
+
+fn inspector_error(message: &str) -> InspectorContent {
+    InspectorContent {
+        level: None,
+        badge: "[ERREUR D’INSPECTEUR]".to_string(),
+        title: "Donnée indisponible".to_string(),
+        body: message.to_string(),
+        hint: "La sélection ne correspond pas à une donnée valide.".to_string(),
+    }
+}
+
+const fn knowledge_badge_fr(level: KnowledgeLevel) -> &'static str {
+    match level {
+        KnowledgeLevel::Unknown => "[INCONNU — DONNÉES MASQUÉES]",
+        KnowledgeLevel::Detected => "[DÉTECTÉ — DONNÉES MASQUÉES]",
+        KnowledgeLevel::Probed => "[SONDÉ — ESTIMATIONS]",
+        KnowledgeLevel::Analyzed => "[ANALYSÉ — VALEURS EXACTES]",
+        KnowledgeLevel::Colonized => "[COLONISÉ — VALEURS EXACTES]",
+    }
+}
+
+const fn system_knowledge_hint(level: KnowledgeLevel) -> &'static str {
+    match level {
+        KnowledgeLevel::Unknown => "Action requise : détecter le système.",
+        KnowledgeLevel::Detected => "Action requise : sonder le système pour révéler son identité.",
+        KnowledgeLevel::Probed => {
+            "Action requise : analyser le système pour obtenir les valeurs exactes."
+        }
+        KnowledgeLevel::Analyzed => "Analyse terminée : les valeurs disponibles sont exactes.",
+        KnowledgeLevel::Colonized => "Système colonisé : les valeurs disponibles sont exactes.",
+    }
+}
+
+const fn planet_knowledge_hint(level: KnowledgeLevel) -> &'static str {
+    match level {
+        KnowledgeLevel::Unknown => "Action requise : détecter ce corps céleste.",
+        KnowledgeLevel::Detected => "Action requise : sonder la planète pour révéler son identité.",
+        KnowledgeLevel::Probed => {
+            "Action requise : analyser la planète pour obtenir les valeurs exactes."
+        }
+        KnowledgeLevel::Analyzed => {
+            "Analyse terminée : les caractéristiques disponibles sont exactes."
+        }
+        KnowledgeLevel::Colonized => "Planète colonisée : les données économiques sont exactes.",
+    }
+}
+
+fn knowledge_color(level: Option<KnowledgeLevel>) -> Color {
+    match level {
+        None | Some(KnowledgeLevel::Unknown) => Color::srgb(0.72, 0.76, 0.80),
+        Some(KnowledgeLevel::Detected) => Color::srgb(0.58, 0.72, 0.88),
+        Some(KnowledgeLevel::Probed) => Color::srgb(0.56, 0.88, 0.94),
+        Some(KnowledgeLevel::Analyzed) => Color::srgb(0.96, 0.82, 0.48),
+        Some(KnowledgeLevel::Colonized) => Color::srgb(0.58, 0.94, 0.72),
+    }
+}
+
+fn luminosity_estimate(luminosity: f32) -> &'static str {
+    if luminosity < 0.6 {
+        "faible"
+    } else if luminosity < 1.6 {
+        "moyenne"
+    } else if luminosity < 2.6 {
+        "forte"
+    } else {
+        "très forte"
+    }
+}
+
+fn habitability_estimate(habitability: u8) -> &'static str {
+    match habitability {
+        0..=19 => "très faible",
+        20..=39 => "faible",
+        40..=59 => "moyenne",
+        60..=79 => "bonne",
+        _ => "excellente",
+    }
+}
+
+fn approximate_position(value: f32) -> f32 {
+    (value / 5.0).round() * 5.0
 }
 
 fn to_vec3(position: WorldPosition) -> Vec3 {
@@ -1754,14 +1872,14 @@ fn star_emissive(class: StarClass) -> LinearRgba {
 
 fn selection_label(selection: SelectionTarget) -> String {
     match selection {
-        SelectionTarget::None => "none".to_string(),
+        SelectionTarget::None => "aucune".to_string(),
         SelectionTarget::System(system_id) => {
-            format!("system {}", system_id.index())
+            format!("système {}", system_id.index())
         }
         SelectionTarget::Planet {
             system_id,
             planet_id,
-        } => format!("planet {}:{}", system_id.index(), planet_id.index()),
+        } => format!("planète {}:{}", system_id.index(), planet_id.index()),
     }
 }
 
@@ -1792,6 +1910,89 @@ fn event_label(event: GameEvent) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ui_font_uses_a_system_sans_serif() {
+        assert!(matches!(ui_text_font(14.0).font, FontSource::SansSerif));
+    }
+
+    #[test]
+    fn detected_system_inspector_masks_secret_values() {
+        let simulation = Simulation::new(UniverseConfig::mvp());
+        let state = simulation.state();
+        let detected = state
+            .system_knowledge
+            .iter()
+            .find(|entry| entry.level == KnowledgeLevel::Detected)
+            .expect("the starting frontier contains a detected system")
+            .system_id;
+        let system = simulation
+            .universe()
+            .system(detected)
+            .expect("detected system exists");
+
+        let rendered = system_inspector_content(&simulation, detected).render();
+
+        assert!(rendered.contains("DÉTECTÉ"));
+        assert!(rendered.contains("Identité : ???"));
+        assert!(rendered.contains("Classe stellaire : ???"));
+        assert!(!rendered.contains(&system.name));
+        assert!(!rendered.contains(&format!("{:?}", system.star.class)));
+        assert!(!rendered.contains(&format!("{:.1}", system.position.x)));
+    }
+
+    #[test]
+    fn system_inspector_distinguishes_estimates_and_exact_values() {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+        let detected = simulation
+            .state()
+            .system_knowledge
+            .iter()
+            .find(|entry| entry.level == KnowledgeLevel::Detected)
+            .expect("the starting frontier contains a detected system")
+            .system_id;
+        simulation.apply_command(GameCommand::SelectSystem(detected));
+        simulation.apply_command(GameCommand::DebugAdvanceSelectedKnowledge);
+
+        let probed = system_inspector_content(&simulation, detected).render();
+        assert!(probed.contains("SONDÉ"));
+        assert!(probed.contains("Luminosité estimée"));
+
+        simulation.apply_command(GameCommand::DebugAdvanceSelectedKnowledge);
+        let analyzed = system_inspector_content(&simulation, detected).render();
+        let system = simulation
+            .universe()
+            .system(detected)
+            .expect("analyzed system exists");
+
+        assert!(analyzed.contains("ANALYSÉ"));
+        assert!(analyzed.contains("Luminosité exacte"));
+        assert!(analyzed.contains(&format!("{:.2}", system.star.luminosity)));
+    }
+
+    #[test]
+    fn detected_planet_inspector_hides_identity_and_habitability() {
+        let simulation = Simulation::new(UniverseConfig::mvp());
+        let detected = simulation
+            .state()
+            .planet_knowledge
+            .iter()
+            .find(|entry| entry.level == KnowledgeLevel::Detected)
+            .expect("the home system contains a detected planet")
+            .planet_id;
+        let (system_id, planet) = simulation
+            .universe_repository()
+            .planet_location(detected)
+            .expect("detected planet exists");
+
+        let rendered = planet_inspector_content(&simulation, system_id, detected).render();
+
+        assert!(rendered.contains("DÉTECTÉ"));
+        assert!(rendered.contains("Nom : ???"));
+        assert!(rendered.contains("Habitabilité : ???"));
+        assert!(!rendered.contains(&planet.name));
+        assert!(!rendered.contains(&format!("{:?}", planet.kind)));
+    }
 
     #[test]
     fn semantic_lod_uses_stable_distance_bands() {
@@ -1857,7 +2058,7 @@ mod tests {
             planet_id: galactic_domain::PlanetId::new(1),
         });
 
-        assert_eq!(label, "planet 2:1");
+        assert_eq!(label, "planète 2:1");
     }
 
     #[test]
@@ -1939,12 +2140,12 @@ mod tests {
     #[test]
     fn planet_information_panel_includes_home_colony_details() {
         let simulation = Simulation::new(UniverseConfig::mvp());
-        let navigation = StrategicNavigation::default();
-        let panel = information_panel_text(&simulation, &navigation);
+        let panel = information_panel_content(&simulation);
+        let rendered = panel.render();
 
-        assert!(panel.contains("PLANÈTE"));
-        assert!(panel.contains("Aster Prime Colony"));
-        assert!(panel.contains("STOCKS"));
-        assert!(panel.contains("INFRASTRUCTURE"));
+        assert_eq!(panel.level, Some(KnowledgeLevel::Colonized));
+        assert!(rendered.contains("Aster Prime Colony"));
+        assert!(rendered.contains("STOCKS EXACTS"));
+        assert!(rendered.contains("INFRASTRUCTURE"));
     }
 }
