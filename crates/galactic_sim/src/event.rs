@@ -1,6 +1,6 @@
 use galactic_domain::{PlanetId, SystemId};
 
-use crate::TimeSpeed;
+use crate::{StrategicDuration, StrategicTick, TimeSpeed};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SelectionTarget {
@@ -13,12 +13,12 @@ pub enum SelectionTarget {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GameEvent {
     SpeedChanged(TimeSpeed),
     SelectionChanged(SelectionTarget),
-    TickAdvanced {
-        delta_seconds: f32,
-        elapsed_seconds: f32,
+    TicksAdvanced {
+        ticks: StrategicDuration,
+        current_tick: StrategicTick,
     },
 }

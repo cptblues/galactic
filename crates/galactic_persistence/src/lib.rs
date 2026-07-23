@@ -1,13 +1,14 @@
-// MVP-004: immutable generated universe separated from mutable game state
+// MVP-005: strategic tick clock is persisted without frame-time floats
 use galactic_domain::{
     ColonyId, FactionId, PlanetId, ResourceStock, SystemId, UniverseConfig, UniverseId,
     generate_universe,
 };
 use galactic_sim::{
-    ColonyState, GameState, SelectionTarget, Simulation, SimulationBuildError, TimeSpeed,
+    ColonyState, GameState, SelectionTarget, Simulation, SimulationBuildError, StrategicClock,
+    StrategicClockError, StrategicTick, TimeSpeed,
 };
 
-pub const SAVE_VERSION: u32 = 2;
+pub const SAVE_VERSION: u32 = 3;
 
 /// Persistence envelope: generated data is referenced, not duplicated.
 #[derive(Debug, Clone, PartialEq)]
@@ -30,11 +31,18 @@ pub struct UniverseReference {
 pub struct MutableGameSave {
     pub version: u32,
     pub player_faction: FactionId,
-    pub elapsed_seconds: f32,
-    pub speed: TimeSpeed,
+    pub clock: StrategicClockSave,
     pub selected: SelectionTarget,
     pub known_systems: Vec<SystemId>,
     pub colonies: Vec<ColonySave>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StrategicClockSave {
+    pub current_tick: StrategicTick,
+    pub remainder_nanos: u64,
+    pub speed: TimeSpeed,
+    pub resume_speed: TimeSpeed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,6 +70,7 @@ pub enum SaveError {
         expected: u64,
         found: u64,
     },
+    InvalidClock(StrategicClockError),
     InvalidState(SimulationBuildError),
 }
 
@@ -81,8 +90,12 @@ pub fn snapshot_from_simulation(simulation: &Simulation) -> SaveGame {
         state: MutableGameSave {
             version: state.version,
             player_faction: state.player_faction,
-            elapsed_seconds: state.elapsed_seconds,
-            speed: state.speed,
+            clock: StrategicClockSave {
+                current_tick: state.clock.current_tick(),
+                remainder_nanos: state.clock.remainder_nanos(),
+                speed: state.clock.speed(),
+                resume_speed: state.clock.resume_speed(),
+            },
             selected: state.selected,
             known_systems: state.known_systems.clone(),
             colonies: state
@@ -130,6 +143,14 @@ pub fn restore_from_snapshot(save: &SaveGame) -> Result<Simulation, SaveError> {
         });
     }
 
+    let clock = StrategicClock::from_parts(
+        save.state.clock.current_tick,
+        save.state.clock.remainder_nanos,
+        save.state.clock.speed,
+        save.state.clock.resume_speed,
+    )
+    .map_err(SaveError::InvalidClock)?;
+
     let state = GameState {
         version: save.state.version,
         player_faction: save.state.player_faction,
@@ -148,8 +169,7 @@ pub fn restore_from_snapshot(save: &SaveGame) -> Result<Simulation, SaveError> {
             .collect(),
         known_systems: save.state.known_systems.clone(),
         selected: save.state.selected,
-        elapsed_seconds: save.state.elapsed_seconds,
-        speed: save.state.speed,
+        clock,
     };
 
     Simulation::from_parts(universe, state).map_err(SaveError::InvalidState)
@@ -157,15 +177,19 @@ pub fn restore_from_snapshot(save: &SaveGame) -> Result<Simulation, SaveError> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use galactic_domain::UniverseConfig;
-    use galactic_sim::{GAME_STATE_VERSION, GameCommand, TimeSpeed};
+    use galactic_sim::{
+        GAME_STATE_VERSION, GameCommand, STRATEGIC_TICK_NANOS, StrategicTick, TimeSpeed,
+    };
 
     use super::*;
 
     #[test]
     fn snapshot_round_trips_mutable_state_and_regenerates_universe() {
         let mut simulation = Simulation::new(UniverseConfig::new(99, 14));
-        simulation.tick(12.0);
+        simulation.advance(Duration::from_millis(125));
         simulation.apply_command(GameCommand::SetSpeed(TimeSpeed::X4));
 
         let original_fingerprint = simulation.universe().generation_fingerprint;
@@ -177,10 +201,12 @@ mod tests {
             original_fingerprint
         );
         assert_eq!(restored.state(), simulation.state());
+        assert_eq!(restored.state().clock.current_tick(), StrategicTick::new(1));
+        assert_eq!(restored.state().clock.remainder_nanos(), 25_000_000);
     }
 
     #[test]
-    fn snapshot_contains_a_universe_reference_not_generated_objects() {
+    fn snapshot_contains_a_universe_reference_and_strategic_clock() {
         let simulation = Simulation::new(UniverseConfig::mvp());
         let save = snapshot_from_simulation(&simulation);
 
@@ -193,6 +219,7 @@ mod tests {
             simulation.universe().generation_fingerprint
         );
         assert_eq!(save.state.version, GAME_STATE_VERSION);
+        assert_eq!(save.state.clock.current_tick, StrategicTick::ZERO);
     }
 
     #[test]
@@ -204,6 +231,20 @@ mod tests {
         assert!(matches!(
             restore_from_snapshot(&save),
             Err(SaveError::GenerationFingerprintMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn invalid_clock_remainder_is_rejected() {
+        let simulation = Simulation::new(UniverseConfig::mvp());
+        let mut save = snapshot_from_simulation(&simulation);
+        save.state.clock.remainder_nanos = STRATEGIC_TICK_NANOS;
+
+        assert!(matches!(
+            restore_from_snapshot(&save),
+            Err(SaveError::InvalidClock(
+                StrategicClockError::RemainderOutOfRange(_)
+            ))
         ));
     }
 

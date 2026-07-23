@@ -85,3 +85,34 @@ Règles :
 
 Version de contrat mutable actuelle : `GAME_STATE_VERSION = 1`.
 Version d'enveloppe de sauvegarde actuelle : `SAVE_VERSION = 2`.
+
+
+## MVP-005 — Temps stratégique déterministe
+
+Le temps métier est désormais indépendant du nombre d'images rendues :
+
+```text
+Durée réelle d'une frame
+        │ multipliée par x1 / x2 / x4
+        ▼
+StrategicClock
+        │ accumulation entière en nanosecondes
+        ▼
+Ticks fixes à 10 Hz
+        ▼
+Production / construction / recherche / missions
+```
+
+Règles :
+
+- `StrategicTick` est le timestamp métier sauvegardable ;
+- `StrategicDuration` exprime une durée en nombre entier de ticks ;
+- `StrategicClock` conserve le tick courant et la fraction de tick restante ;
+- la pause bloque uniquement l'horloge de simulation ;
+- la caméra et l'interface continuent d'utiliser le temps Bevy normal ;
+- `Simulation::advance(Duration)` remplace l'ancien avancement direct en `f32` ;
+- changer le framerate ne change pas le nombre de ticks obtenus sur une même durée ;
+- la sauvegarde conserve le tick courant, le reliquat et la vitesse ;
+- `GAME_STATE_VERSION = 2` et `SAVE_VERSION = 3`.
+
+Fréquence stratégique actuelle : `10 ticks/seconde`.

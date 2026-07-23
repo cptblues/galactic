@@ -277,7 +277,7 @@ fn handle_simulation_input(
 }
 
 fn tick_simulation(time: Res<Time>, mut simulation: ResMut<SimulationResource>) {
-    let events = simulation.simulation.tick(time.delta_secs());
+    let events = simulation.simulation.advance(time.delta());
     simulation.pending_events.extend(events);
 }
 
@@ -308,7 +308,7 @@ fn update_ui(
         .unwrap_or_else(|| "ready".to_string());
 
     text.0 = format!(
-        "Galactic MVP | Bevy 0.19 | seed {} | gen v{} | fp {:016x} | systems {} | routes {} | colonies {} | known {} | t {:.1}s | speed {} | selected {} | event {}",
+        "Galactic MVP | Bevy 0.19 | seed {} | gen v{} | fp {:016x} | systems {} | routes {} | colonies {} | known {} | tick {} | t {:.1}s | speed {} | selected {} | event {}",
         universe.seed,
         universe.generation_version,
         universe.generation_fingerprint,
@@ -316,8 +316,9 @@ fn update_ui(
         universe.routes.len(),
         state.colonies.len(),
         state.known_systems.len(),
-        state.elapsed_seconds,
-        state.speed,
+        state.clock.current_tick(),
+        state.clock.elapsed_seconds(),
+        state.clock.speed(),
         selected,
         last_event
     );
@@ -411,9 +412,10 @@ fn event_label(event: GameEvent) -> String {
         GameEvent::SelectionChanged(selection) => {
             format!("selection {}", selection_label(selection))
         }
-        GameEvent::TickAdvanced {
-            elapsed_seconds, ..
-        } => format!("tick {:.1}s", elapsed_seconds),
+        GameEvent::TicksAdvanced {
+            ticks,
+            current_tick,
+        } => format!("+{} ticks -> {}", ticks.ticks(), current_tick),
     }
 }
 

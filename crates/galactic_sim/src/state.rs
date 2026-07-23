@@ -1,13 +1,12 @@
-// MVP-004: immutable generated universe separated from mutable game state
+// MVP-005: mutable game state owns a fixed, serializable strategic clock
 use galactic_domain::{ColonyId, FactionId, PlanetId, ResourceStock, SystemId};
 
-use crate::{SelectionTarget, TimeSpeed, UniverseRepository};
+use crate::{SelectionTarget, StrategicClock, UniverseRepository};
 
 /// Version of the mutable in-memory state contract.
 ///
-/// This version is independent from the generated universe version and from
-/// the persistence envelope version.
-pub const GAME_STATE_VERSION: u32 = 1;
+/// Version 2 replaces floating elapsed seconds with a deterministic tick clock.
+pub const GAME_STATE_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct GameState {
@@ -16,8 +15,7 @@ pub struct GameState {
     pub colonies: Vec<ColonyState>,
     pub known_systems: Vec<SystemId>,
     pub selected: SelectionTarget,
-    pub elapsed_seconds: f32,
-    pub speed: TimeSpeed,
+    pub clock: StrategicClock,
 }
 
 impl GameState {
@@ -46,8 +44,7 @@ impl GameState {
             }],
             known_systems,
             selected: SelectionTarget::System(home_system_id),
-            elapsed_seconds: 0.0,
-            speed: TimeSpeed::X1,
+            clock: StrategicClock::new(),
         }
     }
 
@@ -86,5 +83,14 @@ mod tests {
             .expect("home colony is indexed by its stable ID");
 
         assert_eq!(colony.name, "Aster Prime Colony");
+    }
+
+    #[test]
+    fn new_game_starts_at_tick_zero_and_speed_one() {
+        let universe = UniverseRepository::generate(UniverseConfig::mvp());
+        let state = GameState::new(&universe);
+
+        assert_eq!(state.clock.current_tick().value(), 0);
+        assert_eq!(state.clock.speed(), crate::TimeSpeed::X1);
     }
 }

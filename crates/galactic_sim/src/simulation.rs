@@ -1,5 +1,6 @@
-// MVP-004: immutable generated universe separated from mutable game state
+// MVP-005: fixed strategic clock independent from rendering FPS
 use std::collections::HashSet;
+use std::time::Duration;
 
 use galactic_domain::{ColonyId, PlanetId, SystemId, UniverseConfig, UniverseDefinition};
 
@@ -85,12 +86,8 @@ impl Simulation {
     pub fn apply_command(&mut self, command: GameCommand) -> Vec<GameEvent> {
         match command {
             GameCommand::TogglePause => {
-                let next_speed = if self.state.speed == TimeSpeed::Paused {
-                    TimeSpeed::X1
-                } else {
-                    TimeSpeed::Paused
-                };
-                self.set_speed(next_speed)
+                let next_speed = self.state.clock.toggle_pause();
+                vec![GameEvent::SpeedChanged(next_speed)]
             }
             GameCommand::SetSpeed(speed) => self.set_speed(speed),
             GameCommand::SelectSystem(system_id) => self.select_system(system_id),
@@ -102,25 +99,29 @@ impl Simulation {
         }
     }
 
-    pub fn tick(&mut self, delta_seconds: f32) -> Vec<GameEvent> {
-        let scaled_delta = delta_seconds.max(0.0) * self.state.speed.multiplier();
-        if scaled_delta == 0.0 {
+    /// Advances simulation time from a real frame duration.
+    ///
+    /// The real duration is converted into fixed strategic ticks by the clock.
+    /// Rendering, UI and camera systems remain outside this method.
+    pub fn advance(&mut self, real_delta: Duration) -> Vec<GameEvent> {
+        let advance = self.state.clock.advance(real_delta);
+        if advance.ticks.is_zero() {
             return Vec::new();
         }
 
-        self.state.elapsed_seconds += scaled_delta;
-        vec![GameEvent::TickAdvanced {
-            delta_seconds: scaled_delta,
-            elapsed_seconds: self.state.elapsed_seconds,
+        // Future production, construction, research and mission systems will be
+        // processed once per strategic tick here.
+        vec![GameEvent::TicksAdvanced {
+            ticks: advance.ticks,
+            current_tick: advance.current_tick,
         }]
     }
 
     fn set_speed(&mut self, speed: TimeSpeed) -> Vec<GameEvent> {
-        if self.state.speed == speed {
+        if !self.state.clock.set_speed(speed) {
             return Vec::new();
         }
 
-        self.state.speed = speed;
         vec![GameEvent::SpeedChanged(speed)]
     }
 
@@ -234,31 +235,73 @@ mod tests {
 
     use super::*;
 
+    fn advance_in_equal_frames(
+        simulation: &mut Simulation,
+        frame_count: u32,
+        frame_duration: Duration,
+    ) {
+        for _ in 0..frame_count {
+            simulation.advance(frame_duration);
+        }
+    }
+
     #[test]
     fn simulation_advances_without_renderer() {
         let mut simulation = Simulation::new(UniverseConfig::default());
 
-        let events = simulation.tick(2.5);
+        let events = simulation.advance(Duration::from_millis(250));
 
-        assert_eq!(simulation.state().elapsed_seconds, 2.5);
+        assert_eq!(simulation.state().clock.current_tick().value(), 2);
         assert_eq!(
             events,
-            vec![GameEvent::TickAdvanced {
-                delta_seconds: 2.5,
-                elapsed_seconds: 2.5,
+            vec![GameEvent::TicksAdvanced {
+                ticks: crate::StrategicDuration::from_ticks(2),
+                current_tick: crate::StrategicTick::new(2),
             }]
         );
+        assert_eq!(simulation.state().clock.remainder_nanos(), 50_000_000);
     }
 
     #[test]
-    fn pause_blocks_time_progression() {
+    fn different_frame_rates_produce_the_same_ticks() {
+        let mut fast_frames = Simulation::new(UniverseConfig::mvp());
+        let mut slow_frames = Simulation::new(UniverseConfig::mvp());
+
+        advance_in_equal_frames(&mut fast_frames, 100, Duration::from_millis(10));
+        advance_in_equal_frames(&mut slow_frames, 10, Duration::from_millis(100));
+
+        assert_eq!(fast_frames.state().clock, slow_frames.state().clock);
+        assert_eq!(fast_frames.state().clock.current_tick().value(), 10);
+    }
+
+    #[test]
+    fn pause_and_resume_do_not_duplicate_or_skip_ticks() {
         let mut simulation = Simulation::new(UniverseConfig::default());
 
+        simulation.advance(Duration::from_millis(50));
         simulation.apply_command(GameCommand::SetSpeed(TimeSpeed::Paused));
-        let events = simulation.tick(10.0);
+        assert!(simulation.advance(Duration::from_secs(10)).is_empty());
+        assert_eq!(simulation.state().clock.current_tick().value(), 0);
+        assert_eq!(simulation.state().clock.remainder_nanos(), 50_000_000);
 
-        assert!(events.is_empty());
-        assert_eq!(simulation.state().elapsed_seconds, 0.0);
+        simulation.apply_command(GameCommand::TogglePause);
+        simulation.advance(Duration::from_millis(50));
+
+        assert_eq!(simulation.state().clock.current_tick().value(), 1);
+        assert_eq!(simulation.state().clock.remainder_nanos(), 0);
+    }
+
+    #[test]
+    fn speed_changes_simulation_tick_rate() {
+        let mut normal = Simulation::new(UniverseConfig::mvp());
+        let mut accelerated = Simulation::new(UniverseConfig::mvp());
+        accelerated.apply_command(GameCommand::SetSpeed(TimeSpeed::X4));
+
+        normal.advance(Duration::from_millis(500));
+        accelerated.advance(Duration::from_millis(500));
+
+        assert_eq!(normal.state().clock.current_tick().value(), 5);
+        assert_eq!(accelerated.state().clock.current_tick().value(), 20);
     }
 
     #[test]
@@ -299,7 +342,7 @@ mod tests {
         let mut simulation = Simulation::new(UniverseConfig::mvp());
         let initial_universe = simulation.universe().clone();
 
-        simulation.tick(42.0);
+        simulation.advance(Duration::from_secs(42));
         simulation.apply_command(GameCommand::SetSpeed(TimeSpeed::X4));
         simulation
             .state_mut()
