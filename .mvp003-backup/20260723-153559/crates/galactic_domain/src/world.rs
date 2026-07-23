@@ -4,13 +4,10 @@ use std::f32::consts::TAU;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
-use crate::{PlanetId, StarId, SystemId, UniverseId, WorldPosition};
+use crate::{PlanetId, SystemId, WorldPosition};
 
-pub const MVP_UNIVERSE_SEED: u64 = 42;
-pub const MVP_SYSTEM_COUNT: usize = 16;
-pub const GENERATION_VERSION: u32 = 1;
-pub const MVP_REFERENCE_FINGERPRINT: u64 = 14452641306278393246;
-
+const DEFAULT_SEED: u64 = 42;
+const DEFAULT_SYSTEM_COUNT: usize = 16;
 const MAX_SYSTEM_COUNT: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,10 +21,6 @@ impl UniverseConfig {
         Self { seed, system_count }
     }
 
-    pub const fn mvp() -> Self {
-        Self::new(MVP_UNIVERSE_SEED, MVP_SYSTEM_COUNT)
-    }
-
     pub fn sanitized(self) -> Self {
         Self {
             seed: self.seed,
@@ -38,16 +31,13 @@ impl UniverseConfig {
 
 impl Default for UniverseConfig {
     fn default() -> Self {
-        Self::mvp()
+        Self::new(DEFAULT_SEED, DEFAULT_SYSTEM_COUNT)
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct UniverseDefinition {
-    pub id: UniverseId,
     pub seed: u64,
-    pub generation_version: u32,
-    pub generation_fingerprint: u64,
     pub systems: Vec<StarSystem>,
     pub routes: Vec<Route>,
 }
@@ -82,7 +72,6 @@ impl StarSystem {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Star {
-    pub id: StarId,
     pub class: StarClass,
     pub luminosity: f32,
 }
@@ -104,16 +93,6 @@ impl StarClass {
         Self::Orange,
         Self::Red,
     ];
-
-    const fn fingerprint_tag(self) -> u64 {
-        match self {
-            Self::Blue => 1,
-            Self::White => 2,
-            Self::Yellow => 3,
-            Self::Orange => 4,
-            Self::Red => 5,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -143,17 +122,6 @@ impl PlanetKind {
         Self::GasGiant,
         Self::Volcanic,
     ];
-
-    const fn fingerprint_tag(self) -> u64 {
-        match self {
-            Self::Rocky => 1,
-            Self::Ocean => 2,
-            Self::Desert => 3,
-            Self::Ice => 4,
-            Self::GasGiant => 5,
-            Self::Volcanic => 6,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -190,20 +158,15 @@ pub fn generate_universe(config: UniverseConfig) -> UniverseDefinition {
         .collect::<Vec<_>>();
     let routes = generate_routes(&systems);
 
-    let mut universe = UniverseDefinition {
-        id: UniverseId::MVP,
+    UniverseDefinition {
         seed: config.seed,
-        generation_version: GENERATION_VERSION,
-        generation_fingerprint: 0,
         systems,
         routes,
-    };
-    universe.generation_fingerprint = fingerprint_universe(&universe);
-    universe
+    }
 }
 
 fn generate_system(index: usize, rng: &mut ChaCha8Rng) -> StarSystem {
-    let id = SystemId::from_index(index as u32);
+    let id = SystemId::new(index as u32);
     let is_home = index == 0;
     let position = if is_home {
         WorldPosition::ZERO
@@ -212,12 +175,11 @@ fn generate_system(index: usize, rng: &mut ChaCha8Rng) -> StarSystem {
     };
     let star = if is_home {
         Star {
-            id: StarId::for_system(id),
             class: StarClass::Yellow,
             luminosity: 1.0,
         }
     } else {
-        random_star(id, rng)
+        random_star(rng)
     };
 
     StarSystem {
@@ -225,7 +187,7 @@ fn generate_system(index: usize, rng: &mut ChaCha8Rng) -> StarSystem {
         name: system_name(index, rng),
         position,
         star,
-        planets: generate_planets(id, index, rng),
+        planets: generate_planets(index, rng),
     }
 }
 
@@ -243,7 +205,7 @@ fn spiral_position(index: usize, rng: &mut ChaCha8Rng) -> WorldPosition {
     )
 }
 
-fn random_star(system_id: SystemId, rng: &mut ChaCha8Rng) -> Star {
+fn random_star(rng: &mut ChaCha8Rng) -> Star {
     let roll = rng.random_range(0.0..1.0);
     let class = if roll < 0.08 {
         StarClass::Blue
@@ -264,14 +226,10 @@ fn random_star(system_id: SystemId, rng: &mut ChaCha8Rng) -> Star {
         StarClass::Red => rng.random_range(0.18..0.55),
     };
 
-    Star {
-        id: StarId::for_system(system_id),
-        class,
-        luminosity,
-    }
+    Star { class, luminosity }
 }
 
-fn generate_planets(system_id: SystemId, system_index: usize, rng: &mut ChaCha8Rng) -> Vec<Planet> {
+fn generate_planets(system_index: usize, rng: &mut ChaCha8Rng) -> Vec<Planet> {
     let count = if system_index == 0 {
         3
     } else {
@@ -280,7 +238,7 @@ fn generate_planets(system_id: SystemId, system_index: usize, rng: &mut ChaCha8R
 
     (0..count)
         .map(|index| {
-            let id = PlanetId::from_system_index(system_id, index as u32);
+            let id = PlanetId::new(index as u32);
             if system_index == 0 && index == 0 {
                 return Planet {
                     id,
@@ -342,7 +300,7 @@ fn generate_routes(systems: &[StarSystem]) -> Vec<Route> {
 
         for (_, neighbor_id) in neighbors.into_iter().take(2) {
             let route = Route::new(system.id, neighbor_id);
-            unique.insert((route.from.raw(), route.to.raw()));
+            unique.insert((route.from.index(), route.to.index()));
         }
     }
 
@@ -375,54 +333,6 @@ fn planet_name(system_index: usize, planet_index: usize) -> String {
     format!("P{}-{}", system_index + 1, planet_index + 1)
 }
 
-pub fn fingerprint_universe(universe: &UniverseDefinition) -> u64 {
-    let mut hash = 0xcbf29ce484222325_u64;
-    mix_u64(&mut hash, universe.id.raw());
-    mix_u64(&mut hash, universe.seed);
-    mix_u64(&mut hash, universe.generation_version as u64);
-    mix_u64(&mut hash, universe.systems.len() as u64);
-    mix_u64(&mut hash, universe.routes.len() as u64);
-
-    for system in &universe.systems {
-        mix_u64(&mut hash, system.id.raw());
-        mix_bytes(&mut hash, system.name.as_bytes());
-        mix_u64(&mut hash, system.position.x.to_bits() as u64);
-        mix_u64(&mut hash, system.position.y.to_bits() as u64);
-        mix_u64(&mut hash, system.position.z.to_bits() as u64);
-        mix_u64(&mut hash, system.star.id.raw());
-        mix_u64(&mut hash, system.star.class.fingerprint_tag());
-        mix_u64(&mut hash, system.star.luminosity.to_bits() as u64);
-        mix_u64(&mut hash, system.planets.len() as u64);
-
-        for planet in &system.planets {
-            mix_u64(&mut hash, planet.id.raw());
-            mix_bytes(&mut hash, planet.name.as_bytes());
-            mix_u64(&mut hash, planet.kind.fingerprint_tag());
-            mix_u64(&mut hash, planet.habitability as u64);
-        }
-    }
-
-    for route in &universe.routes {
-        mix_u64(&mut hash, route.from.raw());
-        mix_u64(&mut hash, route.to.raw());
-    }
-
-    hash
-}
-
-fn mix_u64(hash: &mut u64, value: u64) {
-    mix_bytes(hash, &value.to_le_bytes());
-}
-
-fn mix_bytes(hash: &mut u64, bytes: &[u8]) {
-    for byte in bytes {
-        *hash ^= u64::from(*byte);
-        *hash = hash.wrapping_mul(0x100000001b3);
-    }
-    *hash ^= 0xff;
-    *hash = hash.wrapping_mul(0x100000001b3);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -430,75 +340,38 @@ mod tests {
     #[test]
     fn generation_is_deterministic_for_same_seed() {
         let config = UniverseConfig::new(7, 16);
+
         assert_eq!(generate_universe(config), generate_universe(config));
     }
 
     #[test]
     fn default_world_matches_mvp_scope() {
         let universe = generate_universe(UniverseConfig::default());
-        assert_eq!(universe.seed, MVP_UNIVERSE_SEED);
-        assert_eq!(universe.generation_version, GENERATION_VERSION);
+
         assert!((12..=20).contains(&universe.systems.len()));
         assert!(!universe.routes.is_empty());
-        assert_ne!(universe.generation_fingerprint, 0);
     }
 
     #[test]
     fn home_system_has_habitable_planet() {
         let universe = generate_universe(UniverseConfig::default());
-        let home_system_id = SystemId::from_index(0);
-        let home = universe.system(home_system_id).expect("home system exists");
-        let home_planet_id = PlanetId::from_system_index(home_system_id, 0);
-        let planet = home.planet(home_planet_id).expect("home planet exists");
+        let home = universe
+            .system(SystemId::new(0))
+            .expect("home system exists");
+        let planet = home.planet(PlanetId::new(0)).expect("home planet exists");
 
-        assert_eq!(home.star.id, StarId::for_system(home_system_id));
         assert_eq!(planet.kind, PlanetKind::Ocean);
         assert!(planet.habitability >= 90);
     }
 
     #[test]
-    fn planet_ids_are_unique_across_systems() {
-        let universe = generate_universe(UniverseConfig::default());
-        let ids = universe
-            .systems
-            .iter()
-            .flat_map(|system| system.planets.iter().map(|planet| planet.id))
-            .collect::<BTreeSet<_>>();
-        let planet_count = universe
-            .systems
-            .iter()
-            .map(|system| system.planets.len())
-            .sum::<usize>();
-        assert_eq!(ids.len(), planet_count);
-    }
-
-    #[test]
     fn routes_reference_existing_systems() {
         let universe = generate_universe(UniverseConfig::new(11, 18));
+
         for route in &universe.routes {
             assert!(universe.system(route.from).is_some());
             assert!(universe.system(route.to).is_some());
             assert_ne!(route.from, route.to);
         }
-    }
-
-    #[test]
-    fn reference_seed_fingerprint_is_stable() {
-        assert_ne!(
-            MVP_REFERENCE_FINGERPRINT, 0,
-            "run tools/apply_mvp_003.py once to bootstrap the reference fingerprint"
-        );
-        let universe = generate_universe(UniverseConfig::mvp());
-        assert_eq!(
-            universe.generation_fingerprint, MVP_REFERENCE_FINGERPRINT,
-            "the generated MVP universe changed; increment GENERATION_VERSION only if intentional"
-        );
-    }
-
-    #[test]
-    #[ignore = "used by tools/apply_mvp_003.py to bootstrap the snapshot"]
-    fn print_reference_seed_fingerprint() {
-        let universe = generate_universe(UniverseConfig::mvp());
-        println!("MVP_FINGERPRINT={}", universe.generation_fingerprint);
     }
 }

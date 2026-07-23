@@ -1,12 +1,9 @@
-// MVP-004: immutable generated universe separated from mutable game state
 pub mod command;
 pub mod event;
 pub mod simulation;
 pub mod state;
-pub mod universe;
 
 pub use command::*;
 pub use event::*;
 pub use simulation::*;
 pub use state::*;
-pub use universe::*;

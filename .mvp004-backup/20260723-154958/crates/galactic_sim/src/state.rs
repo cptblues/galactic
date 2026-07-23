@@ -1,17 +1,13 @@
-// MVP-004: immutable generated universe separated from mutable game state
-use galactic_domain::{ColonyId, FactionId, PlanetId, ResourceStock, SystemId};
+use galactic_domain::{
+    ColonyId, FactionId, PlanetId, ResourceStock, SystemId, UniverseConfig, UniverseDefinition,
+    generate_universe,
+};
 
-use crate::{SelectionTarget, TimeSpeed, UniverseRepository};
-
-/// Version of the mutable in-memory state contract.
-///
-/// This version is independent from the generated universe version and from
-/// the persistence envelope version.
-pub const GAME_STATE_VERSION: u32 = 1;
+use crate::{SelectionTarget, TimeSpeed};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct GameState {
-    pub version: u32,
+    pub universe: UniverseDefinition,
     pub player_faction: FactionId,
     pub colonies: Vec<ColonyState>,
     pub known_systems: Vec<SystemId>,
@@ -21,7 +17,8 @@ pub struct GameState {
 }
 
 impl GameState {
-    pub fn new(universe: &UniverseRepository) -> Self {
+    pub fn new(config: UniverseConfig) -> Self {
+        let universe = generate_universe(config);
         let home_system_id = SystemId::from_index(0);
         let home_planet_id = PlanetId::from_system_index(home_system_id, 0);
         let player_faction = FactionId::new(0);
@@ -30,11 +27,8 @@ impl GameState {
         known_systems.sort();
         known_systems.dedup();
 
-        debug_assert!(universe.system(home_system_id).is_some());
-        debug_assert!(universe.planet(home_planet_id).is_some());
-
         Self {
-            version: GAME_STATE_VERSION,
+            universe,
             player_faction,
             colonies: vec![ColonyState {
                 id: ColonyId::new(0),
@@ -50,14 +44,6 @@ impl GameState {
             speed: TimeSpeed::X1,
         }
     }
-
-    pub fn colony(&self, id: ColonyId) -> Option<&ColonyState> {
-        self.colonies.iter().find(|colony| colony.id == id)
-    }
-
-    pub fn colony_mut(&mut self, id: ColonyId) -> Option<&mut ColonyState> {
-        self.colonies.iter_mut().find(|colony| colony.id == id)
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,23 +54,4 @@ pub struct ColonyState {
     pub system_id: SystemId,
     pub planet_id: PlanetId,
     pub stock: ResourceStock,
-}
-
-#[cfg(test)]
-mod tests {
-    use galactic_domain::{ColonyId, UniverseConfig};
-
-    use super::*;
-
-    #[test]
-    fn colony_is_accessible_by_stable_id() {
-        let universe = UniverseRepository::generate(UniverseConfig::mvp());
-        let state = GameState::new(&universe);
-
-        let colony = state
-            .colony(ColonyId::new(0))
-            .expect("home colony is indexed by its stable ID");
-
-        assert_eq!(colony.name, "Aster Prime Colony");
-    }
 }

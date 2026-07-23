@@ -178,7 +178,7 @@ fn rebuild_universe_view(
         commands.entity(entity).despawn();
     }
 
-    for system in &simulation.simulation().universe().systems {
+    for system in &simulation.simulation().state().universe.systems {
         let material = assets
             .star_materials
             .get(&system.star.class)
@@ -234,7 +234,7 @@ fn spawn_ui(mut commands: Commands) {
 
     commands.spawn((
         Text::new(
-            "Space pause | 1 x1 | 2 x2 | 3 x4 | R rebuild views | immutable universe + mutable state live outside Bevy views",
+            "Space pause | 1 x1 | 2 x2 | 3 x4 | R rebuild views | business state lives outside Bevy views",
         ),
         TextFont {
             font_size: FontSize::Px(13.0),
@@ -298,9 +298,7 @@ fn update_ui(
     let Ok(mut text) = query.single_mut() else {
         return;
     };
-    let simulation = simulation.simulation();
-    let universe = simulation.universe();
-    let state = simulation.state();
+    let state = simulation.simulation().state();
     let selected = selection_label(state.selected);
     let last_event = log
         .last_event
@@ -309,11 +307,11 @@ fn update_ui(
 
     text.0 = format!(
         "Galactic MVP | Bevy 0.19 | seed {} | gen v{} | fp {:016x} | systems {} | routes {} | colonies {} | known {} | t {:.1}s | speed {} | selected {} | event {}",
-        universe.seed,
-        universe.generation_version,
-        universe.generation_fingerprint,
-        universe.systems.len(),
-        universe.routes.len(),
+        state.universe.seed,
+        state.universe.generation_version,
+        state.universe.generation_fingerprint,
+        state.universe.systems.len(),
+        state.universe.routes.len(),
         state.colonies.len(),
         state.known_systems.len(),
         state.elapsed_seconds,
@@ -343,7 +341,7 @@ fn update_system_visuals(
 }
 
 fn draw_routes(mut gizmos: Gizmos, simulation: Res<SimulationResource>) {
-    let universe = simulation.simulation().universe();
+    let universe = &simulation.simulation().state().universe;
 
     for route in &universe.routes {
         let Some(from) = universe.system(route.from) else {

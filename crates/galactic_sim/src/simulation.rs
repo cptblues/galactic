@@ -1,21 +1,77 @@
-use galactic_domain::{PlanetId, SystemId, UniverseConfig};
+// MVP-004: immutable generated universe separated from mutable game state
+use std::collections::HashSet;
 
-use crate::{GameCommand, GameEvent, GameState, SelectionTarget, TimeSpeed};
+use galactic_domain::{ColonyId, PlanetId, SystemId, UniverseConfig, UniverseDefinition};
+
+use crate::{
+    GAME_STATE_VERSION, GameCommand, GameEvent, GameState, SelectionTarget, TimeSpeed,
+    UniverseIndexError, UniverseRepository,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SimulationBuildError {
+    InvalidUniverse(UniverseIndexError),
+    UnsupportedStateVersion {
+        expected: u32,
+        found: u32,
+    },
+    DuplicateColony(ColonyId),
+    UnknownKnownSystem(SystemId),
+    UnknownColonySystem {
+        colony_id: ColonyId,
+        system_id: SystemId,
+    },
+    UnknownColonyPlanet {
+        colony_id: ColonyId,
+        planet_id: PlanetId,
+    },
+    ColonyPlanetSystemMismatch {
+        colony_id: ColonyId,
+        system_id: SystemId,
+        planet_id: PlanetId,
+    },
+    InvalidSelectedSystem(SystemId),
+    InvalidSelectedPlanet {
+        system_id: SystemId,
+        planet_id: PlanetId,
+    },
+}
+
+impl From<UniverseIndexError> for SimulationBuildError {
+    fn from(error: UniverseIndexError) -> Self {
+        Self::InvalidUniverse(error)
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Simulation {
+    universe: UniverseRepository,
     state: GameState,
 }
 
 impl Simulation {
     pub fn new(config: UniverseConfig) -> Self {
-        Self {
-            state: GameState::new(config),
-        }
+        let universe = UniverseRepository::generate(config);
+        let state = GameState::new(&universe);
+        Self { universe, state }
     }
 
-    pub fn from_state(state: GameState) -> Self {
-        Self { state }
+    pub fn from_parts(
+        universe: UniverseDefinition,
+        state: GameState,
+    ) -> Result<Self, SimulationBuildError> {
+        let universe = UniverseRepository::new(universe)?;
+        validate_state(&universe, &state)?;
+        Ok(Self { universe, state })
+    }
+
+    /// Immutable generated definition. No mutable universe accessor exists.
+    pub fn universe(&self) -> &UniverseDefinition {
+        self.universe.definition()
+    }
+
+    pub fn universe_repository(&self) -> &UniverseRepository {
+        &self.universe
     }
 
     pub fn state(&self) -> &GameState {
@@ -69,7 +125,7 @@ impl Simulation {
     }
 
     fn select_system(&mut self, system_id: SystemId) -> Vec<GameEvent> {
-        if self.state.universe.system(system_id).is_none() {
+        if self.universe.system(system_id).is_none() {
             return Vec::new();
         }
 
@@ -77,10 +133,10 @@ impl Simulation {
     }
 
     fn select_planet(&mut self, system_id: SystemId, planet_id: PlanetId) -> Vec<GameEvent> {
-        let Some(system) = self.state.universe.system(system_id) else {
+        let Some((planet_system_id, _)) = self.universe.planet_location(planet_id) else {
             return Vec::new();
         };
-        if system.planet(planet_id).is_none() {
+        if planet_system_id != system_id {
             return Vec::new();
         }
 
@@ -100,9 +156,81 @@ impl Simulation {
     }
 }
 
+fn validate_state(
+    universe: &UniverseRepository,
+    state: &GameState,
+) -> Result<(), SimulationBuildError> {
+    if state.version != GAME_STATE_VERSION {
+        return Err(SimulationBuildError::UnsupportedStateVersion {
+            expected: GAME_STATE_VERSION,
+            found: state.version,
+        });
+    }
+
+    for system_id in &state.known_systems {
+        if universe.system(*system_id).is_none() {
+            return Err(SimulationBuildError::UnknownKnownSystem(*system_id));
+        }
+    }
+
+    let mut colony_ids = HashSet::with_capacity(state.colonies.len());
+    for colony in &state.colonies {
+        if !colony_ids.insert(colony.id) {
+            return Err(SimulationBuildError::DuplicateColony(colony.id));
+        }
+        if universe.system(colony.system_id).is_none() {
+            return Err(SimulationBuildError::UnknownColonySystem {
+                colony_id: colony.id,
+                system_id: colony.system_id,
+            });
+        }
+        let Some((planet_system_id, _)) = universe.planet_location(colony.planet_id) else {
+            return Err(SimulationBuildError::UnknownColonyPlanet {
+                colony_id: colony.id,
+                planet_id: colony.planet_id,
+            });
+        };
+        if planet_system_id != colony.system_id {
+            return Err(SimulationBuildError::ColonyPlanetSystemMismatch {
+                colony_id: colony.id,
+                system_id: colony.system_id,
+                planet_id: colony.planet_id,
+            });
+        }
+    }
+
+    match state.selected {
+        SelectionTarget::None => {}
+        SelectionTarget::System(system_id) => {
+            if universe.system(system_id).is_none() {
+                return Err(SimulationBuildError::InvalidSelectedSystem(system_id));
+            }
+        }
+        SelectionTarget::Planet {
+            system_id,
+            planet_id,
+        } => {
+            let Some((planet_system_id, _)) = universe.planet_location(planet_id) else {
+                return Err(SimulationBuildError::InvalidSelectedPlanet {
+                    system_id,
+                    planet_id,
+                });
+            };
+            if planet_system_id != system_id {
+                return Err(SimulationBuildError::InvalidSelectedPlanet {
+                    system_id,
+                    planet_id,
+                });
+            }
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use galactic_domain::{PlanetId, SystemId, UniverseConfig};
+    use galactic_domain::{PlanetId, ResourceStock, SystemId, UniverseConfig};
 
     use super::*;
 
@@ -136,17 +264,19 @@ mod tests {
     #[test]
     fn selection_events_use_domain_ids() {
         let mut simulation = Simulation::new(UniverseConfig::default());
+        let system_id = SystemId::from_index(0);
+        let planet_id = PlanetId::from_system_index(system_id, 0);
 
         let events = simulation.apply_command(GameCommand::SelectPlanet {
-            system_id: SystemId::new(0),
-            planet_id: PlanetId::new(0),
+            system_id,
+            planet_id,
         });
 
         assert_eq!(
             events,
             vec![GameEvent::SelectionChanged(SelectionTarget::Planet {
-                system_id: SystemId::new(0),
-                planet_id: PlanetId::new(0),
+                system_id,
+                planet_id,
             })]
         );
     }
@@ -160,7 +290,40 @@ mod tests {
         assert!(events.is_empty());
         assert_eq!(
             simulation.state().selected,
-            SelectionTarget::System(SystemId::new(0))
+            SelectionTarget::System(SystemId::from_index(0))
         );
+    }
+
+    #[test]
+    fn mutable_actions_do_not_change_generated_universe() {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+        let initial_universe = simulation.universe().clone();
+
+        simulation.tick(42.0);
+        simulation.apply_command(GameCommand::SetSpeed(TimeSpeed::X4));
+        simulation
+            .state_mut()
+            .colony_mut(ColonyId::new(0))
+            .expect("home colony exists")
+            .stock = ResourceStock::new(999, 888, 777, 666);
+
+        assert_eq!(simulation.universe(), &initial_universe);
+        assert_ne!(
+            simulation
+                .state()
+                .colony(ColonyId::new(0))
+                .expect("home colony exists")
+                .stock,
+            ResourceStock::new(120, 45, 80, 30)
+        );
+    }
+
+    #[test]
+    fn visual_world_inputs_are_available_as_definition_plus_state() {
+        let simulation = Simulation::new(UniverseConfig::mvp());
+
+        assert!(!simulation.universe().systems.is_empty());
+        assert!(!simulation.state().known_systems.is_empty());
+        assert!(simulation.state().colony(ColonyId::new(0)).is_some());
     }
 }
