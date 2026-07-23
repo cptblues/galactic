@@ -1,5 +1,7 @@
-// MVP-005: mutable game state owns a fixed, serializable strategic clock
-use galactic_domain::{ColonyId, FactionId, PlanetId, ResourceStock, SystemId};
+// MVP-006: mutable discoveries control which immutable routes are visible
+use galactic_domain::{
+    ColonyId, FactionId, PlanetId, ResourceStock, Route, SystemId, UniverseDefinition,
+};
 
 use crate::{SelectionTarget, StrategicClock, UniverseRepository};
 
@@ -55,6 +57,23 @@ impl GameState {
     pub fn colony_mut(&mut self, id: ColonyId) -> Option<&mut ColonyState> {
         self.colonies.iter_mut().find(|colony| colony.id == id)
     }
+
+    pub fn is_system_known(&self, system_id: SystemId) -> bool {
+        self.known_systems.contains(&system_id)
+    }
+
+    /// A route becomes visible only when both endpoint systems are known.
+    ///
+    /// Detailed knowledge levels are introduced later by MVP-009.
+    pub fn visible_routes<'a>(
+        &'a self,
+        universe: &'a UniverseDefinition,
+    ) -> impl Iterator<Item = &'a Route> + 'a {
+        universe
+            .routes
+            .iter()
+            .filter(|route| self.is_system_known(route.from) && self.is_system_known(route.to))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,7 +88,7 @@ pub struct ColonyState {
 
 #[cfg(test)]
 mod tests {
-    use galactic_domain::{ColonyId, UniverseConfig};
+    use galactic_domain::{ColonyId, SystemId, UniverseConfig};
 
     use super::*;
 
@@ -92,5 +111,28 @@ mod tests {
 
         assert_eq!(state.clock.current_tick().value(), 0);
         assert_eq!(state.clock.speed(), crate::TimeSpeed::X1);
+    }
+
+    #[test]
+    fn visible_routes_never_reveal_unknown_endpoints() {
+        let repository = UniverseRepository::generate(UniverseConfig::mvp());
+        let home = SystemId::from_index(0);
+        let neighbor = repository
+            .neighboring_systems(home)
+            .into_iter()
+            .next()
+            .expect("home system has a route");
+        let mut state = GameState::new(&repository);
+        state.known_systems = vec![home, neighbor];
+        let visible = state
+            .visible_routes(repository.definition())
+            .collect::<Vec<_>>();
+
+        assert_eq!(visible.len(), 1);
+        assert!(
+            visible.iter().all(|route| {
+                state.is_system_known(route.from) && state.is_system_known(route.to)
+            })
+        );
     }
 }

@@ -8,8 +8,8 @@ use crate::{PlanetId, StarId, SystemId, UniverseId, WorldPosition};
 
 pub const MVP_UNIVERSE_SEED: u64 = 42;
 pub const MVP_SYSTEM_COUNT: usize = 16;
-pub const GENERATION_VERSION: u32 = 1;
-pub const MVP_REFERENCE_FINGERPRINT: u64 = 14452641306278393246;
+pub const GENERATION_VERSION: u32 = 2;
+pub const MVP_REFERENCE_FINGERPRINT: u64 = 12539308657388844103;
 
 const MAX_SYSTEM_COUNT: usize = 256;
 
@@ -324,9 +324,57 @@ fn habitability_for(kind: PlanetKind, rng: &mut ChaCha8Rng) -> u8 {
     rng.random_range(range)
 }
 
+// MVP-006: guarantee connectivity with a deterministic minimum spanning tree,
+// then add local nearest-neighbor links to keep the map tactically interesting.
 fn generate_routes(systems: &[StarSystem]) -> Vec<Route> {
-    let mut unique = BTreeSet::new();
+    if systems.len() <= 1 {
+        return Vec::new();
+    }
 
+    let mut unique = BTreeSet::new();
+    let mut connected = vec![false; systems.len()];
+    connected[0] = true;
+
+    // Prim's algorithm over geometric distances. System IDs break equal-distance
+    // ties so the same seed always yields the same route graph.
+    for _ in 1..systems.len() {
+        let mut best: Option<(f32, SystemId, SystemId, usize)> = None;
+
+        for (from_index, from) in systems.iter().enumerate() {
+            if !connected[from_index] {
+                continue;
+            }
+
+            for (to_index, to) in systems.iter().enumerate() {
+                if connected[to_index] {
+                    continue;
+                }
+
+                let distance = from.position.distance_squared(to.position);
+                let replace = match best {
+                    None => true,
+                    Some((best_distance, best_from, best_to, _)) => distance
+                        .total_cmp(&best_distance)
+                        .then_with(|| from.id.cmp(&best_from))
+                        .then_with(|| to.id.cmp(&best_to))
+                        .is_lt(),
+                };
+
+                if replace {
+                    best = Some((distance, from.id, to.id, to_index));
+                }
+            }
+        }
+
+        let (_, from, to, to_index) =
+            best.expect("a disconnected vertex must have an edge to the connected set");
+        let route = Route::new(from, to);
+        unique.insert((route.from.raw(), route.to.raw()));
+        connected[to_index] = true;
+    }
+
+    // Add each system's two nearest neighbors. The BTreeSet preserves canonical
+    // ordering and removes edges already provided by the spanning tree.
     for system in systems {
         let mut neighbors = systems
             .iter()
@@ -338,7 +386,7 @@ fn generate_routes(systems: &[StarSystem]) -> Vec<Route> {
                 )
             })
             .collect::<Vec<_>>();
-        neighbors.sort_by(|a, b| a.0.total_cmp(&b.0));
+        neighbors.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
 
         for (_, neighbor_id) in neighbors.into_iter().take(2) {
             let route = Route::new(system.id, neighbor_id);
@@ -479,6 +527,40 @@ mod tests {
             assert!(universe.system(route.from).is_some());
             assert!(universe.system(route.to).is_some());
             assert_ne!(route.from, route.to);
+        }
+    }
+
+    #[test]
+    fn route_graph_is_connected_from_home() {
+        let universe = generate_universe(UniverseConfig::mvp());
+        let mut visited = BTreeSet::new();
+        let mut frontier = vec![SystemId::from_index(0)];
+
+        while let Some(system_id) = frontier.pop() {
+            if !visited.insert(system_id) {
+                continue;
+            }
+            frontier.extend(
+                universe
+                    .neighboring_systems(system_id)
+                    .into_iter()
+                    .filter(|neighbor| !visited.contains(neighbor)),
+            );
+        }
+
+        assert_eq!(visited.len(), universe.systems.len());
+    }
+
+    #[test]
+    fn routes_are_unique_canonical_and_deterministic() {
+        let first = generate_universe(UniverseConfig::mvp());
+        let second = generate_universe(UniverseConfig::mvp());
+        let mut unique = BTreeSet::new();
+
+        assert_eq!(first.routes, second.routes);
+        for route in &first.routes {
+            assert!(route.from < route.to);
+            assert!(unique.insert((route.from, route.to)));
         }
     }
 

@@ -116,3 +116,38 @@ Règles :
 - `GAME_STATE_VERSION = 2` et `SAVE_VERSION = 3`.
 
 Fréquence stratégique actuelle : `10 ticks/seconde`.
+
+
+## MVP-006 — Graphe d'univers et routes
+
+L'univers MVP est maintenant un graphe connexe plutôt qu'un simple ensemble de
+positions :
+
+```text
+Systèmes générés
+        │
+        ├── arbre couvrant minimal déterministe
+        └── routes locales vers les voisins proches
+        ▼
+Graphe connexe sans doublon
+        ▼
+Index d'adjacence UniverseRepository
+        ▼
+Voisinages / chemin minimal / distance en sauts
+```
+
+Règles :
+
+- la seed MVP contient toujours 16 systèmes, dans la fourchette cible 12–20 ;
+- un arbre couvrant minimal garantit que tous les systèmes sont accessibles
+  depuis `SystemId(0)` ;
+- des routes locales supplémentaires évitent un graphe réduit à un simple arbre ;
+- les routes sont canoniques, sans boucle et sans doublon ;
+- `UniverseRepository::shortest_path()` utilise un BFS déterministe ;
+- `UniverseRepository::hop_distance()` retourne le nombre minimal de sauts ;
+- l'univers complet reste immuable et est régénéré depuis la seed ;
+- la vue Univers ne trace que les routes dont les deux systèmes sont connus ;
+- l'instanciation limitée aux systèmes découverts sera traitée par `MVP-007`.
+
+La modification volontaire du graphe incrémente `GENERATION_VERSION` et produit
+un nouveau fingerprint de référence pour la seed MVP.

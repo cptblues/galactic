@@ -234,7 +234,7 @@ fn spawn_ui(mut commands: Commands) {
 
     commands.spawn((
         Text::new(
-            "Space pause | 1 x1 | 2 x2 | 3 x4 | R rebuild views | immutable universe + mutable state live outside Bevy views",
+            "Space pause | 1 x1 | 2 x2 | 3 x4 | R rebuild views | only discovered routes are visible",
         ),
         TextFont {
             font_size: FontSize::Px(13.0),
@@ -306,13 +306,15 @@ fn update_ui(
         .last_event
         .map(event_label)
         .unwrap_or_else(|| "ready".to_string());
+    let visible_route_count = state.visible_routes(universe).count();
 
     text.0 = format!(
-        "Galactic MVP | Bevy 0.19 | seed {} | gen v{} | fp {:016x} | systems {} | routes {} | colonies {} | known {} | tick {} | t {:.1}s | speed {} | selected {} | event {}",
+        "Galactic MVP | Bevy 0.19 | seed {} | gen v{} | fp {:016x} | systems {} | routes {}/{} | colonies {} | known {} | tick {} | t {:.1}s | speed {} | selected {} | event {}",
         universe.seed,
         universe.generation_version,
         universe.generation_fingerprint,
         universe.systems.len(),
+        visible_route_count,
         universe.routes.len(),
         state.colonies.len(),
         state.known_systems.len(),
@@ -344,9 +346,11 @@ fn update_system_visuals(
 }
 
 fn draw_routes(mut gizmos: Gizmos, simulation: Res<SimulationResource>) {
-    let universe = simulation.simulation().universe();
+    let simulation = simulation.simulation();
+    let universe = simulation.universe();
+    let state = simulation.state();
 
-    for route in &universe.routes {
+    for route in state.visible_routes(universe) {
         let Some(from) = universe.system(route.from) else {
             continue;
         };
@@ -357,7 +361,7 @@ fn draw_routes(mut gizmos: Gizmos, simulation: Res<SimulationResource>) {
         gizmos.line(
             to_vec3(from.position),
             to_vec3(to.position),
-            Color::srgba(0.28, 0.62, 0.94, 0.35),
+            Color::srgba(0.28, 0.62, 0.94, 0.52),
         );
     }
 }
