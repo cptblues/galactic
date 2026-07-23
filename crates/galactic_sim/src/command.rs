@@ -12,4 +12,6 @@ pub enum GameCommand {
         planet_id: PlanetId,
     },
     ClearSelection,
+    /// Temporary validation command until the probe mission loop is added.
+    DebugAdvanceSelectedKnowledge,
 }

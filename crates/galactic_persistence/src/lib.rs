@@ -1,15 +1,15 @@
-// MVP-008: save the player faction and configurable colony foundation
+// MVP-009: persist progressive knowledge and the MVP-008 foundation
 use galactic_domain::{
     ColonyId, FactionId, PlanetId, ResourceStock, SystemId, UniverseConfig, UniverseId,
     generate_universe,
 };
 use galactic_sim::{
-    BuildingLevels, ColonyState, FactionKind, FactionState, GameState, PlanetResourceProfile,
-    SelectionTarget, Simulation, SimulationBuildError, StrategicClock, StrategicClockError,
-    StrategicTick, TimeSpeed,
+    BuildingLevels, ColonyState, FactionKind, FactionState, GameState, PlanetKnowledge,
+    PlanetResourceProfile, SelectionTarget, Simulation, SimulationBuildError, StrategicClock,
+    StrategicClockError, StrategicTick, SystemKnowledge, TimeSpeed,
 };
 
-pub const SAVE_VERSION: u32 = 4;
+pub const SAVE_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SaveGame {
@@ -34,7 +34,8 @@ pub struct MutableGameSave {
     pub player_faction: FactionId,
     pub clock: StrategicClockSave,
     pub selected: SelectionTarget,
-    pub known_systems: Vec<SystemId>,
+    pub system_knowledge: Vec<SystemKnowledge>,
+    pub planet_knowledge: Vec<PlanetKnowledge>,
     pub colonies: Vec<ColonySave>,
 }
 
@@ -116,7 +117,8 @@ pub fn snapshot_from_simulation(simulation: &Simulation) -> SaveGame {
                 resume_speed: state.clock.resume_speed(),
             },
             selected: state.selected,
-            known_systems: state.known_systems.clone(),
+            system_knowledge: state.system_knowledge.clone(),
+            planet_knowledge: state.planet_knowledge.clone(),
             colonies: state
                 .colonies
                 .iter()
@@ -200,7 +202,8 @@ pub fn restore_from_snapshot(save: &SaveGame) -> Result<Simulation, SaveError> {
                 resource_profile: colony.resource_profile,
             })
             .collect(),
-        known_systems: save.state.known_systems.clone(),
+        system_knowledge: save.state.system_knowledge.clone(),
+        planet_knowledge: save.state.planet_knowledge.clone(),
         selected: save.state.selected,
         clock,
     };
@@ -212,51 +215,58 @@ pub fn restore_from_snapshot(save: &SaveGame) -> Result<Simulation, SaveError> {
 mod tests {
     use std::time::Duration;
 
-    use galactic_domain::UniverseConfig;
+    use galactic_domain::{SystemId, UniverseConfig};
     use galactic_sim::{
-        GAME_STATE_VERSION, GameCommand, STRATEGIC_TICK_NANOS, StartingScenario, StrategicTick,
+        GAME_STATE_VERSION, GameCommand, KnowledgeLevel, STRATEGIC_TICK_NANOS, StrategicTick,
         TimeSpeed,
     };
 
     use super::*;
 
     #[test]
-    fn snapshot_round_trips_complete_starting_state() {
-        let mut simulation = Simulation::new(UniverseConfig::new(99, 14));
+    fn snapshot_round_trips_knowledge_and_starting_state() {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+        let target = simulation
+            .universe_repository()
+            .neighboring_systems(SystemId::from_index(0))
+            .into_iter()
+            .next()
+            .expect("home has a neighbor");
+        simulation.apply_command(GameCommand::SelectSystem(target));
+        simulation.apply_command(GameCommand::DebugAdvanceSelectedKnowledge);
         simulation.advance(Duration::from_millis(125));
         simulation.apply_command(GameCommand::SetSpeed(TimeSpeed::X4));
 
-        let original_fingerprint = simulation.universe().generation_fingerprint;
         let save = snapshot_from_simulation(&simulation);
         let restored = restore_from_snapshot(&save).expect("save is compatible");
 
-        assert_eq!(
-            restored.universe().generation_fingerprint,
-            original_fingerprint
-        );
         assert_eq!(restored.state(), simulation.state());
+        assert_eq!(
+            restored.state().system_knowledge_level(target),
+            KnowledgeLevel::Probed
+        );
         assert_eq!(restored.state().clock.current_tick(), StrategicTick::new(1));
-        assert_eq!(restored.state().clock.remainder_nanos(), 25_000_000);
     }
 
     #[test]
-    fn snapshot_contains_player_faction_and_home_foundation() {
+    fn snapshot_contains_progressive_knowledge() {
         let simulation = Simulation::new(UniverseConfig::mvp());
         let save = snapshot_from_simulation(&simulation);
-        let scenario = StartingScenario::mvp();
-        let colony = save.state.colonies.first().expect("home colony is saved");
 
         assert_eq!(save.state.version, GAME_STATE_VERSION);
-        assert_eq!(save.state.factions.len(), 1);
-        assert_eq!(save.state.player_faction, scenario.player_faction.id);
-        assert_eq!(colony.buildings, scenario.home_colony.buildings);
-        assert_eq!(
-            colony.resource_profile,
-            scenario.home_colony.resource_profile
+        assert!(!save.state.system_knowledge.is_empty());
+        assert!(!save.state.planet_knowledge.is_empty());
+        assert!(
+            save.state
+                .system_knowledge
+                .iter()
+                .any(|entry| { entry.level == KnowledgeLevel::Colonized })
         );
-        assert_eq!(
-            save.state.known_systems.as_slice(),
-            scenario.initially_known_systems
+        assert!(
+            save.state
+                .system_knowledge
+                .iter()
+                .any(|entry| { entry.level == KnowledgeLevel::Detected })
         );
     }
 

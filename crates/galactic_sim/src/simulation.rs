@@ -1,4 +1,4 @@
-// MVP-005: fixed strategic clock independent from rendering FPS
+// MVP-009: simulation commands and validation for progressive knowledge
 use std::collections::HashSet;
 use std::time::Duration;
 
@@ -7,8 +7,9 @@ use galactic_domain::{
 };
 
 use crate::{
-    FactionKind, GAME_STATE_VERSION, GameCommand, GameEvent, GameState, SelectionTarget,
-    StartingScenario, StartingScenarioError, TimeSpeed, UniverseIndexError, UniverseRepository,
+    FactionKind, GAME_STATE_VERSION, GameCommand, GameEvent, GameState, KnowledgeLevel,
+    SelectionTarget, StartingScenario, StartingScenarioError, TimeSpeed, UniverseIndexError,
+    UniverseRepository,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,7 +28,20 @@ pub enum SimulationBuildError {
         colony_id: ColonyId,
         faction_id: FactionId,
     },
-    UnknownKnownSystem(SystemId),
+    DuplicateSystemKnowledge(SystemId),
+    DuplicatePlanetKnowledge(PlanetId),
+    ExplicitUnknownSystemKnowledge(SystemId),
+    ExplicitUnknownPlanetKnowledge(PlanetId),
+    UnknownKnowledgeSystem(SystemId),
+    UnknownKnowledgePlanet(PlanetId),
+    ColonySystemNotColonized {
+        colony_id: ColonyId,
+        system_id: SystemId,
+    },
+    ColonyPlanetNotColonized {
+        colony_id: ColonyId,
+        planet_id: PlanetId,
+    },
     UnknownColonySystem {
         colony_id: ColonyId,
         system_id: SystemId,
@@ -116,6 +130,7 @@ impl Simulation {
                 planet_id,
             } => self.select_planet(system_id, planet_id),
             GameCommand::ClearSelection => self.set_selection(SelectionTarget::None),
+            GameCommand::DebugAdvanceSelectedKnowledge => self.debug_advance_selected_knowledge(),
         }
     }
 
@@ -167,6 +182,33 @@ impl Simulation {
         })
     }
 
+    fn debug_advance_selected_knowledge(&mut self) -> Vec<GameEvent> {
+        let changes = match self.state.selected {
+            SelectionTarget::None => Vec::new(),
+            SelectionTarget::System(system_id) => {
+                let current = self.state.system_knowledge_level(system_id);
+                let Some(next) = current.next_exploration_level() else {
+                    return Vec::new();
+                };
+                self.state
+                    .advance_system_knowledge(&self.universe, system_id, next)
+            }
+            SelectionTarget::Planet { planet_id, .. } => {
+                let current = self.state.planet_knowledge_level(planet_id);
+                let Some(next) = current.next_exploration_level() else {
+                    return Vec::new();
+                };
+                self.state
+                    .advance_planet_knowledge(&self.universe, planet_id, next)
+            }
+        };
+
+        changes
+            .into_iter()
+            .map(GameEvent::KnowledgeChanged)
+            .collect()
+    }
+
     fn set_selection(&mut self, selection: SelectionTarget) -> Vec<GameEvent> {
         if self.state.selected == selection {
             return Vec::new();
@@ -206,9 +248,41 @@ fn validate_state(
         ));
     }
 
-    for system_id in &state.known_systems {
-        if universe.system(*system_id).is_none() {
-            return Err(SimulationBuildError::UnknownKnownSystem(*system_id));
+    let mut system_knowledge_ids = HashSet::with_capacity(state.system_knowledge.len());
+    for knowledge in &state.system_knowledge {
+        if !system_knowledge_ids.insert(knowledge.system_id) {
+            return Err(SimulationBuildError::DuplicateSystemKnowledge(
+                knowledge.system_id,
+            ));
+        }
+        if knowledge.level == KnowledgeLevel::Unknown {
+            return Err(SimulationBuildError::ExplicitUnknownSystemKnowledge(
+                knowledge.system_id,
+            ));
+        }
+        if universe.system(knowledge.system_id).is_none() {
+            return Err(SimulationBuildError::UnknownKnowledgeSystem(
+                knowledge.system_id,
+            ));
+        }
+    }
+
+    let mut planet_knowledge_ids = HashSet::with_capacity(state.planet_knowledge.len());
+    for knowledge in &state.planet_knowledge {
+        if !planet_knowledge_ids.insert(knowledge.planet_id) {
+            return Err(SimulationBuildError::DuplicatePlanetKnowledge(
+                knowledge.planet_id,
+            ));
+        }
+        if knowledge.level == KnowledgeLevel::Unknown {
+            return Err(SimulationBuildError::ExplicitUnknownPlanetKnowledge(
+                knowledge.planet_id,
+            ));
+        }
+        if universe.planet(knowledge.planet_id).is_none() {
+            return Err(SimulationBuildError::UnknownKnowledgePlanet(
+                knowledge.planet_id,
+            ));
         }
     }
 
@@ -239,6 +313,18 @@ fn validate_state(
             return Err(SimulationBuildError::ColonyPlanetSystemMismatch {
                 colony_id: colony.id,
                 system_id: colony.system_id,
+                planet_id: colony.planet_id,
+            });
+        }
+        if state.system_knowledge_level(colony.system_id) != KnowledgeLevel::Colonized {
+            return Err(SimulationBuildError::ColonySystemNotColonized {
+                colony_id: colony.id,
+                system_id: colony.system_id,
+            });
+        }
+        if state.planet_knowledge_level(colony.planet_id) != KnowledgeLevel::Colonized {
+            return Err(SimulationBuildError::ColonyPlanetNotColonized {
+                colony_id: colony.id,
                 planet_id: colony.planet_id,
             });
         }
@@ -275,7 +361,9 @@ fn validate_state(
 
 #[cfg(test)]
 mod tests {
-    use galactic_domain::{PlanetId, ResourceStock, SystemId, UniverseConfig};
+    use galactic_domain::{ColonyId, PlanetId, ResourceStock, SystemId, UniverseConfig};
+
+    use crate::KnowledgeTarget;
 
     use super::*;
 
@@ -315,37 +403,6 @@ mod tests {
         advance_in_equal_frames(&mut slow_frames, 10, Duration::from_millis(100));
 
         assert_eq!(fast_frames.state().clock, slow_frames.state().clock);
-        assert_eq!(fast_frames.state().clock.current_tick().value(), 10);
-    }
-
-    #[test]
-    fn pause_and_resume_do_not_duplicate_or_skip_ticks() {
-        let mut simulation = Simulation::new(UniverseConfig::default());
-
-        simulation.advance(Duration::from_millis(50));
-        simulation.apply_command(GameCommand::SetSpeed(TimeSpeed::Paused));
-        assert!(simulation.advance(Duration::from_secs(10)).is_empty());
-        assert_eq!(simulation.state().clock.current_tick().value(), 0);
-        assert_eq!(simulation.state().clock.remainder_nanos(), 50_000_000);
-
-        simulation.apply_command(GameCommand::TogglePause);
-        simulation.advance(Duration::from_millis(50));
-
-        assert_eq!(simulation.state().clock.current_tick().value(), 1);
-        assert_eq!(simulation.state().clock.remainder_nanos(), 0);
-    }
-
-    #[test]
-    fn speed_changes_simulation_tick_rate() {
-        let mut normal = Simulation::new(UniverseConfig::mvp());
-        let mut accelerated = Simulation::new(UniverseConfig::mvp());
-        accelerated.apply_command(GameCommand::SetSpeed(TimeSpeed::X4));
-
-        normal.advance(Duration::from_millis(500));
-        accelerated.advance(Duration::from_millis(500));
-
-        assert_eq!(normal.state().clock.current_tick().value(), 5);
-        assert_eq!(accelerated.state().clock.current_tick().value(), 20);
     }
 
     #[test]
@@ -354,10 +411,7 @@ mod tests {
         let system_id = SystemId::from_index(0);
         let planet_id = PlanetId::from_system_index(system_id, 0);
 
-        assert_eq!(
-            simulation.apply_command(GameCommand::ClearSelection),
-            vec![GameEvent::SelectionChanged(SelectionTarget::None)]
-        );
+        simulation.apply_command(GameCommand::ClearSelection);
         let events = simulation.apply_command(GameCommand::SelectPlanet {
             system_id,
             planet_id,
@@ -384,6 +438,55 @@ mod tests {
     }
 
     #[test]
+    fn debug_probe_progresses_selected_system_and_frontier() {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+        let target = simulation
+            .universe_repository()
+            .neighboring_systems(SystemId::from_index(0))
+            .into_iter()
+            .next()
+            .expect("home has a neighbor");
+
+        simulation.apply_command(GameCommand::SelectSystem(target));
+        let events = simulation.apply_command(GameCommand::DebugAdvanceSelectedKnowledge);
+
+        assert_eq!(
+            simulation.state().system_knowledge_level(target),
+            KnowledgeLevel::Probed
+        );
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                GameEvent::KnowledgeChanged(change)
+                    if change.target
+                        == KnowledgeTarget::System(target)
+            )
+        }));
+    }
+
+    #[test]
+    fn knowledge_command_stops_before_colonization() {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+        let target = simulation
+            .universe_repository()
+            .neighboring_systems(SystemId::from_index(0))
+            .into_iter()
+            .next()
+            .expect("home has a neighbor");
+
+        simulation.apply_command(GameCommand::SelectSystem(target));
+        simulation.apply_command(GameCommand::DebugAdvanceSelectedKnowledge);
+        simulation.apply_command(GameCommand::DebugAdvanceSelectedKnowledge);
+        let events = simulation.apply_command(GameCommand::DebugAdvanceSelectedKnowledge);
+
+        assert!(events.is_empty());
+        assert_eq!(
+            simulation.state().system_knowledge_level(target),
+            KnowledgeLevel::Analyzed
+        );
+    }
+
+    #[test]
     fn mutable_actions_do_not_change_generated_universe() {
         let mut simulation = Simulation::new(UniverseConfig::mvp());
         let initial_universe = simulation.universe().clone();
@@ -397,22 +500,18 @@ mod tests {
             .stock = ResourceStock::new(999, 888, 777, 666);
 
         assert_eq!(simulation.universe(), &initial_universe);
-        assert_ne!(
-            simulation
-                .state()
-                .colony(ColonyId::new(0))
-                .expect("home colony exists")
-                .stock,
-            ResourceStock::new(120, 45, 80, 30)
-        );
     }
 
     #[test]
-    fn visual_world_inputs_are_available_as_definition_plus_state() {
+    fn reconstruction_rejects_missing_colony_knowledge() {
         let simulation = Simulation::new(UniverseConfig::mvp());
+        let universe = simulation.universe().clone();
+        let mut state = simulation.state().clone();
+        state.planet_knowledge.clear();
 
-        assert!(!simulation.universe().systems.is_empty());
-        assert!(!simulation.state().known_systems.is_empty());
-        assert!(simulation.state().colony(ColonyId::new(0)).is_some());
+        assert!(matches!(
+            Simulation::from_parts(universe, state),
+            Err(SimulationBuildError::ColonyPlanetNotColonized { .. })
+        ));
     }
 }

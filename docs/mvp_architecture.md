@@ -245,3 +245,65 @@ Versions après migration :
 
 - `GAME_STATE_VERSION = 3` ;
 - `SAVE_VERSION = 4`.
+
+
+## MVP-008b + MVP-009 — Caméra souris et connaissance progressive
+
+### Navigation de caméra
+
+Les deux vues stratégiques possèdent désormais leur propre contexte orbital :
+
+- clic droit maintenu : rotation autour du point observé ;
+- clic molette maintenu : déplacement du point observé ;
+- molette : zoom ;
+- `WASD` et `Q/E` restent disponibles comme commandes de secours ;
+- les angles, distances et points de focus Univers/Système sont conservés lors
+  des transitions ;
+- le déplacement souris utilise le delta brut accumulé de la frame, sans être
+  multiplié par le delta temporel.
+
+### Connaissance progressive
+
+La liste binaire des systèmes connus est remplacée par deux collections
+persistantes :
+
+```text
+system_knowledge: Vec<SystemKnowledge>
+planet_knowledge: Vec<PlanetKnowledge>
+```
+
+Niveaux :
+
+```text
+Unknown -> Detected -> Probed -> Analyzed -> Colonized
+```
+
+Règles :
+
+- une connaissance ne peut jamais régresser ;
+- l'absence d'entrée équivaut à `Unknown` ;
+- `Detected` affiche seulement un signal ou une silhouette ;
+- `Probed` révèle l'identité et permet d'ouvrir un système ;
+- `Analyzed` révèle les détails exacts disponibles ;
+- `Colonized` est réservé aux objets possédant une colonie ;
+- sonder un système détecte ses planètes et ses voisins directs ;
+- les routes sont visibles lorsque leurs deux extrémités sont détectées et
+  qu'au moins l'une est sondée ;
+- le système natal et la planète mère commencent `Colonized` ;
+- les autres planètes du système natal commencent `Detected` ;
+- les voisins directs du système natal commencent `Detected`.
+
+Tant que les missions de sonde ne sont pas implémentées, la touche `K` fait
+progresser la cible sélectionnée jusqu'à `Analyzed`. Elle ne peut jamais
+coloniser.
+
+Dans la vue Système, `Tab` sélectionne successivement les planètes visibles.
+Dans la vue Univers, `Tab` continue de parcourir les systèmes visibles.
+
+Versions après migration :
+
+- `GAME_STATE_VERSION = 4` ;
+- `SAVE_VERSION = 5`.
+
+La seed, la version de génération et le fingerprint de l'univers ne changent
+pas.

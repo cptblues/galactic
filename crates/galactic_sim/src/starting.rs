@@ -1,7 +1,7 @@
-// MVP-008: configurable starting scenario, independent from universe generation
+// MVP-009: configurable starting knowledge and home-world state
 use galactic_domain::{ColonyId, FactionId, PlanetId, ResourceStock, SystemId};
 
-use crate::UniverseRepository;
+use crate::{KnowledgeLevel, UniverseRepository};
 
 pub const MVP_HOME_SYSTEM_ID: SystemId = SystemId::from_index(0);
 pub const MVP_HOME_PLANET_ID: PlanetId = PlanetId::from_system_index(MVP_HOME_SYSTEM_ID, 0);
@@ -9,7 +9,15 @@ pub const MVP_PLAYER_FACTION_ID: FactionId = FactionId::new(0);
 pub const MVP_HOME_COLONY_ID: ColonyId = ColonyId::new(0);
 pub const MVP_MIN_HOME_HABITABILITY: u8 = 80;
 
-pub const MVP_INITIAL_KNOWN_SYSTEMS: [SystemId; 1] = [MVP_HOME_SYSTEM_ID];
+pub const MVP_INITIAL_SYSTEM_KNOWLEDGE: [InitialSystemKnowledge; 1] = [InitialSystemKnowledge {
+    system_id: MVP_HOME_SYSTEM_ID,
+    level: KnowledgeLevel::Colonized,
+}];
+
+pub const MVP_INITIAL_PLANET_KNOWLEDGE: [InitialPlanetKnowledge; 1] = [InitialPlanetKnowledge {
+    planet_id: MVP_HOME_PLANET_ID,
+    level: KnowledgeLevel::Colonized,
+}];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BuildingKind {
@@ -136,10 +144,23 @@ pub struct StartingColonyConfig {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InitialSystemKnowledge {
+    pub system_id: SystemId,
+    pub level: KnowledgeLevel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InitialPlanetKnowledge {
+    pub planet_id: PlanetId,
+    pub level: KnowledgeLevel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StartingScenario {
     pub player_faction: StartingFactionConfig,
     pub home_colony: StartingColonyConfig,
-    pub initially_known_systems: &'static [SystemId],
+    pub initial_system_knowledge: &'static [InitialSystemKnowledge],
+    pub initial_planet_knowledge: &'static [InitialPlanetKnowledge],
     pub minimum_home_habitability: u8,
 }
 
@@ -159,7 +180,8 @@ impl StartingScenario {
                 buildings: BuildingLevels::MVP_START,
                 resource_profile: PlanetResourceProfile::BALANCED,
             },
-            initially_known_systems: &MVP_INITIAL_KNOWN_SYSTEMS,
+            initial_system_knowledge: &MVP_INITIAL_SYSTEM_KNOWLEDGE,
+            initial_planet_knowledge: &MVP_INITIAL_PLANET_KNOWLEDGE,
             minimum_home_habitability: MVP_MIN_HOME_HABITABILITY,
         }
     }
@@ -198,18 +220,46 @@ impl StartingScenario {
             });
         }
 
-        for system_id in self.initially_known_systems {
-            if universe.system(*system_id).is_none() {
-                return Err(StartingScenarioError::UnknownInitiallyKnownSystem(
-                    *system_id,
+        for knowledge in self.initial_system_knowledge {
+            if knowledge.level == KnowledgeLevel::Unknown {
+                return Err(StartingScenarioError::ExplicitUnknownKnowledge);
+            }
+            if universe.system(knowledge.system_id).is_none() {
+                return Err(StartingScenarioError::UnknownInitialSystem(
+                    knowledge.system_id,
                 ));
             }
         }
-        if !self
-            .initially_known_systems
-            .contains(&self.home_colony.system_id)
-        {
-            return Err(StartingScenarioError::HomeSystemNotInitiallyKnown);
+
+        for knowledge in self.initial_planet_knowledge {
+            if knowledge.level == KnowledgeLevel::Unknown {
+                return Err(StartingScenarioError::ExplicitUnknownKnowledge);
+            }
+            if universe.planet(knowledge.planet_id).is_none() {
+                return Err(StartingScenarioError::UnknownInitialPlanet(
+                    knowledge.planet_id,
+                ));
+            }
+        }
+
+        let home_system_level = self
+            .initial_system_knowledge
+            .iter()
+            .find(|entry| entry.system_id == self.home_colony.system_id)
+            .map(|entry| entry.level)
+            .unwrap_or_default();
+        if home_system_level != KnowledgeLevel::Colonized {
+            return Err(StartingScenarioError::HomeSystemNotColonized);
+        }
+
+        let home_planet_level = self
+            .initial_planet_knowledge
+            .iter()
+            .find(|entry| entry.planet_id == self.home_colony.planet_id)
+            .map(|entry| entry.level)
+            .unwrap_or_default();
+        if home_planet_level != KnowledgeLevel::Colonized {
+            return Err(StartingScenarioError::HomePlanetNotColonized);
         }
 
         Ok(())
@@ -227,6 +277,7 @@ pub enum StartingScenarioError {
     EmptyFactionName,
     EmptyColonyName,
     InvalidResourceProfile,
+    ExplicitUnknownKnowledge,
     UnknownHomeSystem(SystemId),
     UnknownHomePlanet(PlanetId),
     HomePlanetSystemMismatch {
@@ -237,8 +288,10 @@ pub enum StartingScenarioError {
         required: u8,
         found: u8,
     },
-    UnknownInitiallyKnownSystem(SystemId),
-    HomeSystemNotInitiallyKnown,
+    UnknownInitialSystem(SystemId),
+    UnknownInitialPlanet(PlanetId),
+    HomeSystemNotColonized,
+    HomePlanetNotColonized,
 }
 
 #[cfg(test)]

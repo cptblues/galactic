@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 
+use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit};
 use bevy::prelude::*;
 use bevy::window::PresentMode;
 use galactic_domain::{PlanetKind, StarClass, SystemId, UniverseConfig, WorldPosition};
 use galactic_sim::{
-    GameCommand, GameEvent, MVP_HOME_SYSTEM_ID, SelectionTarget, Simulation, SystemVisibility,
-    TimeSpeed,
+    GameCommand, GameEvent, KnowledgeLevel, KnowledgeTarget, MVP_HOME_SYSTEM_ID, SelectionTarget,
+    Simulation, SystemVisibility, TimeSpeed,
 };
 
 pub fn run() {
@@ -171,7 +172,12 @@ struct StrategicNavigation {
     mode: StrategicViewMode,
     universe_focus: Vec3,
     universe_distance: f32,
+    universe_yaw: f32,
+    universe_pitch: f32,
+    system_focus: Vec3,
     system_distance: f32,
+    system_yaw: f32,
+    system_pitch: f32,
     lod: UniverseLod,
     debug_full_graph: bool,
     preset: GraphicsPreset,
@@ -184,7 +190,12 @@ impl Default for StrategicNavigation {
             mode: StrategicViewMode::System(MVP_HOME_SYSTEM_ID),
             universe_focus: Vec3::ZERO,
             universe_distance,
+            universe_yaw: 0.0,
+            universe_pitch: -0.62,
+            system_focus: Vec3::ZERO,
             system_distance: 34.0,
+            system_yaw: 0.0,
+            system_pitch: -0.62,
             lod: UniverseLod::from_distance(universe_distance),
             debug_full_graph: false,
             preset: GraphicsPreset::Low,
@@ -314,7 +325,6 @@ fn spawn_universe_view(
 ) {
     let simulation = simulation.simulation();
     let universe = simulation.universe();
-    let repository = simulation.universe_repository();
     let state = simulation.state();
 
     let visible_systems = systems_for_universe_view(simulation, navigation.debug_full_graph);
@@ -379,9 +389,9 @@ fn spawn_universe_view(
     debug_assert!(
         navigation.debug_full_graph
             || state
-                .visible_systems(repository)
+                .visible_systems()
                 .iter()
-                .all(|(system_id, _)| { state.is_system_visible(repository, *system_id) })
+                .all(|(system_id, _)| { state.is_system_visible(*system_id) })
     );
 }
 
@@ -399,16 +409,14 @@ fn systems_for_universe_view(
                     system.id,
                     simulation
                         .state()
-                        .system_visibility(simulation.universe_repository(), system.id)
+                        .system_visibility(system.id)
                         .unwrap_or(SystemVisibility::Detected),
                 )
             })
             .collect();
     }
 
-    simulation
-        .state()
-        .visible_systems(simulation.universe_repository())
+    simulation.state().visible_systems()
 }
 
 fn spawn_system_view(
@@ -448,11 +456,16 @@ fn spawn_system_view(
 
     let state = simulation.state();
     for (index, planet) in system.planets.iter().enumerate() {
+        let level = state.planet_knowledge_level(planet.id);
+        if level == KnowledgeLevel::Unknown {
+            continue;
+        }
+
         let radius = 6.0 + index as f32 * 4.8;
         let angle = index as f32 * 1.37;
         let position = Vec3::new(angle.cos() * radius, 0.0, angle.sin() * radius);
-        let colonized = state.colony_on_planet(planet.id);
-        let material = if colonized.is_some() {
+        let colony = state.colony_on_planet(planet.id);
+        let material = if level.reveals_identity() {
             assets
                 .planet_materials
                 .get(&planet.kind)
@@ -461,15 +474,32 @@ fn spawn_system_view(
         } else {
             assets.detected_material.clone()
         };
-        let scale = if colonized.is_some() && planet.kind == PlanetKind::GasGiant {
+        let scale = if level.reveals_identity() && planet.kind == PlanetKind::GasGiant {
             1.25
         } else {
             0.72
         };
-        let label = if let Some(colony) = colonized {
-            format!("{} — {}", planet.name, colony.name)
-        } else {
-            format!("Corps non sondé {}", index + 1)
+        let label = match level {
+            KnowledgeLevel::Unknown => {
+                continue;
+            }
+            KnowledgeLevel::Detected => {
+                format!("Corps détecté {}", index + 1)
+            }
+            KnowledgeLevel::Probed => {
+                format!("{} — {:?}", planet.name, planet.kind)
+            }
+            KnowledgeLevel::Analyzed => format!(
+                "{} — {:?} — hab {}%",
+                planet.name, planet.kind, planet.habitability,
+            ),
+            KnowledgeLevel::Colonized => {
+                let colony_name = colony.map(|value| value.name.as_str()).unwrap_or("Colonie");
+                format!(
+                    "{} — {} — hab {}%",
+                    planet.name, colony_name, planet.habitability,
+                )
+            }
         };
 
         commands.spawn((
@@ -534,7 +564,7 @@ fn spawn_ui(mut commands: Commands) {
 
     commands.spawn((
         Text::new(
-            "Space pause | 1/2/3 speed | WASD pan | Q/E zoom | Tab select | F focus | Enter system | Esc universe | F3 debug graph | R rebuild",
+            "Space pause | 1/2/3 speed | RMB orbit | MMB pan | wheel zoom | WASD/QE fallback | Tab select | K advance knowledge | Enter/Esc views | F3 debug",
         ),
         TextFont {
             font_size: FontSize::Px(13.0),
@@ -565,6 +595,8 @@ fn handle_simulation_input(
         Some(GameCommand::SetSpeed(TimeSpeed::X2))
     } else if keyboard.just_pressed(KeyCode::Digit3) {
         Some(GameCommand::SetSpeed(TimeSpeed::X4))
+    } else if keyboard.just_pressed(KeyCode::KeyK) {
+        Some(GameCommand::DebugAdvanceSelectedKnowledge)
     } else {
         None
     };
@@ -591,9 +623,15 @@ fn handle_view_input(
         rebuild.0 = true;
     }
 
-    if keyboard.just_pressed(KeyCode::Tab) && matches!(navigation.mode, StrategicViewMode::Universe)
-    {
-        cycle_visible_selection(&mut simulation, navigation.debug_full_graph);
+    if keyboard.just_pressed(KeyCode::Tab) {
+        match navigation.mode {
+            StrategicViewMode::Universe => {
+                cycle_visible_selection(&mut simulation, navigation.debug_full_graph);
+            }
+            StrategicViewMode::System(system_id) => {
+                cycle_planet_selection(&mut simulation, system_id);
+            }
+        }
     }
 
     if keyboard.just_pressed(KeyCode::KeyF)
@@ -635,7 +673,12 @@ fn enterable_selected_system(
 ) -> Option<SystemId> {
     let system_id = selected_system(simulation.simulation.state().selected)?;
 
-    if debug_full_graph || simulation.simulation.state().is_system_known(system_id) {
+    let level = simulation
+        .simulation
+        .state()
+        .system_knowledge_level(system_id);
+
+    if debug_full_graph || level.can_enter_system() {
         Some(system_id)
     } else {
         None
@@ -665,6 +708,49 @@ fn cycle_visible_selection(simulation: &mut SimulationResource, debug_full_graph
     simulation.pending_events.extend(events);
 }
 
+fn cycle_planet_selection(simulation: &mut SimulationResource, system_id: SystemId) {
+    let Some(system) = simulation.simulation.universe().system(system_id) else {
+        return;
+    };
+    let visible_planets = system
+        .planets
+        .iter()
+        .filter(|planet| {
+            simulation
+                .simulation
+                .state()
+                .planet_knowledge_level(planet.id)
+                .is_visible()
+        })
+        .map(|planet| planet.id)
+        .collect::<Vec<_>>();
+    if visible_planets.is_empty() {
+        return;
+    }
+
+    let current = match simulation.simulation.state().selected {
+        SelectionTarget::Planet { planet_id, .. } => Some(planet_id),
+        SelectionTarget::None | SelectionTarget::System(_) => None,
+    };
+    let current_index = current.and_then(|planet_id| {
+        visible_planets
+            .iter()
+            .position(|candidate| *candidate == planet_id)
+    });
+    let next_index = current_index
+        .map(|index| (index + 1) % visible_planets.len())
+        .unwrap_or(0);
+    let planet_id = visible_planets[next_index];
+
+    let events = simulation
+        .simulation
+        .apply_command(GameCommand::SelectPlanet {
+            system_id,
+            planet_id,
+        });
+    simulation.pending_events.extend(events);
+}
+
 fn selected_system(selection: SelectionTarget) -> Option<SystemId> {
     match selection {
         SelectionTarget::None => None,
@@ -681,6 +767,9 @@ fn tick_simulation(time: Res<Time>, mut simulation: ResMut<SimulationResource>) 
 fn update_strategic_camera(
     time: Res<Time>,
     keyboard: Res<ButtonInput<KeyCode>>,
+    mouse_buttons: Res<ButtonInput<MouseButton>>,
+    mouse_motion: Res<AccumulatedMouseMotion>,
+    mouse_scroll: Res<AccumulatedMouseScroll>,
     mut navigation: ResMut<StrategicNavigation>,
     mut query: Query<&mut Transform, With<StrategicCamera>>,
 ) {
@@ -689,71 +778,171 @@ fn update_strategic_camera(
     };
 
     let delta_seconds = time.delta_secs();
+    let motion = mouse_motion.delta;
+    let scroll_lines = match mouse_scroll.unit {
+        MouseScrollUnit::Line => mouse_scroll.delta.y,
+        MouseScrollUnit::Pixel => mouse_scroll.delta.y / 40.0,
+    };
+
     match navigation.mode {
         StrategicViewMode::Universe => {
-            let pan_speed = (navigation.universe_distance * 0.55).max(18.0);
-            let mut pan = Vec3::ZERO;
-
-            if keyboard.pressed(KeyCode::KeyA) {
-                pan.x -= 1.0;
+            if mouse_buttons.pressed(MouseButton::Right) {
+                let mut yaw = navigation.universe_yaw;
+                let mut pitch = navigation.universe_pitch;
+                apply_orbit_drag(&mut yaw, &mut pitch, motion);
+                navigation.universe_yaw = yaw;
+                navigation.universe_pitch = pitch;
             }
-            if keyboard.pressed(KeyCode::KeyD) {
-                pan.x += 1.0;
-            }
-            if keyboard.pressed(KeyCode::KeyW) {
-                pan.z -= 1.0;
-            }
-            if keyboard.pressed(KeyCode::KeyS) {
-                pan.z += 1.0;
-            }
-            if pan.length_squared() > 0.0 {
-                navigation.universe_focus += pan.normalize() * pan_speed * delta_seconds;
+            if mouse_buttons.pressed(MouseButton::Middle) {
+                let pan = mouse_pan_delta(
+                    navigation.universe_yaw,
+                    motion,
+                    navigation.universe_distance,
+                );
+                navigation.universe_focus += pan;
             }
 
-            let zoom_speed = (navigation.universe_distance * 0.85).max(22.0);
-            if keyboard.pressed(KeyCode::KeyQ) {
-                navigation.universe_distance -= zoom_speed * delta_seconds;
+            let keyboard_pan = keyboard_pan_direction(&keyboard, navigation.universe_yaw);
+            if keyboard_pan.length_squared() > 0.0 {
+                let pan_speed = (navigation.universe_distance * 0.55).max(18.0);
+                navigation.universe_focus += keyboard_pan.normalize() * pan_speed * delta_seconds;
             }
-            if keyboard.pressed(KeyCode::KeyE) {
-                navigation.universe_distance += zoom_speed * delta_seconds;
-            }
-            navigation.universe_distance = navigation.universe_distance.clamp(20.0, 150.0);
+
+            apply_keyboard_zoom(
+                &keyboard,
+                delta_seconds,
+                &mut navigation.universe_distance,
+                20.0,
+                150.0,
+            );
+            apply_scroll_zoom(&mut navigation.universe_distance, scroll_lines, 20.0, 150.0);
             navigation.lod = UniverseLod::from_distance(navigation.universe_distance);
 
-            let eye = navigation.universe_focus
-                + Vec3::new(
-                    0.0,
-                    navigation.universe_distance * 0.58,
-                    navigation.universe_distance * 0.82,
-                );
-            *transform =
-                Transform::from_translation(eye).looking_at(navigation.universe_focus, Vec3::Y);
+            *transform = orbit_transform(
+                navigation.universe_focus,
+                navigation.universe_distance,
+                navigation.universe_yaw,
+                navigation.universe_pitch,
+            );
         }
         StrategicViewMode::System(_) => {
-            let zoom_speed = (navigation.system_distance * 0.9).max(12.0);
-            if keyboard.pressed(KeyCode::KeyQ) {
-                navigation.system_distance -= zoom_speed * delta_seconds;
+            if mouse_buttons.pressed(MouseButton::Right) {
+                let mut yaw = navigation.system_yaw;
+                let mut pitch = navigation.system_pitch;
+                apply_orbit_drag(&mut yaw, &mut pitch, motion);
+                navigation.system_yaw = yaw;
+                navigation.system_pitch = pitch;
             }
-            if keyboard.pressed(KeyCode::KeyE) {
-                navigation.system_distance += zoom_speed * delta_seconds;
+            if mouse_buttons.pressed(MouseButton::Middle) {
+                let pan =
+                    mouse_pan_delta(navigation.system_yaw, motion, navigation.system_distance);
+                navigation.system_focus += pan;
             }
-            navigation.system_distance = navigation.system_distance.clamp(14.0, 68.0);
 
-            let eye = Vec3::new(
-                0.0,
-                navigation.system_distance * 0.58,
-                navigation.system_distance * 0.82,
+            let keyboard_pan = keyboard_pan_direction(&keyboard, navigation.system_yaw);
+            if keyboard_pan.length_squared() > 0.0 {
+                let pan_speed = (navigation.system_distance * 0.42).max(8.0);
+                navigation.system_focus += keyboard_pan.normalize() * pan_speed * delta_seconds;
+            }
+
+            apply_keyboard_zoom(
+                &keyboard,
+                delta_seconds,
+                &mut navigation.system_distance,
+                10.0,
+                80.0,
             );
-            *transform = Transform::from_translation(eye).looking_at(Vec3::ZERO, Vec3::Y);
+            apply_scroll_zoom(&mut navigation.system_distance, scroll_lines, 10.0, 80.0);
+
+            *transform = orbit_transform(
+                navigation.system_focus,
+                navigation.system_distance,
+                navigation.system_yaw,
+                navigation.system_pitch,
+            );
         }
     }
+}
+
+fn apply_orbit_drag(yaw: &mut f32, pitch: &mut f32, motion: Vec2) {
+    const SENSITIVITY: f32 = 0.006;
+    *yaw -= motion.x * SENSITIVITY;
+    *pitch = (*pitch - motion.y * SENSITIVITY).clamp(-1.35, 1.35);
+}
+
+fn mouse_pan_delta(yaw: f32, motion: Vec2, distance: f32) -> Vec3 {
+    if motion == Vec2::ZERO {
+        return Vec3::ZERO;
+    }
+
+    let yaw_rotation = Quat::from_rotation_y(yaw);
+    let right = yaw_rotation * Vec3::X;
+    let forward = yaw_rotation * -Vec3::Z;
+    let scale = (distance * 0.0028).max(0.025);
+
+    (-motion.x * right + motion.y * forward) * scale
+}
+
+fn keyboard_pan_direction(keyboard: &ButtonInput<KeyCode>, yaw: f32) -> Vec3 {
+    let mut input = Vec2::ZERO;
+    if keyboard.pressed(KeyCode::KeyA) {
+        input.x -= 1.0;
+    }
+    if keyboard.pressed(KeyCode::KeyD) {
+        input.x += 1.0;
+    }
+    if keyboard.pressed(KeyCode::KeyW) {
+        input.y += 1.0;
+    }
+    if keyboard.pressed(KeyCode::KeyS) {
+        input.y -= 1.0;
+    }
+
+    let rotation = Quat::from_rotation_y(yaw);
+    rotation * Vec3::new(input.x, 0.0, -input.y)
+}
+
+fn apply_keyboard_zoom(
+    keyboard: &ButtonInput<KeyCode>,
+    delta_seconds: f32,
+    distance: &mut f32,
+    minimum: f32,
+    maximum: f32,
+) {
+    let zoom_speed = (*distance * 0.85).max(12.0);
+    if keyboard.pressed(KeyCode::KeyQ) {
+        *distance -= zoom_speed * delta_seconds;
+    }
+    if keyboard.pressed(KeyCode::KeyE) {
+        *distance += zoom_speed * delta_seconds;
+    }
+    *distance = (*distance).clamp(minimum, maximum);
+}
+
+fn apply_scroll_zoom(distance: &mut f32, scroll_lines: f32, minimum: f32, maximum: f32) {
+    if scroll_lines == 0.0 {
+        return;
+    }
+
+    *distance *= (-scroll_lines * 0.12).exp();
+    *distance = (*distance).clamp(minimum, maximum);
+}
+
+fn orbit_transform(focus: Vec3, distance: f32, yaw: f32, pitch: f32) -> Transform {
+    let rotation = Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch);
+    let eye = focus + rotation * Vec3::new(0.0, 0.0, distance);
+    Transform::from_translation(eye).looking_at(focus, Vec3::Y)
 }
 
 fn collect_presentation_events(
     mut simulation: ResMut<SimulationResource>,
     mut log: ResMut<PresentationLog>,
+    mut rebuild: ResMut<ViewRebuildRequest>,
 ) {
     for event in simulation.pending_events.drain(..) {
+        if matches!(event, GameEvent::KnowledgeChanged(_)) {
+            rebuild.0 = true;
+        }
         log.last_event = Some(event);
     }
 }
@@ -935,8 +1124,9 @@ fn update_ui(
     let visible_system_count = if navigation.debug_full_graph {
         universe.systems.len()
     } else {
-        state.visible_systems(repository).len()
+        state.visible_systems().len()
     };
+    let knowledge = state.system_knowledge_counts();
     let view_label = match navigation.mode {
         StrategicViewMode::Universe => format!("universe/{:?}", navigation.lod),
         StrategicViewMode::System(system_id) => {
@@ -945,7 +1135,7 @@ fn update_ui(
     };
 
     text.0 = format!(
-        "Galactic MVP | preset {:?} | view {} | seed {} | systems {}/{} | routes {}/{} | known {} | tick {} | t {:.1}s | speed {} | selected {} | debug {} | event {}",
+        "Galactic MVP | preset {:?} | view {} | seed {} | systems {}/{} | routes {}/{} | knowledge d{} p{} a{} c{} | tick {} | t {:.1}s | speed {} | selected {} | debug {} | event {}",
         navigation.preset,
         view_label,
         universe.seed,
@@ -953,7 +1143,10 @@ fn update_ui(
         universe.systems.len(),
         visible_route_count,
         universe.routes.len(),
-        state.known_systems.len(),
+        knowledge.detected,
+        knowledge.probed,
+        knowledge.analyzed,
+        knowledge.colonized,
         state.clock.current_tick(),
         state.clock.elapsed_seconds(),
         state.clock.speed(),
@@ -1079,6 +1272,17 @@ fn event_label(event: GameEvent) -> String {
         GameEvent::SelectionChanged(selection) => {
             format!("selection {}", selection_label(selection))
         }
+        GameEvent::KnowledgeChanged(change) => {
+            let target = match change.target {
+                KnowledgeTarget::System(id) => {
+                    format!("system {}", id.index())
+                }
+                KnowledgeTarget::Planet(id) => {
+                    format!("planet {}", id.index())
+                }
+            };
+            format!("{} {} -> {}", target, change.previous, change.current)
+        }
         GameEvent::TicksAdvanced {
             ticks,
             current_tick,
@@ -1124,6 +1328,27 @@ mod tests {
         assert_eq!(navigation.mode, StrategicViewMode::Universe);
         assert_eq!(navigation.universe_focus, focus);
         assert_eq!(navigation.universe_distance, distance);
+    }
+
+    #[test]
+    fn mouse_orbit_clamps_pitch() {
+        let mut yaw = 0.0;
+        let mut pitch = 0.0;
+
+        apply_orbit_drag(&mut yaw, &mut pitch, Vec2::new(100.0, -10_000.0));
+
+        assert!(yaw < 0.0);
+        assert_eq!(pitch, 1.35);
+    }
+
+    #[test]
+    fn mouse_scroll_zoom_is_bounded() {
+        let mut distance = 34.0;
+        apply_scroll_zoom(&mut distance, 100.0, 10.0, 80.0);
+        assert_eq!(distance, 10.0);
+
+        apply_scroll_zoom(&mut distance, -100.0, 10.0, 80.0);
+        assert_eq!(distance, 80.0);
     }
 
     #[test]
