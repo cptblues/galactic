@@ -347,3 +347,46 @@ rendus par une police installée sur le système.
 
 Cette étape ne modifie ni l'état de simulation, ni les versions de sauvegarde,
 ni la génération de l'univers.
+
+
+## MVP-010-B — Picking, survol et ambiguïtés
+
+La sélection des objets stratégiques utilise un test en espace écran :
+
+```text
+position visuelle actuelle
+        ↓ projection caméra
+position en pixels
+        ↓ distance au curseur
+candidats dans un rayon constant
+```
+
+Le picking s'appuie sur le `Transform` réellement affiché. Il ne lit pas
+directement la position métier de l'univers. Le futur mode aplati pourra donc
+déplacer visuellement les systèmes sans désynchroniser la sélection.
+
+Comportement :
+
+- clic gauche : sélectionner la meilleure cible ;
+- double-clic sur un système accessible : le sélectionner puis l'ouvrir ;
+- double-clic sur une planète : recentrer la caméra système ;
+- survol : afficher un halo et un tooltip respectant le niveau de connaissance ;
+- plusieurs cibles : ouvrir un panneau d'ambiguïté ;
+- `Tab` / `Maj+Tab` : parcourir les candidats ambigus ;
+- `Entrée` : conserver la cible active et fermer le panneau ;
+- `Échap` : fermer le panneau ;
+- les contrôles clavier historiques restent disponibles.
+
+Classement déterministe des candidats :
+
+1. distance en pixels au curseur ;
+2. priorité visuelle — sélection, colonie, objet connu ;
+3. profondeur par rapport à la caméra ;
+4. identifiant métier stable pour départager les égalités.
+
+Les systèmes utilisent un rayon de sélection de 18 pixels et les planètes un
+rayon de 16 pixels. Les objets inconnus ne sont jamais instanciés et ne peuvent
+donc pas devenir candidats.
+
+Les panneaux UI marqués comme bloqueurs empêchent les clics de traverser
+l'interface vers la scène 3D.

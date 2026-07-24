@@ -1,10 +1,10 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration};
 
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit};
 use bevy::prelude::*;
 use bevy::text::FontSource;
-use bevy::window::PresentMode;
-use galactic_domain::{PlanetKind, StarClass, SystemId, UniverseConfig, WorldPosition};
+use bevy::window::{PresentMode, PrimaryWindow};
+use galactic_domain::{PlanetId, PlanetKind, StarClass, SystemId, UniverseConfig, WorldPosition};
 use galactic_sim::{
     GameCommand, GameEvent, KnowledgeLevel, KnowledgeTarget, MVP_HOME_SYSTEM_ID, SelectionTarget,
     Simulation, SystemVisibility, TimeSpeed,
@@ -37,6 +37,7 @@ impl Plugin for ClientPlugin {
         .init_resource::<VisualAssets>()
         .init_resource::<StrategicNavigation>()
         .init_resource::<ViewRebuildRequest>()
+        .init_resource::<PointerSelectionState>()
         .add_plugins(SimulationBridgePlugin)
         .add_plugins(PresentationPlugin)
         .add_systems(Startup, log_startup);
@@ -67,15 +68,21 @@ impl Plugin for PresentationPlugin {
             (
                 rebuild_strategic_view_if_requested,
                 update_strategic_camera,
+                update_pointer_candidates,
+                handle_pointer_selection,
                 collect_presentation_events,
                 update_system_visuals,
+                update_pointer_halos,
                 update_system_labels,
                 draw_strategic_overlays,
                 handle_action_buttons,
                 update_action_buttons,
+                update_pointer_tooltip,
+                update_ambiguity_panel,
                 update_ui,
                 update_info_panel,
-            ),
+            )
+                .chain(),
         );
     }
 }
@@ -109,6 +116,7 @@ struct VisualAssets {
     known_star_materials: HashMap<StarClass, Handle<StandardMaterial>>,
     detected_material: Handle<StandardMaterial>,
     planet_materials: HashMap<PlanetKind, Handle<StandardMaterial>>,
+    hover_material: Handle<StandardMaterial>,
 }
 
 impl FromWorld for VisualAssets {
@@ -135,12 +143,20 @@ impl FromWorld for VisualAssets {
             .into_iter()
             .map(|kind| (kind, materials.add(planet_material(kind))))
             .collect();
+        let hover_material = materials.add(StandardMaterial {
+            base_color: Color::srgba(0.28, 0.92, 0.82, 0.18),
+            emissive: LinearRgba::rgb(0.18, 1.2, 0.92),
+            unlit: true,
+            alpha_mode: AlphaMode::Blend,
+            ..default()
+        });
 
         Self {
             system_mesh,
             known_star_materials,
             detected_material,
             planet_materials,
+            hover_material,
         }
     }
 }
@@ -247,6 +263,27 @@ struct HelpText;
 #[derive(Component)]
 struct InfoPanelText;
 
+#[derive(Component)]
+struct SelectableVisual {
+    target: PickTarget,
+    pick_radius_px: f32,
+    priority: u8,
+}
+
+#[derive(Component)]
+struct PointerHalo {
+    target: PickTarget,
+}
+
+#[derive(Component)]
+struct UiPointerBlocker;
+
+#[derive(Component)]
+struct PointerTooltipText;
+
+#[derive(Component)]
+struct AmbiguityPanelText;
+
 // MVP-010: partial-information inspectors must never reveal hidden data.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct InspectorContent {
@@ -263,6 +300,84 @@ impl InspectorContent {
             "{}\n{}\n\n{}\n\n{}",
             self.badge, self.title, self.body, self.hint,
         )
+    }
+}
+
+// MVP-010-B: screen-space picking uses displayed transforms, not domain positions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum PickTarget {
+    System(SystemId),
+    Planet {
+        system_id: SystemId,
+        planet_id: PlanetId,
+    },
+}
+
+impl PickTarget {
+    const fn sort_key(self) -> (u8, u64, u64) {
+        match self {
+            Self::System(system_id) => (0, system_id.raw(), 0),
+            Self::Planet {
+                system_id,
+                planet_id,
+            } => (1, system_id.raw(), planet_id.raw()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PointerCandidate {
+    target: PickTarget,
+    screen_position: Vec2,
+    screen_distance: f32,
+    depth: f32,
+    priority: u8,
+}
+
+#[derive(Debug, Clone)]
+struct AmbiguitySelection {
+    targets: Vec<PickTarget>,
+    active_index: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PointerClickRecord {
+    target: PickTarget,
+    at: Duration,
+    cursor_position: Vec2,
+}
+
+#[derive(Resource, Default)]
+struct PointerSelectionState {
+    hovered: Option<PickTarget>,
+    hovered_screen_position: Option<Vec2>,
+    candidates: Vec<PointerCandidate>,
+    ambiguity: Option<AmbiguitySelection>,
+    last_click: Option<PointerClickRecord>,
+}
+
+impl PointerSelectionState {
+    fn clear_hover(&mut self) {
+        self.hovered = None;
+        self.hovered_screen_position = None;
+        self.candidates.clear();
+    }
+
+    fn cycle_ambiguity(&mut self, reverse: bool) -> Option<PickTarget> {
+        let ambiguity = self.ambiguity.as_mut()?;
+        if ambiguity.targets.is_empty() {
+            return None;
+        }
+
+        ambiguity.active_index = if reverse {
+            ambiguity
+                .active_index
+                .checked_sub(1)
+                .unwrap_or(ambiguity.targets.len() - 1)
+        } else {
+            (ambiguity.active_index + 1) % ambiguity.targets.len()
+        };
+        ambiguity.targets.get(ambiguity.active_index).copied()
     }
 }
 
@@ -424,8 +539,20 @@ fn spawn_universe_view(
                 visibility,
                 base_scale: scale,
             },
+            SelectableVisual {
+                target: PickTarget::System(system.id),
+                pick_radius_px: 18.0,
+                priority: system_pick_priority(simulation, system.id, visibility),
+            },
             StrategicViewEntity,
         ));
+        spawn_pointer_halo(
+            commands,
+            assets,
+            PickTarget::System(system.id),
+            position,
+            scale.x * 1.65,
+        );
 
         let label = match visibility {
             SystemVisibility::Known => system.name.clone(),
@@ -492,6 +619,7 @@ fn spawn_system_view(
     let Some(system) = simulation.universe().system(system_id) else {
         return;
     };
+    let state = simulation.state();
 
     let star_material = assets
         .known_star_materials
@@ -503,8 +631,20 @@ fn spawn_system_view(
         Mesh3d(assets.system_mesh.clone()),
         MeshMaterial3d(star_material),
         Transform::from_scale(Vec3::splat(2.8)),
+        SelectableVisual {
+            target: PickTarget::System(system_id),
+            pick_radius_px: 20.0,
+            priority: system_pick_priority(simulation, system_id, SystemVisibility::Known),
+        },
         StrategicViewEntity,
     ));
+    spawn_pointer_halo(
+        commands,
+        assets,
+        PickTarget::System(system_id),
+        Vec3::ZERO,
+        3.5,
+    );
 
     commands.spawn((
         Text2d::new(system.name.clone()),
@@ -514,7 +654,6 @@ fn spawn_system_view(
         StrategicViewEntity,
     ));
 
-    let state = simulation.state();
     for (index, planet) in system.planets.iter().enumerate() {
         let level = state.planet_knowledge_level(planet.id);
         if level == KnowledgeLevel::Unknown {
@@ -566,8 +705,30 @@ fn spawn_system_view(
             Mesh3d(assets.system_mesh.clone()),
             MeshMaterial3d(material),
             Transform::from_translation(position).with_scale(Vec3::splat(scale)),
+            SelectableVisual {
+                target: PickTarget::Planet {
+                    system_id,
+                    planet_id: planet.id,
+                },
+                pick_radius_px: if level.reveals_identity() && planet.kind == PlanetKind::GasGiant {
+                    18.0
+                } else {
+                    16.0
+                },
+                priority: planet_pick_priority(simulation, planet.id, level),
+            },
             StrategicViewEntity,
         ));
+        spawn_pointer_halo(
+            commands,
+            assets,
+            PickTarget::Planet {
+                system_id,
+                planet_id: planet.id,
+            },
+            position,
+            scale * 1.65,
+        );
 
         commands.spawn((
             Text2d::new(label),
@@ -577,6 +738,56 @@ fn spawn_system_view(
                 .with_scale(Vec3::splat(0.25)),
             StrategicViewEntity,
         ));
+    }
+}
+
+fn spawn_pointer_halo(
+    commands: &mut Commands,
+    assets: &VisualAssets,
+    target: PickTarget,
+    position: Vec3,
+    scale: f32,
+) {
+    commands.spawn((
+        Mesh3d(assets.system_mesh.clone()),
+        MeshMaterial3d(assets.hover_material.clone()),
+        Transform::from_translation(position).with_scale(Vec3::splat(scale)),
+        Visibility::Hidden,
+        PointerHalo { target },
+        StrategicViewEntity,
+    ));
+}
+
+fn system_pick_priority(
+    simulation: &Simulation,
+    system_id: SystemId,
+    visibility: SystemVisibility,
+) -> u8 {
+    if simulation
+        .state()
+        .colonies
+        .iter()
+        .any(|colony| colony.system_id == system_id)
+    {
+        120
+    } else if visibility == SystemVisibility::Known {
+        90
+    } else {
+        70
+    }
+}
+
+fn planet_pick_priority(simulation: &Simulation, planet_id: PlanetId, level: KnowledgeLevel) -> u8 {
+    if simulation.state().colony_on_planet(planet_id).is_some() {
+        120
+    } else {
+        match level {
+            KnowledgeLevel::Unknown => 0,
+            KnowledgeLevel::Detected => 70,
+            KnowledgeLevel::Probed => 85,
+            KnowledgeLevel::Analyzed => 95,
+            KnowledgeLevel::Colonized => 120,
+        }
     }
 }
 
@@ -597,6 +808,8 @@ fn spawn_ui(mut commands: Commands) {
         },
         BackgroundColor(panel_background()),
         Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
+        Interaction::None,
+        UiPointerBlocker,
         TopBarText,
     ));
 
@@ -616,6 +829,8 @@ fn spawn_ui(mut commands: Commands) {
             },
             BackgroundColor(panel_background()),
             Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
+            Interaction::None,
+            UiPointerBlocker,
         ))
         .with_children(|parent| {
             spawn_panel_heading(parent, "COMMANDES");
@@ -647,6 +862,8 @@ fn spawn_ui(mut commands: Commands) {
             },
             BackgroundColor(panel_background()),
             Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
+            Interaction::None,
+            UiPointerBlocker,
         ))
         .with_children(|parent| {
             parent.spawn((
@@ -663,7 +880,7 @@ fn spawn_ui(mut commands: Commands) {
 
     commands.spawn((
         Text::new(
-            "AZERTY ZQSD navigation | A/E zoom | souris: droit orbite, milieu déplacement, molette zoom",
+            "Clic sélectionner | Double-clic ouvrir/recentrer | Tab ambiguïtés | droit orbite | milieu déplacer | molette zoom",
         ),
         ui_text_font(12.0),
         TextColor(Color::srgb(0.76, 0.84, 0.90)),
@@ -679,7 +896,60 @@ fn spawn_ui(mut commands: Commands) {
         },
         BackgroundColor(Color::srgba(0.022, 0.026, 0.030, 0.72)),
         Outline::new(Val::Px(1.0), Val::ZERO, Color::srgba(0.60, 0.50, 0.34, 0.35)),
+        Interaction::None,
+        UiPointerBlocker,
         HelpText,
+    ));
+
+    commands.spawn((
+        Text::new(""),
+        ui_text_font(12.0),
+        TextColor(Color::srgb(0.88, 0.96, 0.94)),
+        Node {
+            position_type: PositionType::Absolute,
+            width: Val::Px(258.0),
+            padding: UiRect::all(Val::Px(9.0)),
+            border: UiRect::all(Val::Px(1.0)),
+            border_radius: BorderRadius::all(Val::Px(5.0)),
+            ..default()
+        },
+        BackgroundColor(Color::srgba(0.015, 0.025, 0.030, 0.94)),
+        Outline::new(
+            Val::Px(1.0),
+            Val::ZERO,
+            Color::srgba(0.28, 0.92, 0.82, 0.58),
+        ),
+        Visibility::Hidden,
+        Interaction::None,
+        UiPointerBlocker,
+        PointerTooltipText,
+    ));
+
+    commands.spawn((
+        Text::new(""),
+        ui_text_font(13.0),
+        TextColor(Color::srgb(0.88, 0.94, 0.98)),
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Percent(50.0),
+            bottom: Val::Px(58.0),
+            width: Val::Px(440.0),
+            margin: UiRect::left(Val::Px(-220.0)),
+            padding: UiRect::all(Val::Px(12.0)),
+            border: UiRect::all(Val::Px(1.0)),
+            border_radius: BorderRadius::all(Val::Px(6.0)),
+            ..default()
+        },
+        BackgroundColor(Color::srgba(0.018, 0.025, 0.034, 0.96)),
+        Outline::new(
+            Val::Px(1.0),
+            Val::ZERO,
+            Color::srgba(0.74, 0.68, 0.34, 0.70),
+        ),
+        Visibility::Hidden,
+        Interaction::None,
+        UiPointerBlocker,
+        AmbiguityPanelText,
     ));
 }
 
@@ -722,6 +992,7 @@ fn spawn_action_button(
                 Color::srgba(0.58, 0.72, 0.76, 0.30),
             ),
             ActionButton { action },
+            UiPointerBlocker,
         ))
         .with_children(|button| {
             button.spawn((
@@ -804,7 +1075,26 @@ fn handle_view_input(
     mut simulation: ResMut<SimulationResource>,
     mut navigation: ResMut<StrategicNavigation>,
     mut rebuild: ResMut<ViewRebuildRequest>,
+    mut pointer_state: ResMut<PointerSelectionState>,
 ) {
+    if pointer_state.ambiguity.is_some() {
+        if keyboard.just_pressed(KeyCode::Tab) {
+            let reverse = keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+            if let Some(target) = pointer_state.cycle_ambiguity(reverse) {
+                select_pick_target(&mut simulation, target);
+            }
+            return;
+        }
+        if keyboard.just_pressed(KeyCode::Enter) {
+            pointer_state.ambiguity = None;
+            return;
+        }
+        if keyboard.just_pressed(KeyCode::Escape) {
+            pointer_state.ambiguity = None;
+            return;
+        }
+    }
+
     if let Some(action) = view_shortcut(&keyboard) {
         apply_ui_action(action, &mut simulation, &mut navigation, &mut rebuild);
     }
@@ -825,6 +1115,389 @@ fn handle_action_buttons(
                 &mut rebuild,
             );
         }
+    }
+}
+
+fn update_pointer_candidates(
+    windows: Query<&Window, With<PrimaryWindow>>,
+    cameras: Query<(&Camera, &Transform), With<StrategicCamera>>,
+    targets: Query<(&SelectableVisual, &Transform)>,
+    blockers: Query<&Interaction, With<UiPointerBlocker>>,
+    simulation: Res<SimulationResource>,
+    mut pointer_state: ResMut<PointerSelectionState>,
+) {
+    let Ok(window) = windows.single() else {
+        pointer_state.clear_hover();
+        return;
+    };
+    let Some(cursor_position) = window.cursor_position() else {
+        pointer_state.clear_hover();
+        return;
+    };
+    if blockers
+        .iter()
+        .any(|interaction| *interaction != Interaction::None)
+    {
+        pointer_state.clear_hover();
+        return;
+    }
+
+    let Ok((camera, camera_transform)) = cameras.single() else {
+        pointer_state.clear_hover();
+        return;
+    };
+    let camera_global = GlobalTransform::from(*camera_transform);
+    let selected = simulation.simulation().state().selected;
+    let mut candidates = Vec::new();
+
+    for (selectable, visual_transform) in &targets {
+        if !pick_target_is_visible(simulation.simulation(), selectable.target) {
+            continue;
+        }
+        let world_position = visual_transform.translation;
+        let Ok(screen_position) = camera.world_to_viewport(&camera_global, world_position) else {
+            continue;
+        };
+        let screen_distance = cursor_position.distance(screen_position);
+        if !screen_space_hit(cursor_position, screen_position, selectable.pick_radius_px) {
+            continue;
+        }
+
+        let selected_bonus = if pick_target_matches_selection(selectable.target, selected) {
+            32
+        } else {
+            0
+        };
+        candidates.push(PointerCandidate {
+            target: selectable.target,
+            screen_position,
+            screen_distance,
+            depth: camera_transform.translation.distance(world_position),
+            priority: selectable.priority.saturating_add(selected_bonus),
+        });
+    }
+
+    rank_pointer_candidates(&mut candidates);
+    pointer_state.hovered = candidates.first().map(|candidate| candidate.target);
+    pointer_state.hovered_screen_position = candidates
+        .first()
+        .map(|candidate| candidate.screen_position);
+    pointer_state.candidates = candidates;
+}
+
+fn handle_pointer_selection(
+    mouse_buttons: Res<ButtonInput<MouseButton>>,
+    time: Res<Time>,
+    mut simulation: ResMut<SimulationResource>,
+    mut navigation: ResMut<StrategicNavigation>,
+    mut rebuild: ResMut<ViewRebuildRequest>,
+    mut pointer_state: ResMut<PointerSelectionState>,
+    targets: Query<(&SelectableVisual, &Transform)>,
+) {
+    if !mouse_buttons.just_pressed(MouseButton::Left) {
+        return;
+    }
+
+    let Some(primary) = pointer_state.candidates.first().copied() else {
+        pointer_state.ambiguity = None;
+        return;
+    };
+
+    let targets_under_pointer = pointer_state
+        .candidates
+        .iter()
+        .map(|candidate| candidate.target)
+        .collect::<Vec<_>>();
+    pointer_state.ambiguity = (targets_under_pointer.len() > 1).then_some(AmbiguitySelection {
+        targets: targets_under_pointer,
+        active_index: 0,
+    });
+
+    select_pick_target(&mut simulation, primary.target);
+
+    let now = time.elapsed();
+    let is_double_click = pointer_state.last_click.is_some_and(|previous| {
+        pointer_double_click(previous, primary.target, now, primary.screen_position)
+    });
+    pointer_state.last_click = Some(PointerClickRecord {
+        target: primary.target,
+        at: now,
+        cursor_position: primary.screen_position,
+    });
+
+    if is_double_click {
+        activate_pick_target(
+            primary.target,
+            &mut simulation,
+            &mut navigation,
+            &mut rebuild,
+            &targets,
+        );
+        pointer_state.ambiguity = None;
+        pointer_state.last_click = None;
+    }
+}
+
+fn update_pointer_halos(
+    pointer_state: Res<PointerSelectionState>,
+    mut halos: Query<(&PointerHalo, &mut Visibility)>,
+) {
+    if !pointer_state.is_changed() {
+        return;
+    }
+
+    for (halo, mut visibility) in &mut halos {
+        *visibility = if Some(halo.target) == pointer_state.hovered {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+    }
+}
+
+fn update_pointer_tooltip(
+    windows: Query<&Window, With<PrimaryWindow>>,
+    simulation: Res<SimulationResource>,
+    pointer_state: Res<PointerSelectionState>,
+    mut tooltips: Query<(&mut Text, &mut Node, &mut Visibility), With<PointerTooltipText>>,
+) {
+    let Ok((mut text, mut node, mut visibility)) = tooltips.single_mut() else {
+        return;
+    };
+    let Ok(window) = windows.single() else {
+        *visibility = Visibility::Hidden;
+        return;
+    };
+    let Some(target) = pointer_state.hovered else {
+        *visibility = Visibility::Hidden;
+        return;
+    };
+    let Some(screen_position) = pointer_state.hovered_screen_position else {
+        *visibility = Visibility::Hidden;
+        return;
+    };
+
+    text.0 = pointer_tooltip_text(simulation.simulation(), target);
+    node.left = Val::Px((screen_position.x + 18.0).clamp(8.0, (window.width() - 270.0).max(8.0)));
+    node.top = Val::Px((screen_position.y + 18.0).clamp(8.0, (window.height() - 110.0).max(8.0)));
+    *visibility = Visibility::Visible;
+}
+
+fn update_ambiguity_panel(
+    simulation: Res<SimulationResource>,
+    pointer_state: Res<PointerSelectionState>,
+    mut panels: Query<(&mut Text, &mut Visibility), With<AmbiguityPanelText>>,
+) {
+    let Ok((mut text, mut visibility)) = panels.single_mut() else {
+        return;
+    };
+    let Some(ambiguity) = pointer_state.ambiguity.as_ref() else {
+        *visibility = Visibility::Hidden;
+        return;
+    };
+
+    let mut lines = vec![
+        "PLUSIEURS CIBLES SOUS LE CURSEUR".to_string(),
+        "Tab / Maj+Tab : parcourir | Entrée : valider | Échap : fermer".to_string(),
+        String::new(),
+    ];
+    for (index, target) in ambiguity.targets.iter().enumerate() {
+        let marker = if index == ambiguity.active_index {
+            "▶"
+        } else {
+            " "
+        };
+        lines.push(format!(
+            "{} {}. {}",
+            marker,
+            index + 1,
+            pick_target_label(simulation.simulation(), *target),
+        ));
+    }
+
+    text.0 = lines.join("\n");
+    *visibility = Visibility::Visible;
+}
+
+fn select_pick_target(simulation: &mut SimulationResource, target: PickTarget) {
+    let command = match target {
+        PickTarget::System(system_id) => GameCommand::SelectSystem(system_id),
+        PickTarget::Planet {
+            system_id,
+            planet_id,
+        } => GameCommand::SelectPlanet {
+            system_id,
+            planet_id,
+        },
+    };
+    apply_simulation_command(simulation, command);
+}
+
+fn activate_pick_target(
+    target: PickTarget,
+    simulation: &mut SimulationResource,
+    navigation: &mut StrategicNavigation,
+    rebuild: &mut ViewRebuildRequest,
+    visuals: &Query<(&SelectableVisual, &Transform)>,
+) {
+    let visual_position = visuals.iter().find_map(|(selectable, transform)| {
+        (selectable.target == target).then_some(transform.translation)
+    });
+
+    match target {
+        PickTarget::System(system_id) => {
+            if let Some(position) = visual_position
+                && matches!(navigation.mode, StrategicViewMode::Universe)
+            {
+                navigation.universe_focus = position;
+            }
+            if matches!(
+                navigation.mode,
+                StrategicViewMode::System(current) if current == system_id
+            ) {
+                navigation.system_focus = Vec3::ZERO;
+            }
+            if matches!(navigation.mode, StrategicViewMode::Universe)
+                && enterable_selected_system(simulation, navigation.debug_full_graph).is_some()
+            {
+                navigation.enter_system(system_id);
+                navigation.system_focus = Vec3::ZERO;
+                rebuild.0 = true;
+            }
+        }
+        PickTarget::Planet { system_id, .. } => {
+            if matches!(
+                navigation.mode,
+                StrategicViewMode::System(current) if current == system_id
+            ) && let Some(position) = visual_position
+            {
+                navigation.system_focus = position;
+            }
+        }
+    }
+}
+
+fn pointer_tooltip_text(simulation: &Simulation, target: PickTarget) -> String {
+    let state = simulation.state();
+    match target {
+        PickTarget::System(system_id) => {
+            let level = state.system_knowledge_level(system_id);
+            let title = simulation
+                .universe()
+                .system(system_id)
+                .map(|system| {
+                    if level.reveals_identity() {
+                        system.name.clone()
+                    } else {
+                        format!("Signal {}", system_id.index())
+                    }
+                })
+                .unwrap_or_else(|| "Système invalide".to_string());
+            format!(
+                "{}\n{}\nClic : sélectionner | Double-clic : ouvrir ou recentrer",
+                title,
+                knowledge_badge_fr(level),
+            )
+        }
+        PickTarget::Planet { planet_id, .. } => {
+            let level = state.planet_knowledge_level(planet_id);
+            let title = simulation
+                .universe_repository()
+                .planet(planet_id)
+                .map(|planet| {
+                    if level.reveals_identity() {
+                        planet.name.clone()
+                    } else {
+                        format!("Corps détecté {}", planet_id.index())
+                    }
+                })
+                .unwrap_or_else(|| "Planète invalide".to_string());
+            format!(
+                "{}\n{}\nClic : sélectionner | Double-clic : recentrer",
+                title,
+                knowledge_badge_fr(level),
+            )
+        }
+    }
+}
+
+fn pick_target_label(simulation: &Simulation, target: PickTarget) -> String {
+    let state = simulation.state();
+    match target {
+        PickTarget::System(system_id) => simulation
+            .universe()
+            .system(system_id)
+            .map(|system| {
+                if state.system_knowledge_level(system_id).reveals_identity() {
+                    format!("Système {}", system.name)
+                } else {
+                    format!("Signal {}", system_id.index())
+                }
+            })
+            .unwrap_or_else(|| format!("Système {}", system_id.index())),
+        PickTarget::Planet { planet_id, .. } => simulation
+            .universe_repository()
+            .planet(planet_id)
+            .map(|planet| {
+                if state.planet_knowledge_level(planet_id).reveals_identity() {
+                    format!("Planète {}", planet.name)
+                } else {
+                    format!("Corps détecté {}", planet_id.index())
+                }
+            })
+            .unwrap_or_else(|| format!("Planète {}", planet_id.index())),
+    }
+}
+
+fn rank_pointer_candidates(candidates: &mut [PointerCandidate]) {
+    candidates.sort_by(|left, right| {
+        left.screen_distance
+            .total_cmp(&right.screen_distance)
+            .then_with(|| right.priority.cmp(&left.priority))
+            .then_with(|| left.depth.total_cmp(&right.depth))
+            .then_with(|| left.target.sort_key().cmp(&right.target.sort_key()))
+    });
+}
+
+fn screen_space_hit(cursor_position: Vec2, target_position: Vec2, radius_px: f32) -> bool {
+    cursor_position.distance_squared(target_position) <= radius_px * radius_px
+}
+
+fn pointer_double_click(
+    previous: PointerClickRecord,
+    target: PickTarget,
+    now: Duration,
+    cursor_position: Vec2,
+) -> bool {
+    previous.target == target
+        && now.saturating_sub(previous.at) <= Duration::from_millis(350)
+        && previous.cursor_position.distance(cursor_position) <= 6.0
+}
+
+fn pick_target_is_visible(simulation: &Simulation, target: PickTarget) -> bool {
+    match target {
+        PickTarget::System(system_id) => simulation.state().is_system_visible(system_id),
+        PickTarget::Planet { planet_id, .. } => simulation
+            .state()
+            .planet_knowledge_level(planet_id)
+            .is_visible(),
+    }
+}
+
+fn pick_target_matches_selection(target: PickTarget, selection: SelectionTarget) -> bool {
+    match (target, selection) {
+        (PickTarget::System(left), SelectionTarget::System(right)) => left == right,
+        (
+            PickTarget::Planet {
+                system_id: left_system,
+                planet_id: left_planet,
+            },
+            SelectionTarget::Planet {
+                system_id: right_system,
+                planet_id: right_planet,
+            },
+        ) => left_system == right_system && left_planet == right_planet,
+        _ => false,
     }
 }
 
@@ -1910,6 +2583,144 @@ fn event_label(event: GameEvent) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn screen_space_radius_is_constant_in_pixels() {
+        assert!(screen_space_hit(
+            Vec2::new(100.0, 100.0),
+            Vec2::new(116.0, 100.0),
+            16.0,
+        ));
+        assert!(!screen_space_hit(
+            Vec2::new(100.0, 100.0),
+            Vec2::new(117.0, 100.0),
+            16.0,
+        ));
+    }
+
+    #[test]
+    fn candidate_ranking_is_deterministic() {
+        let near_system = PickTarget::System(SystemId::new(2));
+        let priority_system = PickTarget::System(SystemId::new(1));
+        let deeper_planet = PickTarget::Planet {
+            system_id: SystemId::new(0),
+            planet_id: PlanetId::new(1),
+        };
+        let mut candidates = vec![
+            PointerCandidate {
+                target: deeper_planet,
+                screen_position: Vec2::ZERO,
+                screen_distance: 4.0,
+                depth: 20.0,
+                priority: 80,
+            },
+            PointerCandidate {
+                target: priority_system,
+                screen_position: Vec2::ZERO,
+                screen_distance: 4.0,
+                depth: 15.0,
+                priority: 100,
+            },
+            PointerCandidate {
+                target: near_system,
+                screen_position: Vec2::ZERO,
+                screen_distance: 2.0,
+                depth: 30.0,
+                priority: 10,
+            },
+        ];
+
+        rank_pointer_candidates(&mut candidates);
+
+        assert_eq!(candidates[0].target, near_system);
+        assert_eq!(candidates[1].target, priority_system);
+        assert_eq!(candidates[2].target, deeper_planet);
+    }
+
+    #[test]
+    fn ambiguity_cycle_wraps_in_both_directions() {
+        let first = PickTarget::System(SystemId::new(1));
+        let second = PickTarget::System(SystemId::new(2));
+        let mut pointer_state = PointerSelectionState {
+            ambiguity: Some(AmbiguitySelection {
+                targets: vec![first, second],
+                active_index: 0,
+            }),
+            ..default()
+        };
+
+        assert_eq!(pointer_state.cycle_ambiguity(false), Some(second));
+        assert_eq!(pointer_state.cycle_ambiguity(false), Some(first));
+        assert_eq!(pointer_state.cycle_ambiguity(true), Some(second));
+    }
+
+    #[test]
+    fn double_click_requires_same_target_time_and_position() {
+        let target = PickTarget::System(SystemId::new(3));
+        let previous = PointerClickRecord {
+            target,
+            at: Duration::from_millis(100),
+            cursor_position: Vec2::new(40.0, 50.0),
+        };
+
+        assert!(pointer_double_click(
+            previous,
+            target,
+            Duration::from_millis(400),
+            Vec2::new(44.0, 50.0),
+        ));
+        assert!(!pointer_double_click(
+            previous,
+            PickTarget::System(SystemId::new(4)),
+            Duration::from_millis(400),
+            Vec2::new(44.0, 50.0),
+        ));
+        assert!(!pointer_double_click(
+            previous,
+            target,
+            Duration::from_millis(500),
+            Vec2::new(44.0, 50.0),
+        ));
+    }
+
+    #[test]
+    fn unknown_targets_are_not_pickable_even_in_debug_rendering() {
+        let simulation = Simulation::new(UniverseConfig::mvp());
+        let unknown = simulation
+            .universe()
+            .systems
+            .iter()
+            .find(|system| !simulation.state().is_system_visible(system.id))
+            .expect("the MVP universe contains an unknown system")
+            .id;
+
+        assert!(!pick_target_is_visible(
+            &simulation,
+            PickTarget::System(unknown),
+        ));
+    }
+
+    #[test]
+    fn detected_pointer_labels_do_not_reveal_identity() {
+        let simulation = Simulation::new(UniverseConfig::mvp());
+        let detected = simulation
+            .state()
+            .system_knowledge
+            .iter()
+            .find(|entry| entry.level == KnowledgeLevel::Detected)
+            .expect("a detected frontier system exists")
+            .system_id;
+        let actual_name = &simulation
+            .universe()
+            .system(detected)
+            .expect("detected system exists")
+            .name;
+
+        let label = pick_target_label(&simulation, PickTarget::System(detected));
+
+        assert!(label.contains("Signal"));
+        assert!(!label.contains(actual_name));
+    }
 
     #[test]
     fn ui_font_uses_a_system_sans_serif() {
