@@ -1,5 +1,6 @@
 use std::{collections::HashMap, time::Duration};
 
+use bevy::ecs::system::SystemParam;
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit};
 use bevy::prelude::*;
 use bevy::text::FontSource;
@@ -40,6 +41,7 @@ impl Plugin for ClientPlugin {
         .init_resource::<StrategicNavigation>()
         .init_resource::<ViewRebuildRequest>()
         .init_resource::<PointerSelectionState>()
+        .init_resource::<ColonyManagementState>()
         .add_plugins(SimulationBridgePlugin)
         .add_plugins(PresentationPlugin)
         .add_systems(Startup, log_startup);
@@ -65,6 +67,16 @@ impl Plugin for PresentationPlugin {
             Startup,
             (spawn_scene, spawn_strategic_view, spawn_ui).chain(),
         )
+        .configure_sets(
+            Update,
+            (
+                PresentationUpdateSet::View,
+                PresentationUpdateSet::Interaction,
+                PresentationUpdateSet::Management,
+                PresentationUpdateSet::Ui,
+            )
+                .chain(),
+        )
         .add_systems(
             Update,
             (
@@ -72,25 +84,52 @@ impl Plugin for PresentationPlugin {
                 update_strategic_camera,
                 update_pointer_candidates,
                 handle_pointer_selection,
+                capture_colony_management_feedback,
                 collect_presentation_events,
                 update_system_visuals,
                 update_pointer_halos,
                 update_system_labels,
                 draw_strategic_overlays,
-                handle_action_buttons,
-                handle_construction_buttons,
+            )
+                .chain()
+                .in_set(PresentationUpdateSet::View),
+        )
+        .add_systems(
+            Update,
+            (handle_action_buttons, handle_colony_management_buttons)
+                .chain()
+                .in_set(PresentationUpdateSet::Interaction),
+        )
+        .add_systems(
+            Update,
+            (
                 update_action_buttons,
-                update_construction_panel,
                 update_pointer_tooltip,
                 update_ambiguity_panel,
-                update_resource_dashboard,
-                update_resource_card_help,
-                update_ui,
-                update_info_panel,
+                update_colony_management_visibility,
+                update_colony_management_resources,
+                update_colony_management_buildings,
+                update_colony_management_detail,
+                update_colony_management_queue,
             )
-                .chain(),
+                .chain()
+                .in_set(PresentationUpdateSet::Management),
+        )
+        .add_systems(
+            Update,
+            (update_ui, update_info_panel)
+                .chain()
+                .in_set(PresentationUpdateSet::Ui),
         );
     }
+}
+
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum PresentationUpdateSet {
+    View,
+    Interaction,
+    Management,
+    Ui,
 }
 
 #[derive(Resource)]
@@ -290,7 +329,26 @@ struct PointerTooltipText;
 #[derive(Component)]
 struct AmbiguityPanelText;
 
-// MVP-014: compact resources and construction UI.
+// MVP-015: dedicated colony management screen.
+#[derive(Resource)]
+struct ColonyManagementState {
+    open: bool,
+    active_colony_id: Option<galactic_domain::ColonyId>,
+    selected_building: galactic_sim::BuildingKind,
+    feedback: String,
+}
+
+impl Default for ColonyManagementState {
+    fn default() -> Self {
+        Self {
+            open: false,
+            active_colony_id: None,
+            selected_building: galactic_sim::BuildingKind::MetalMine,
+            feedback: String::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ResourceHudKind {
     Metal,
@@ -310,76 +368,74 @@ impl ResourceHudKind {
             Self::Energy => "ÉNERGIE",
         }
     }
-
-    const fn help(self) -> &'static str {
-        match self {
-            Self::Metal | Self::Crystal | Self::Fuel => {
-                "Total = stock physique. Disponible = total - réservé. \
-Capacité = limite de stockage. Une jauge pleine signifie que la production est bloquée."
-            }
-            Self::Energy => {
-                "L’énergie est une capacité, pas un stock. Disponible = production effective - \
-consommation. Un déficit ralentit tous les extracteurs."
-            }
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ResourceHudStatus {
     Normal,
-    Reserved,
     NearlyFull,
     Full,
     Deficit,
 }
 
-#[derive(Component)]
-struct ResourceDashboardRoot;
-
-#[derive(Component)]
-struct ResourceDashboardHeaderText;
-
-#[derive(Component)]
-struct ResourceDashboardHelpText;
-
-#[derive(Component)]
-struct ResourceHudCard {
-    kind: ResourceHudKind,
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+enum ManagementButtonAction {
+    Toggle,
+    Close,
+    PreviousColony,
+    NextColony,
+    SelectBuilding(galactic_sim::BuildingKind),
+    UpgradeSelected,
 }
 
-#[derive(Component)]
-struct ResourceHudCardText {
-    kind: ResourceHudKind,
-}
-
-#[derive(Component)]
-struct ResourceHudGaugeFill {
-    kind: ResourceHudKind,
-}
-
-#[derive(Component)]
-struct ConstructionPanelRoot;
-
-#[derive(Component)]
-struct ConstructionQueueText;
-
-#[derive(Component)]
-struct ConstructionButton {
-    kind: galactic_sim::BuildingKind,
-}
-
-type ConstructionButtonInteractionQuery<'w, 's> = Query<
+type ManagementButtonInteractionQuery<'w, 's> = Query<
     'w,
     's,
-    (&'static Interaction, &'static ConstructionButton),
+    (&'static Interaction, &'static ManagementButtonAction),
     (Changed<Interaction>, With<Button>),
 >;
 
 #[derive(Component)]
-struct ConstructionButtonText {
+struct ColonyManagementRoot;
+
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+enum ManagementTextRole {
+    ToggleLabel,
+    Title,
+    Colony,
+    Feedback,
+    BuildingDetail,
+    UpgradeLabel,
+    Queue,
+}
+
+#[derive(Component)]
+struct ManagementResourceCardText {
+    kind: ResourceHudKind,
+}
+
+#[derive(Component)]
+struct ManagementResourceGaugeFill {
+    kind: ResourceHudKind,
+}
+
+#[derive(Component)]
+struct ManagementBuildingButton {
     kind: galactic_sim::BuildingKind,
 }
+
+#[derive(Component)]
+struct ManagementBuildingButtonText {
+    kind: galactic_sim::BuildingKind,
+}
+
+#[derive(Component)]
+struct ManagementUpgradeButton;
+
+#[derive(Component)]
+struct ManagementQueueProgressFill;
+
+const COLONY_MANAGEMENT_Z_INDEX: i32 = 100;
 
 // MVP-010: partial-information inspectors must never reveal hidden data.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -942,6 +998,7 @@ fn spawn_ui(mut commands: Commands) {
             spawn_action_button(parent, UiAction::AdvanceKnowledge, "Analyser cible", "K");
             spawn_action_button(parent, UiAction::ToggleDebugGraph, "Debug graphe", "G");
             spawn_action_button(parent, UiAction::RebuildView, "Reconstruire", "R");
+            spawn_colony_management_toggle(parent);
         });
 
     commands
@@ -1049,113 +1106,207 @@ fn spawn_ui(mut commands: Commands) {
         AmbiguityPanelText,
     ));
 
-    spawn_resource_dashboard(&mut commands);
-    spawn_construction_panel(&mut commands);
+    spawn_colony_management_screen(&mut commands);
 }
 
-fn spawn_resource_dashboard(commands: &mut Commands) {
-    commands
+fn spawn_colony_management_toggle(parent: &mut ChildSpawnerCommands) {
+    parent
         .spawn((
+            Button,
             Node {
-                position_type: PositionType::Absolute,
-                left: Val::Px(238.0),
-                right: Val::Px(372.0),
-                bottom: Val::Px(54.0),
-                min_width: Val::Px(580.0),
-                padding: UiRect::all(Val::Px(9.0)),
+                width: Val::Percent(100.0),
+                min_height: Val::Px(36.0),
+                padding: UiRect::axes(Val::Px(10.0), Val::Px(7.0)),
                 border: UiRect::all(Val::Px(1.0)),
-                border_radius: BorderRadius::all(Val::Px(7.0)),
-                flex_direction: FlexDirection::Column,
+                border_radius: BorderRadius::all(Val::Px(5.0)),
                 ..default()
             },
-            BackgroundColor(Color::srgba(0.012, 0.020, 0.028, 0.96)),
+            BackgroundColor(Color::srgba(0.08, 0.18, 0.19, 0.96)),
             Outline::new(
                 Val::Px(1.0),
                 Val::ZERO,
-                Color::srgba(0.30, 0.70, 0.76, 0.48),
+                Color::srgba(0.28, 0.78, 0.72, 0.55),
             ),
-            Visibility::Hidden,
-            Interaction::None,
+            ManagementButtonAction::Toggle,
             UiPointerBlocker,
-            ResourceDashboardRoot,
         ))
-        .with_children(|root| {
-            root.spawn((
-                Text::new("ÉCONOMIE"),
-                ui_text_font(13.0),
-                TextColor(Color::srgb(0.78, 0.92, 0.96)),
-                Node {
-                    margin: UiRect {
-                        bottom: Val::Px(7.0),
-                        ..default()
-                    },
-                    ..default()
-                },
-                ResourceDashboardHeaderText,
-            ));
-
-            root.spawn((Node {
-                width: Val::Percent(100.0),
-                min_height: Val::Px(104.0),
-                flex_direction: FlexDirection::Row,
-                align_items: AlignItems::Stretch,
-                ..default()
-            },))
-                .with_children(|row| {
-                    for kind in ResourceHudKind::ALL {
-                        spawn_resource_hud_card(row, kind);
-                    }
-                });
-
-            root.spawn((
-                Text::new("Survole une carte pour afficher son aide."),
-                ui_text_font(10.0),
-                TextColor(Color::srgb(0.62, 0.70, 0.76)),
-                Node {
-                    margin: UiRect {
-                        top: Val::Px(6.0),
-                        ..default()
-                    },
-                    ..default()
-                },
-                ResourceDashboardHelpText,
+        .with_children(|button| {
+            button.spawn((
+                Text::new("Gestion colonie"),
+                ui_text_font(12.0),
+                TextColor(Color::srgb(0.78, 0.94, 0.90)),
+                ManagementTextRole::ToggleLabel,
             ));
         });
 }
 
-fn spawn_resource_hud_card(parent: &mut ChildSpawnerCommands, kind: ResourceHudKind) {
+fn spawn_colony_management_screen(commands: &mut Commands) {
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(14.0),
+                right: Val::Px(14.0),
+                top: Val::Px(72.0),
+                bottom: Val::Px(14.0),
+                padding: UiRect::all(Val::Px(12.0)),
+                border: UiRect::all(Val::Px(1.0)),
+                border_radius: BorderRadius::all(Val::Px(8.0)),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(9.0),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.008, 0.014, 0.020, 0.995)),
+            Outline::new(
+                Val::Px(1.0),
+                Val::ZERO,
+                Color::srgba(0.30, 0.72, 0.74, 0.68),
+            ),
+            Visibility::Hidden,
+            GlobalZIndex(COLONY_MANAGEMENT_Z_INDEX),
+            Interaction::None,
+            UiPointerBlocker,
+            ColonyManagementRoot,
+        ))
+        .with_children(|root| {
+            spawn_management_header(root);
+            spawn_management_resource_row(root);
+            spawn_management_main_row(root);
+            root.spawn((
+                Text::new(""),
+                ui_text_font(11.0),
+                TextColor(Color::srgb(0.90, 0.72, 0.42)),
+                Node {
+                    min_height: Val::Px(18.0),
+                    ..default()
+                },
+                ManagementTextRole::Feedback,
+            ));
+        });
+}
+
+fn spawn_management_header(root: &mut ChildSpawnerCommands) {
+    root.spawn((Node {
+        width: Val::Percent(100.0),
+        min_height: Val::Px(42.0),
+        flex_direction: FlexDirection::Row,
+        align_items: AlignItems::Center,
+        column_gap: Val::Px(8.0),
+        ..default()
+    },))
+        .with_children(|header| {
+            header.spawn((
+                Text::new("GESTION PLANÉTAIRE"),
+                ui_text_font(18.0),
+                TextColor(Color::srgb(0.82, 0.96, 0.96)),
+                Node {
+                    flex_grow: 1.0,
+                    ..default()
+                },
+                ManagementTextRole::Title,
+            ));
+
+            spawn_management_small_button(
+                header,
+                "◀",
+                ManagementButtonAction::PreviousColony,
+                36.0,
+            );
+            header.spawn((
+                Text::new("Colonie"),
+                ui_text_font(12.0),
+                TextColor(Color::srgb(0.76, 0.86, 0.90)),
+                Node {
+                    width: Val::Px(250.0),
+                    ..default()
+                },
+                ManagementTextRole::Colony,
+            ));
+            spawn_management_small_button(header, "▶", ManagementButtonAction::NextColony, 36.0);
+            spawn_management_small_button(
+                header,
+                "Fermer  [C / Échap]",
+                ManagementButtonAction::Close,
+                154.0,
+            );
+        });
+}
+
+fn spawn_management_small_button(
+    parent: &mut ChildSpawnerCommands,
+    label: &str,
+    action: ManagementButtonAction,
+    width: f32,
+) {
+    parent
+        .spawn((
+            Button,
+            Node {
+                width: Val::Px(width),
+                min_height: Val::Px(32.0),
+                padding: UiRect::axes(Val::Px(8.0), Val::Px(5.0)),
+                border: UiRect::all(Val::Px(1.0)),
+                border_radius: BorderRadius::all(Val::Px(5.0)),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.06, 0.10, 0.13, 0.98)),
+            Outline::new(
+                Val::Px(1.0),
+                Val::ZERO,
+                Color::srgba(0.44, 0.62, 0.68, 0.50),
+            ),
+            action,
+            UiPointerBlocker,
+        ))
+        .with_children(|button| {
+            button.spawn((
+                Text::new(label),
+                ui_text_font(11.0),
+                TextColor(Color::srgb(0.82, 0.90, 0.94)),
+            ));
+        });
+}
+
+fn spawn_management_resource_row(root: &mut ChildSpawnerCommands) {
+    root.spawn((Node {
+        width: Val::Percent(100.0),
+        min_height: Val::Px(94.0),
+        flex_direction: FlexDirection::Row,
+        column_gap: Val::Px(8.0),
+        ..default()
+    },))
+        .with_children(|row| {
+            for kind in ResourceHudKind::ALL {
+                spawn_management_resource_card(row, kind);
+            }
+        });
+}
+
+fn spawn_management_resource_card(parent: &mut ChildSpawnerCommands, kind: ResourceHudKind) {
     parent
         .spawn((
             Node {
                 flex_grow: 1.0,
                 flex_basis: Val::Px(0.0),
-                min_width: Val::Px(126.0),
-                margin: UiRect {
-                    left: Val::Px(3.0),
-                    right: Val::Px(3.0),
-                    ..default()
-                },
-                padding: UiRect::all(Val::Px(8.0)),
+                padding: UiRect::all(Val::Px(9.0)),
                 border: UiRect::all(Val::Px(1.0)),
-                border_radius: BorderRadius::all(Val::Px(5.0)),
+                border_radius: BorderRadius::all(Val::Px(6.0)),
                 flex_direction: FlexDirection::Column,
                 justify_content: JustifyContent::SpaceBetween,
                 ..default()
             },
             BackgroundColor(resource_card_background(kind)),
             Outline::new(Val::Px(1.0), Val::ZERO, resource_outline_color(kind)),
-            Interaction::None,
-            UiPointerBlocker,
-            ResourceHudCard { kind },
         ))
         .with_children(|card| {
             card.spawn((
                 Text::new(kind.title()),
                 ui_text_font(11.0),
                 TextColor(resource_kind_color(kind)),
-                ResourceHudCardText { kind },
+                ManagementResourceCardText { kind },
             ));
-
             card.spawn((
                 Node {
                     width: Val::Percent(100.0),
@@ -1163,7 +1314,7 @@ fn spawn_resource_hud_card(parent: &mut ChildSpawnerCommands, kind: ResourceHudK
                     border_radius: BorderRadius::all(Val::Px(4.0)),
                     ..default()
                 },
-                BackgroundColor(Color::srgba(0.10, 0.13, 0.16, 0.92)),
+                BackgroundColor(Color::srgba(0.08, 0.11, 0.14, 0.96)),
             ))
             .with_children(|gauge| {
                 gauge.spawn((
@@ -1174,97 +1325,198 @@ fn spawn_resource_hud_card(parent: &mut ChildSpawnerCommands, kind: ResourceHudK
                         ..default()
                     },
                     BackgroundColor(resource_kind_color(kind)),
-                    ResourceHudGaugeFill { kind },
+                    ManagementResourceGaugeFill { kind },
                 ));
             });
         });
 }
 
-fn spawn_construction_panel(commands: &mut Commands) {
-    commands
-        .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                left: Val::Px(290.0),
-                right: Val::Px(372.0),
-                bottom: Val::Px(218.0),
-                padding: UiRect::all(Val::Px(9.0)),
-                border: UiRect::all(Val::Px(1.0)),
-                border_radius: BorderRadius::all(Val::Px(7.0)),
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(6.0),
-                ..default()
-            },
-            BackgroundColor(Color::srgba(0.012, 0.020, 0.028, 0.96)),
-            Outline::new(
-                Val::Px(1.0),
-                Val::ZERO,
-                Color::srgba(0.58, 0.72, 0.76, 0.40),
-            ),
-            Visibility::Hidden,
-            Interaction::None,
-            UiPointerBlocker,
-            ConstructionPanelRoot,
-        ))
-        .with_children(|root| {
-            root.spawn((
-                Text::new("CONSTRUCTION"),
-                ui_text_font(12.0),
-                TextColor(Color::srgb(0.78, 0.92, 0.96)),
-            ));
-            root.spawn((
-                Text::new("File vide"),
-                ui_text_font(10.0),
-                TextColor(Color::srgb(0.68, 0.76, 0.80)),
-                ConstructionQueueText,
-            ));
-
-            for pair in galactic_sim::BuildingKind::ALL.chunks(2) {
-                root.spawn((Node {
-                    width: Val::Percent(100.0),
-                    flex_direction: FlexDirection::Row,
-                    column_gap: Val::Px(6.0),
-                    ..default()
-                },))
-                    .with_children(|row| {
-                        for kind in pair {
-                            spawn_construction_button(row, *kind);
-                        }
-                    });
-            }
+fn spawn_management_main_row(root: &mut ChildSpawnerCommands) {
+    root.spawn((Node {
+        width: Val::Percent(100.0),
+        flex_grow: 1.0,
+        min_height: Val::Px(390.0),
+        flex_direction: FlexDirection::Row,
+        column_gap: Val::Px(9.0),
+        ..default()
+    },))
+        .with_children(|row| {
+            spawn_management_building_list(row);
+            spawn_management_building_detail(row);
+            spawn_management_queue(row);
         });
 }
 
-fn spawn_construction_button(parent: &mut ChildSpawnerCommands, kind: galactic_sim::BuildingKind) {
+fn spawn_management_building_list(row: &mut ChildSpawnerCommands) {
+    row.spawn((
+        Node {
+            width: Val::Px(292.0),
+            padding: UiRect::all(Val::Px(9.0)),
+            border: UiRect::all(Val::Px(1.0)),
+            border_radius: BorderRadius::all(Val::Px(6.0)),
+            flex_direction: FlexDirection::Column,
+            row_gap: Val::Px(5.0),
+            ..default()
+        },
+        BackgroundColor(panel_background()),
+        Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
+    ))
+    .with_children(|list| {
+        list.spawn((
+            Text::new("BÂTIMENTS"),
+            ui_text_font(12.0),
+            TextColor(Color::srgb(0.72, 0.88, 0.92)),
+        ));
+        for kind in galactic_sim::BuildingKind::ALL {
+            spawn_management_building_button(list, kind);
+        }
+    });
+}
+
+fn spawn_management_building_button(
+    parent: &mut ChildSpawnerCommands,
+    kind: galactic_sim::BuildingKind,
+) {
     parent
         .spawn((
             Button,
             Node {
-                flex_grow: 1.0,
-                flex_basis: Val::Px(0.0),
-                min_height: Val::Px(44.0),
-                padding: UiRect::all(Val::Px(6.0)),
+                width: Val::Percent(100.0),
+                min_height: Val::Px(37.0),
+                padding: UiRect::axes(Val::Px(8.0), Val::Px(6.0)),
                 border: UiRect::all(Val::Px(1.0)),
                 border_radius: BorderRadius::all(Val::Px(5.0)),
                 ..default()
             },
-            BackgroundColor(action_button_color(true, false, &Interaction::None)),
+            BackgroundColor(Color::srgba(0.035, 0.055, 0.070, 0.96)),
             Outline::new(
                 Val::Px(1.0),
                 Val::ZERO,
-                Color::srgba(0.58, 0.72, 0.76, 0.30),
+                Color::srgba(0.30, 0.44, 0.50, 0.42),
             ),
-            ConstructionButton { kind },
+            ManagementButtonAction::SelectBuilding(kind),
+            ManagementBuildingButton { kind },
             UiPointerBlocker,
         ))
         .with_children(|button| {
             button.spawn((
                 Text::new(""),
-                ui_text_font(10.0),
-                TextColor(Color::srgb(0.88, 0.94, 0.96)),
-                ConstructionButtonText { kind },
+                ui_text_font(11.0),
+                TextColor(Color::srgb(0.82, 0.88, 0.90)),
+                ManagementBuildingButtonText { kind },
             ));
         });
+}
+
+fn spawn_management_building_detail(row: &mut ChildSpawnerCommands) {
+    row.spawn((
+        Node {
+            flex_grow: 1.0,
+            flex_basis: Val::Px(0.0),
+            padding: UiRect::all(Val::Px(12.0)),
+            border: UiRect::all(Val::Px(1.0)),
+            border_radius: BorderRadius::all(Val::Px(6.0)),
+            flex_direction: FlexDirection::Column,
+            row_gap: Val::Px(10.0),
+            ..default()
+        },
+        BackgroundColor(panel_background()),
+        Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
+    ))
+    .with_children(|detail| {
+        detail.spawn((
+            Text::new("Sélectionne un bâtiment."),
+            ui_text_font(12.0),
+            TextColor(Color::srgb(0.84, 0.90, 0.94)),
+            Node {
+                flex_grow: 1.0,
+                ..default()
+            },
+            ManagementTextRole::BuildingDetail,
+        ));
+        detail
+            .spawn((
+                Button,
+                Node {
+                    width: Val::Percent(100.0),
+                    min_height: Val::Px(42.0),
+                    padding: UiRect::axes(Val::Px(12.0), Val::Px(8.0)),
+                    border: UiRect::all(Val::Px(1.0)),
+                    border_radius: BorderRadius::all(Val::Px(6.0)),
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.08, 0.28, 0.24, 0.98)),
+                Outline::new(
+                    Val::Px(1.0),
+                    Val::ZERO,
+                    Color::srgba(0.30, 0.88, 0.72, 0.70),
+                ),
+                ManagementButtonAction::UpgradeSelected,
+                ManagementUpgradeButton,
+                UiPointerBlocker,
+            ))
+            .with_children(|button| {
+                button.spawn((
+                    Text::new("AMÉLIORER"),
+                    ui_text_font(12.0),
+                    TextColor(Color::srgb(0.86, 0.98, 0.92)),
+                    ManagementTextRole::UpgradeLabel,
+                ));
+            });
+    });
+}
+
+fn spawn_management_queue(row: &mut ChildSpawnerCommands) {
+    row.spawn((
+        Node {
+            width: Val::Px(306.0),
+            padding: UiRect::all(Val::Px(10.0)),
+            border: UiRect::all(Val::Px(1.0)),
+            border_radius: BorderRadius::all(Val::Px(6.0)),
+            flex_direction: FlexDirection::Column,
+            row_gap: Val::Px(8.0),
+            ..default()
+        },
+        BackgroundColor(panel_background()),
+        Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
+    ))
+    .with_children(|queue| {
+        queue.spawn((
+            Text::new("FILE DE CONSTRUCTION"),
+            ui_text_font(12.0),
+            TextColor(Color::srgb(0.72, 0.88, 0.92)),
+        ));
+        queue
+            .spawn((
+                Node {
+                    width: Val::Percent(100.0),
+                    height: Val::Px(8.0),
+                    border_radius: BorderRadius::all(Val::Px(4.0)),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.08, 0.11, 0.14, 0.96)),
+            ))
+            .with_children(|gauge| {
+                gauge.spawn((
+                    Node {
+                        width: Val::Percent(0.0),
+                        height: Val::Percent(100.0),
+                        border_radius: BorderRadius::all(Val::Px(4.0)),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgb(0.36, 0.84, 0.72)),
+                    ManagementQueueProgressFill,
+                ));
+            });
+        queue.spawn((
+            Text::new("File vide."),
+            ui_text_font(11.0),
+            TextColor(Color::srgb(0.78, 0.84, 0.88)),
+            ManagementTextRole::Queue,
+        ));
+    });
 }
 
 fn spawn_panel_heading(parent: &mut ChildSpawnerCommands<'_>, label: &str) {
@@ -1390,7 +1642,25 @@ fn handle_view_input(
     mut navigation: ResMut<StrategicNavigation>,
     mut rebuild: ResMut<ViewRebuildRequest>,
     mut pointer_state: ResMut<PointerSelectionState>,
+    mut management: ResMut<ColonyManagementState>,
 ) {
+    if keyboard.just_pressed(KeyCode::KeyC) {
+        toggle_colony_management(&mut management, &mut simulation);
+        pointer_state.ambiguity = None;
+        return;
+    }
+
+    if management.open {
+        if keyboard.just_pressed(KeyCode::Escape) {
+            management.open = false;
+        } else if keyboard.just_pressed(KeyCode::ArrowLeft) {
+            cycle_management_colony(&mut management, &mut simulation, true);
+        } else if keyboard.just_pressed(KeyCode::ArrowRight) {
+            cycle_management_colony(&mut management, &mut simulation, false);
+        }
+        return;
+    }
+
     if pointer_state.ambiguity.is_some() {
         if keyboard.just_pressed(KeyCode::Tab) {
             let reverse = keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
@@ -1815,78 +2085,416 @@ fn pick_target_matches_selection(target: PickTarget, selection: SelectionTarget)
     }
 }
 
-fn update_resource_dashboard(
-    simulation: Res<SimulationResource>,
-    mut roots: Query<&mut Visibility, With<ResourceDashboardRoot>>,
-    mut headers: Query<
-        &mut Text,
-        (
-            With<ResourceDashboardHeaderText>,
-            Without<ResourceHudCardText>,
-        ),
-    >,
-    mut card_texts: Query<
-        (&ResourceHudCardText, &mut Text, &mut TextColor),
-        Without<ResourceDashboardHeaderText>,
-    >,
-    mut gauges: Query<(&ResourceHudGaugeFill, &mut Node, &mut BackgroundColor)>,
+fn handle_colony_management_buttons(
+    mut simulation: ResMut<SimulationResource>,
+    mut management: ResMut<ColonyManagementState>,
+    interactions: ManagementButtonInteractionQuery,
 ) {
-    let Some(colony) = selected_colony_for_resource_dashboard(simulation.simulation()) else {
-        for mut visibility in &mut roots {
-            *visibility = Visibility::Hidden;
+    for (interaction, action) in &interactions {
+        if *interaction != Interaction::Pressed {
+            continue;
         }
+
+        match *action {
+            ManagementButtonAction::Toggle => {
+                toggle_colony_management(&mut management, &mut simulation);
+            }
+            ManagementButtonAction::Close => {
+                management.open = false;
+            }
+            ManagementButtonAction::PreviousColony => {
+                cycle_management_colony(&mut management, &mut simulation, true);
+            }
+            ManagementButtonAction::NextColony => {
+                cycle_management_colony(&mut management, &mut simulation, false);
+            }
+            ManagementButtonAction::SelectBuilding(kind) => {
+                management.selected_building = kind;
+                management.feedback.clear();
+            }
+            ManagementButtonAction::UpgradeSelected => {
+                queue_selected_management_upgrade(&mut management, &mut simulation);
+            }
+        }
+    }
+}
+
+fn capture_colony_management_feedback(
+    simulation: Res<SimulationResource>,
+    mut management: ResMut<ColonyManagementState>,
+) {
+    for event in &simulation.pending_events {
+        match *event {
+            GameEvent::ConstructionQueued(queued) => {
+                let name = &galactic_sim::default_building_catalog()
+                    .definition(queued.order.kind)
+                    .name;
+                management.feedback = format!(
+                    "{} niveau {} ajouté à la file.",
+                    name, queued.order.target_level,
+                );
+            }
+            GameEvent::ConstructionCompleted(completed) => {
+                let name = &galactic_sim::default_building_catalog()
+                    .definition(completed.kind)
+                    .name;
+                management.feedback = format!("{} niveau {} terminé.", name, completed.new_level,);
+            }
+            GameEvent::ConstructionRejected(rejected) => {
+                management.feedback = format!(
+                    "Amélioration refusée : {}",
+                    construction_error_text(rejected.error),
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
+fn update_colony_management_visibility(
+    simulation: Res<SimulationResource>,
+    mut management: ResMut<ColonyManagementState>,
+    mut roots: Query<&mut Visibility, With<ColonyManagementRoot>>,
+    mut texts: Query<(&ManagementTextRole, &mut Text)>,
+) {
+    if management.open {
+        sync_management_colony(&mut management, simulation.simulation());
+    }
+
+    for mut visibility in &mut roots {
+        *visibility = if management.open {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+    }
+
+    let colony = active_management_colony(&management, simulation.simulation());
+    let colonies = player_colony_ids(simulation.simulation());
+    let current_index = colony.and_then(|active| {
+        colonies
+            .iter()
+            .position(|candidate| *candidate == active.id)
+    });
+
+    for (role, mut text) in &mut texts {
+        match role {
+            ManagementTextRole::ToggleLabel => {
+                text.0 = if management.open {
+                    "Fermer gestion colonie".to_string()
+                } else {
+                    "Gestion colonie  [C]".to_string()
+                };
+            }
+            ManagementTextRole::Title => {
+                text.0 = colony
+                    .map(|active| format!("GESTION PLANÉTAIRE — {}", active.name,))
+                    .unwrap_or_else(|| "GESTION PLANÉTAIRE".to_string());
+            }
+            ManagementTextRole::Colony => {
+                text.0 = colony
+                    .map(|active| {
+                        let index = current_index.unwrap_or(0) + 1;
+                        let planet = simulation
+                            .simulation()
+                            .universe_repository()
+                            .planet(active.planet_id)
+                            .map(|value| value.name.as_str())
+                            .unwrap_or("Planète");
+                        format!("{} / {}  •  {}", index, colonies.len().max(1), planet,)
+                    })
+                    .unwrap_or_else(|| "Aucune colonie".to_string());
+            }
+            ManagementTextRole::Feedback => {
+                text.0 = management.feedback.clone();
+            }
+            ManagementTextRole::BuildingDetail
+            | ManagementTextRole::UpgradeLabel
+            | ManagementTextRole::Queue => {}
+        }
+    }
+}
+
+fn update_colony_management_resources(
+    simulation: Res<SimulationResource>,
+    management: Res<ColonyManagementState>,
+    mut texts: Query<(&ManagementResourceCardText, &mut Text, &mut TextColor)>,
+    mut gauges: Query<(
+        &ManagementResourceGaugeFill,
+        &mut Node,
+        &mut BackgroundColor,
+    )>,
+) {
+    if !management.open {
+        return;
+    }
+    let Some(colony) = active_management_colony(&management, simulation.simulation()) else {
+        return;
+    };
+    let production = galactic_sim::colony_production_snapshot(colony);
+
+    for (card, mut text, mut color) in &mut texts {
+        let view = resource_hud_view(card.kind, colony, production);
+        text.0 = view.text;
+        color.0 = status_text_color(card.kind, view.status);
+    }
+    for (gauge, mut node, mut color) in &mut gauges {
+        let view = resource_hud_view(gauge.kind, colony, production);
+        node.width = Val::Percent((view.fill_ratio * 100.0).clamp(0.0, 100.0));
+        color.0 = status_gauge_color(gauge.kind, view.status);
+    }
+}
+
+fn update_colony_management_buildings(
+    simulation: Res<SimulationResource>,
+    management: Res<ColonyManagementState>,
+    mut buttons: Query<(
+        &ManagementBuildingButton,
+        &Interaction,
+        &mut BackgroundColor,
+        &mut Outline,
+    )>,
+    mut labels: Query<(&ManagementBuildingButtonText, &mut Text, &mut TextColor)>,
+) {
+    if !management.open {
+        return;
+    }
+    let Some(colony) = active_management_colony(&management, simulation.simulation()) else {
+        return;
+    };
+    let catalog = galactic_sim::default_building_catalog();
+    let projected = galactic_sim::projected_building_levels(colony);
+
+    for (button, interaction, mut background, mut outline) in &mut buttons {
+        let selected = button.kind == management.selected_building;
+        background.0 = management_building_button_color(selected, interaction);
+        outline.color = management_building_button_outline(selected);
+    }
+
+    for (label, mut text, mut color) in &mut labels {
+        let definition = catalog.definition(label.kind);
+        let active_level = colony.buildings.level(label.kind);
+        let projected_level = projected.level(label.kind);
+        let queue_suffix = if projected_level > active_level {
+            format!("  → {} en file", projected_level)
+        } else {
+            String::new()
+        };
+        text.0 = format!(
+            "{}
+Niveau {}{}",
+            definition.name, active_level, queue_suffix,
+        );
+        color.0 = if label.kind == management.selected_building {
+            Color::srgb(0.86, 0.98, 0.94)
+        } else {
+            Color::srgb(0.78, 0.84, 0.88)
+        };
+    }
+}
+
+fn update_colony_management_detail(
+    simulation: Res<SimulationResource>,
+    management: Res<ColonyManagementState>,
+    mut texts: Query<(&ManagementTextRole, &mut Text, &mut TextColor)>,
+    mut buttons: Query<
+        (&Interaction, &mut BackgroundColor, &mut Outline),
+        With<ManagementUpgradeButton>,
+    >,
+) {
+    if !management.open {
+        return;
+    }
+    let Some(colony) = active_management_colony(&management, simulation.simulation()) else {
         return;
     };
 
-    for mut visibility in &mut roots {
-        *visibility = Visibility::Visible;
-    }
-    for mut header in &mut headers {
-        header.0 = format!("ÉCONOMIE — {}", colony.name);
+    let kind = management.selected_building;
+    let quote =
+        galactic_sim::building_upgrade_quote(simulation.simulation().state(), colony.id, kind);
+    let available = quote.is_ok();
+    let detail = building_management_detail_text(colony, kind, quote);
+    let upgrade_label = match quote {
+        Ok(value) => format!("AMÉLIORER VERS LE NIVEAU {}", value.target_level,),
+        Err(error) => construction_error_text(error),
+    };
+
+    for (role, mut text, mut color) in &mut texts {
+        match role {
+            ManagementTextRole::BuildingDetail => {
+                text.0 = detail.clone();
+                color.0 = Color::srgb(0.84, 0.90, 0.94);
+            }
+            ManagementTextRole::UpgradeLabel => {
+                text.0 = upgrade_label.clone();
+                color.0 = if available {
+                    Color::srgb(0.86, 0.98, 0.92)
+                } else {
+                    Color::srgb(0.64, 0.66, 0.66)
+                };
+            }
+            _ => {}
+        }
     }
 
-    let production = galactic_sim::colony_production_snapshot(colony);
-    for (card, mut text, mut text_color) in &mut card_texts {
-        let view = resource_hud_view(card.kind, colony, production);
-        text.0 = view.text;
-        text_color.0 = status_text_color(card.kind, view.status);
-    }
-
-    for (gauge, mut node, mut background) in &mut gauges {
-        let view = resource_hud_view(gauge.kind, colony, production);
-        node.width = Val::Percent((view.fill_ratio * 100.0).clamp(0.0, 100.0));
-        background.0 = status_gauge_color(gauge.kind, view.status);
+    for (interaction, mut background, mut outline) in &mut buttons {
+        background.0 = action_button_color(available, false, interaction);
+        outline.color = action_button_outline(available, false, interaction);
     }
 }
 
-fn update_resource_card_help(
-    cards: Query<(&Interaction, &ResourceHudCard)>,
-    mut help_texts: Query<&mut Text, With<ResourceDashboardHelpText>>,
+fn update_colony_management_queue(
+    simulation: Res<SimulationResource>,
+    management: Res<ColonyManagementState>,
+    mut texts: Query<(&ManagementTextRole, &mut Text)>,
+    mut progress: Query<&mut Node, With<ManagementQueueProgressFill>>,
 ) {
-    let hovered = cards
-        .iter()
-        .find(|(interaction, _)| **interaction != Interaction::None)
-        .map(|(_, card)| card.kind);
+    if !management.open {
+        return;
+    }
+    let Some(colony) = active_management_colony(&management, simulation.simulation()) else {
+        return;
+    };
 
-    let text = hovered
-        .map(ResourceHudKind::help)
-        .unwrap_or("Total / capacité • disponible = total - réservé.");
-    for mut help in &mut help_texts {
-        help.0 = text.to_string();
+    let label = construction_queue_detail_label(colony);
+    for (role, mut text) in &mut texts {
+        if *role == ManagementTextRole::Queue {
+            text.0 = label.clone();
+        }
+    }
+
+    let ratio = construction_progress_ratio(colony);
+    for mut node in &mut progress {
+        node.width = Val::Percent((ratio * 100.0).clamp(0.0, 100.0));
     }
 }
 
-fn selected_colony_for_resource_dashboard(
-    simulation: &Simulation,
-) -> Option<&galactic_sim::ColonyState> {
+fn toggle_colony_management(
+    management: &mut ColonyManagementState,
+    simulation: &mut SimulationResource,
+) {
+    management.open = !management.open;
+    management.feedback.clear();
+    if management.open {
+        sync_management_colony(management, simulation.simulation());
+        select_active_management_colony(management, simulation);
+    }
+}
+
+fn sync_management_colony(management: &mut ColonyManagementState, simulation: &Simulation) {
     let state = simulation.state();
-    match state.selected {
+    let active_is_valid = management.active_colony_id.is_some_and(|colony_id| {
+        state
+            .colony(colony_id)
+            .is_some_and(|colony| colony.faction == state.player_faction)
+    });
+    if active_is_valid {
+        return;
+    }
+
+    management.active_colony_id = selected_player_colony_id(simulation).or_else(|| {
+        state
+            .colonies
+            .iter()
+            .find(|colony| colony.faction == state.player_faction)
+            .map(|colony| colony.id)
+    });
+}
+
+fn selected_player_colony_id(simulation: &Simulation) -> Option<galactic_domain::ColonyId> {
+    let state = simulation.state();
+    let colony = match state.selected {
         SelectionTarget::Planet { planet_id, .. } => state.colony_on_planet(planet_id),
         SelectionTarget::System(system_id) => state
             .colonies
             .iter()
             .find(|colony| colony.system_id == system_id && colony.faction == state.player_faction),
         SelectionTarget::None => state.player_home_colony(),
+    }?;
+    (colony.faction == state.player_faction).then_some(colony.id)
+}
+
+fn player_colony_ids(simulation: &Simulation) -> Vec<galactic_domain::ColonyId> {
+    let state = simulation.state();
+    state
+        .colonies
+        .iter()
+        .filter(|colony| colony.faction == state.player_faction)
+        .map(|colony| colony.id)
+        .collect()
+}
+
+fn active_management_colony<'a>(
+    management: &ColonyManagementState,
+    simulation: &'a Simulation,
+) -> Option<&'a galactic_sim::ColonyState> {
+    let colony_id = management.active_colony_id?;
+    let colony = simulation.state().colony(colony_id)?;
+    (colony.faction == simulation.state().player_faction).then_some(colony)
+}
+
+fn cycle_management_colony(
+    management: &mut ColonyManagementState,
+    simulation: &mut SimulationResource,
+    reverse: bool,
+) {
+    let colonies = player_colony_ids(simulation.simulation());
+    if colonies.is_empty() {
+        management.active_colony_id = None;
+        return;
+    }
+
+    let current = management
+        .active_colony_id
+        .and_then(|active| colonies.iter().position(|id| *id == active))
+        .unwrap_or(0);
+    let next = if reverse {
+        current.checked_sub(1).unwrap_or(colonies.len() - 1)
+    } else {
+        (current + 1) % colonies.len()
+    };
+    management.active_colony_id = Some(colonies[next]);
+    management.feedback.clear();
+    select_active_management_colony(management, simulation);
+}
+
+fn select_active_management_colony(
+    management: &ColonyManagementState,
+    simulation: &mut SimulationResource,
+) {
+    let Some(colony) = active_management_colony(management, simulation.simulation()) else {
+        return;
+    };
+    let system_id = colony.system_id;
+    let planet_id = colony.planet_id;
+    apply_simulation_command(
+        simulation,
+        GameCommand::SelectPlanet {
+            system_id,
+            planet_id,
+        },
+    );
+}
+
+fn queue_selected_management_upgrade(
+    management: &mut ColonyManagementState,
+    simulation: &mut SimulationResource,
+) {
+    let Some(colony_id) = management.active_colony_id else {
+        management.feedback = "Aucune colonie active.".to_string();
+        return;
+    };
+    let kind = management.selected_building;
+    match galactic_sim::building_upgrade_quote(simulation.simulation().state(), colony_id, kind) {
+        Ok(_) => {
+            apply_simulation_command(
+                simulation,
+                GameCommand::QueueBuildingUpgrade { colony_id, kind },
+            );
+        }
+        Err(error) => {
+            management.feedback = construction_error_text(error);
+        }
     }
 }
 
@@ -1912,17 +2520,19 @@ fn resource_hud_view(
     let rate = resource_rate_per_second(kind, production);
     let saturation = resource_saturation(kind, production);
     let fill_ratio = resource_fill_ratio(stock, capacity);
-    let status = resource_hud_status(stock, available, reserved, capacity);
-    let warning = resource_status_label(status);
-    let warning_text = if warning.is_empty() {
-        String::new()
+    let status = resource_hud_status(stock, capacity);
+    let warning = if status == ResourceHudStatus::Full {
+        "
+PLEIN — PRODUCTION BLOQUÉE"
     } else {
-        format!("\n{warning}")
+        ""
     };
 
     ResourceHudView {
         text: format!(
-            "{}  {} / {}\nDisponible {}  •  Réservé {}\n+{:.2}/s  •  saturation {}{}",
+            "{}  {} / {}
+Disponible {}  •  Réservé {}
+Production +{:.2}/s  •  plein {}{}",
             kind.title(),
             stock,
             capacity,
@@ -1930,7 +2540,7 @@ fn resource_hud_view(
             reserved,
             rate,
             format_saturation_time(saturation),
-            warning_text,
+            warning,
         ),
         fill_ratio,
         status,
@@ -1947,24 +2557,26 @@ fn energy_hud_view(production: galactic_sim::ColonyProductionSnapshot) -> Resour
     } else {
         ResourceHudStatus::Normal
     };
-    let fill_ratio = energy_fill_ratio(consumed, produced);
-    let balance = i128::from(produced) - i128::from(consumed);
+    let warning = if deficit {
+        "
+DÉFICIT — PRODUCTION RALENTIE"
+    } else {
+        ""
+    };
 
     ResourceHudView {
         text: format!(
-            "ÉNERGIE  {} / {}\nDisponible {}  •  Bilan {:+}\nRendement extracteurs {}%{}",
+            "ÉNERGIE  {} / {}
+Disponible {}  •  Bilan {:+}
+Rendement {}%{}",
             consumed,
             produced,
             available,
-            balance,
+            i128::from(produced) - i128::from(consumed),
             u32::from(production.energy_efficiency_per_mille,) / 10,
-            if status == ResourceHudStatus::Deficit {
-                "\nDÉFICIT ÉNERGÉTIQUE"
-            } else {
-                ""
-            },
+            warning,
         ),
-        fill_ratio,
+        fill_ratio: energy_fill_ratio(consumed, produced),
         status,
     }
 }
@@ -2016,30 +2628,13 @@ fn energy_fill_ratio(consumption: u64, production: u64) -> f32 {
     (consumption as f64 / production as f64).clamp(0.0, 1.0) as f32
 }
 
-fn resource_hud_status(
-    stock: u64,
-    available: u64,
-    reserved: u64,
-    capacity: u64,
-) -> ResourceHudStatus {
+fn resource_hud_status(stock: u64, capacity: u64) -> ResourceHudStatus {
     if capacity > 0 && stock >= capacity {
         ResourceHudStatus::Full
     } else if capacity > 0 && stock.saturating_mul(100) >= capacity.saturating_mul(90) {
         ResourceHudStatus::NearlyFull
-    } else if available == 0 && reserved > 0 {
-        ResourceHudStatus::Reserved
     } else {
         ResourceHudStatus::Normal
-    }
-}
-
-const fn resource_status_label(status: ResourceHudStatus) -> &'static str {
-    match status {
-        ResourceHudStatus::Normal | ResourceHudStatus::Reserved | ResourceHudStatus::NearlyFull => {
-            ""
-        }
-        ResourceHudStatus::Full => "PLEIN — PRODUCTION BLOQUÉE",
-        ResourceHudStatus::Deficit => "DÉFICIT ÉNERGÉTIQUE",
     }
 }
 
@@ -2073,7 +2668,7 @@ fn resource_card_background(kind: ResourceHudKind) -> Color {
 fn status_text_color(kind: ResourceHudKind, status: ResourceHudStatus) -> Color {
     match status {
         ResourceHudStatus::Full | ResourceHudStatus::Deficit => Color::srgb(1.0, 0.48, 0.42),
-        ResourceHudStatus::NearlyFull | ResourceHudStatus::Reserved => Color::srgb(1.0, 0.78, 0.36),
+        ResourceHudStatus::NearlyFull => Color::srgb(1.0, 0.78, 0.36),
         ResourceHudStatus::Normal => resource_kind_color(kind),
     }
 }
@@ -2082,125 +2677,254 @@ fn status_gauge_color(kind: ResourceHudKind, status: ResourceHudStatus) -> Color
     status_text_color(kind, status)
 }
 
-fn handle_construction_buttons(
-    mut simulation: ResMut<SimulationResource>,
-    interactions: ConstructionButtonInteractionQuery,
-) {
-    for (interaction, button) in &interactions {
-        if *interaction != Interaction::Pressed {
-            continue;
-        }
-        let colony_id =
-            selected_colony_for_resource_dashboard(simulation.simulation()).map(|colony| colony.id);
-        let Some(colony_id) = colony_id else {
-            continue;
-        };
-        apply_simulation_command(
-            &mut simulation,
-            GameCommand::QueueBuildingUpgrade {
-                colony_id,
-                kind: button.kind,
-            },
+fn management_building_button_color(selected: bool, interaction: &Interaction) -> Color {
+    if selected {
+        return Color::srgba(0.08, 0.30, 0.26, 0.98);
+    }
+    match interaction {
+        Interaction::Pressed => Color::srgba(0.09, 0.24, 0.24, 0.98),
+        Interaction::Hovered => Color::srgba(0.07, 0.16, 0.18, 0.98),
+        Interaction::None => Color::srgba(0.035, 0.055, 0.070, 0.96),
+    }
+}
+
+fn management_building_button_outline(selected: bool) -> Color {
+    if selected {
+        Color::srgba(0.32, 0.92, 0.76, 0.80)
+    } else {
+        Color::srgba(0.30, 0.44, 0.50, 0.42)
+    }
+}
+
+fn building_management_detail_text(
+    colony: &galactic_sim::ColonyState,
+    kind: galactic_sim::BuildingKind,
+    quote: Result<galactic_sim::BuildingUpgradeQuote, galactic_sim::ConstructionError>,
+) -> String {
+    let catalog = galactic_sim::default_building_catalog();
+    let definition = catalog.definition(kind);
+    let actual_level = colony.buildings.level(kind);
+    let projected_levels = galactic_sim::projected_building_levels(colony);
+    let projected_level = projected_levels.level(kind);
+    let current_effect = building_effect_label(colony, kind, colony.buildings);
+    let projected_effect = building_effect_label(colony, kind, projected_levels);
+
+    let mut lines = vec![
+        definition.name.to_uppercase(),
+        format!(
+            "Niveau actif : {}  •  après la file : {}  •  maximum : {}",
+            actual_level, projected_level, definition.max_level,
+        ),
+        String::new(),
+        "EFFET".to_string(),
+        format!("Actuel : {current_effect}"),
+    ];
+    if projected_level != actual_level {
+        lines.push(format!("Après la file : {projected_effect}",));
+    }
+
+    if projected_level >= definition.max_level {
+        lines.push(String::new());
+        lines.push("Niveau maximal atteint ou déjà planifié.".to_string());
+        return lines.join(
+            "
+",
         );
     }
-}
 
-fn update_construction_panel(
-    simulation: Res<SimulationResource>,
-    mut roots: Query<&mut Visibility, With<ConstructionPanelRoot>>,
-    mut queue_texts: Query<
-        &mut Text,
-        (With<ConstructionQueueText>, Without<ConstructionButtonText>),
-    >,
-    mut buttons: Query<(
-        &ConstructionButton,
-        &Interaction,
-        &mut BackgroundColor,
-        &mut Outline,
-    )>,
-    mut labels: Query<
-        (&ConstructionButtonText, &mut Text, &mut TextColor),
-        Without<ConstructionQueueText>,
-    >,
-) {
-    let Some(colony) = selected_colony_for_resource_dashboard(simulation.simulation()) else {
-        for mut visibility in &mut roots {
-            *visibility = Visibility::Hidden;
+    let target_level = projected_level + 1;
+    let mut next_levels = projected_levels;
+    next_levels.set_level(kind, target_level);
+    let next_effect = building_effect_label(colony, kind, next_levels);
+    let cost = definition
+        .cost_for_level(target_level)
+        .expect("catalog target level is valid");
+    let duration = definition
+        .duration_for_level(target_level)
+        .expect("catalog target level is valid");
+
+    lines.extend([
+        format!("Prochain niveau : {next_effect}"),
+        String::new(),
+        format!("AMÉLIORATION VERS LE NIVEAU {}", target_level,),
+        format!("Coût : {}", construction_cost_label(cost),),
+        format!(
+            "Durée catalogue : {}",
+            format_strategic_duration(galactic_sim::StrategicDuration::from_ticks(duration,),),
+        ),
+    ]);
+
+    match quote {
+        Ok(value) => {
+            lines.push(format!(
+                "Durée effective : {}",
+                format_strategic_duration(galactic_sim::StrategicDuration::from_ticks(
+                    value.duration_ticks,
+                ),),
+            ));
+            lines.push(format!(
+                "Énergie projetée : {} produite / {} consommée",
+                value.projected_energy_production, value.projected_energy_consumption,
+            ));
+            lines.push(String::new());
+            lines.push("Prêt à être ajouté à la file.".to_string());
         }
-        return;
-    };
-
-    for mut visibility in &mut roots {
-        *visibility = Visibility::Visible;
-    }
-
-    let catalog = galactic_sim::default_building_catalog();
-    for mut text in &mut queue_texts {
-        text.0 = construction_queue_label(colony);
-    }
-
-    for (button, interaction, mut background, mut outline) in &mut buttons {
-        let available = galactic_sim::building_upgrade_quote(
-            simulation.simulation().state(),
-            colony.id,
-            button.kind,
-        )
-        .is_ok();
-        background.0 = action_button_color(available, false, interaction);
-        outline.color = action_button_outline(available, false, interaction);
-    }
-
-    for (label, mut text, mut color) in &mut labels {
-        let definition = catalog.definition(label.kind);
-        match galactic_sim::building_upgrade_quote(
-            simulation.simulation().state(),
-            colony.id,
-            label.kind,
-        ) {
-            Ok(quote) => {
-                text.0 = format!(
-                    "{}  {}→{}\nCoût: {}  •  {}",
-                    definition.name,
-                    quote.current_level,
-                    quote.target_level,
-                    construction_cost_label(quote.cost),
-                    format_strategic_duration(galactic_sim::StrategicDuration::from_ticks(
-                        quote.duration_ticks,
-                    ),),
-                );
-                color.0 = Color::srgb(0.88, 0.94, 0.96);
-            }
-            Err(error) => {
-                let current = galactic_sim::projected_building_levels(colony).level(label.kind);
-                text.0 = format!(
-                    "{}  niveau {}\n{}",
-                    definition.name,
-                    current,
-                    construction_error_text(error),
-                );
-                color.0 = Color::srgb(0.64, 0.66, 0.66);
-            }
+        Err(error) => {
+            lines.push(String::new());
+            lines.push(format!("BLOCAGE : {}", construction_error_text(error),));
         }
     }
-}
 
-fn construction_queue_label(colony: &galactic_sim::ColonyState) -> String {
-    let catalog = galactic_sim::default_building_catalog();
-    let Some(active) = colony.construction_queue.active() else {
-        return "File vide — sélectionne une amélioration.".to_string();
-    };
-    let active_name = &catalog.definition(active.kind).name;
-    let waiting = colony.construction_queue.len().saturating_sub(1);
-
-    format!(
-        "EN COURS — {} niveau {}  •  restant {}  •  en attente {}",
-        active_name,
-        active.target_level,
-        format_strategic_duration(galactic_sim::StrategicDuration::from_ticks(
-            active.remaining_ticks,
-        ),),
-        waiting,
+    lines.join(
+        "
+",
     )
+}
+
+fn building_effect_label(
+    colony: &galactic_sim::ColonyState,
+    kind: galactic_sim::BuildingKind,
+    levels: galactic_sim::BuildingLevels,
+) -> String {
+    let mut preview = colony.clone();
+    preview.buildings = levels;
+    preview.energy = galactic_sim::default_building_catalog().energy_grid_for_levels(levels);
+    let production = galactic_sim::colony_production_snapshot(&preview);
+
+    match kind {
+        galactic_sim::BuildingKind::MetalMine => {
+            format!(
+                "+{:.2} métal/s",
+                production.effective_rate.metal_per_second(),
+            )
+        }
+        galactic_sim::BuildingKind::CrystalExtractor => {
+            format!(
+                "+{:.2} cristal/s",
+                production.effective_rate.crystal_per_second(),
+            )
+        }
+        galactic_sim::BuildingKind::FuelRefinery => {
+            format!(
+                "+{:.2} carburant/s",
+                production.effective_rate.fuel_per_second(),
+            )
+        }
+        galactic_sim::BuildingKind::PowerPlant => {
+            format!(
+                "{} énergie effective",
+                production.effective_energy_production,
+            )
+        }
+        galactic_sim::BuildingKind::Warehouse => {
+            format!(
+                "capacité {}/{}/{}",
+                production.capacity.metal, production.capacity.crystal, production.capacity.fuel,
+            )
+        }
+        galactic_sim::BuildingKind::ConstructionCenter => {
+            let level = u64::from(levels.level(kind));
+            let bonus = match galactic_sim::default_building_catalog()
+                .definition(kind)
+                .effect
+            {
+                galactic_sim::BuildingEffect::ConstructionSpeed { permille_per_level } => {
+                    permille_per_level.saturating_mul(level) / 10
+                }
+                _ => 0,
+            };
+            format!("vitesse de construction +{bonus}%")
+        }
+        galactic_sim::BuildingKind::ResearchLab => {
+            future_points_effect_label(kind, levels.level(kind), "recherche")
+        }
+        galactic_sim::BuildingKind::Shipyard => {
+            future_points_effect_label(kind, levels.level(kind), "chantier")
+        }
+    }
+}
+
+fn future_points_effect_label(kind: galactic_sim::BuildingKind, level: u8, label: &str) -> String {
+    let definition = galactic_sim::default_building_catalog().definition(kind);
+    let milli_per_tick = match definition.effect {
+        galactic_sim::BuildingEffect::ResearchPoints {
+            milli_per_tick_per_level,
+        }
+        | galactic_sim::BuildingEffect::ShipyardPoints {
+            milli_per_tick_per_level,
+        } => milli_per_tick_per_level,
+        _ => 0,
+    };
+    let per_second = milli_per_tick as f64
+        * f64::from(level)
+        * f64::from(galactic_sim::STRATEGIC_TICKS_PER_SECOND)
+        / 1_000.0;
+    format!("{per_second:.2} points de {label}/s")
+}
+
+fn construction_queue_detail_label(colony: &galactic_sim::ColonyState) -> String {
+    if colony.construction_queue.is_empty() {
+        return format!(
+            "File vide
+
+{} emplacement(s) disponible(s).",
+            galactic_sim::MAX_CONSTRUCTION_QUEUE,
+        );
+    }
+
+    let catalog = galactic_sim::default_building_catalog();
+    let mut lines = Vec::new();
+    for (index, order) in colony.construction_queue.orders().enumerate() {
+        let definition = catalog.definition(order.kind);
+        if index == 0 {
+            lines.push(format!(
+                "EN COURS
+{}. {} — niveau {}
+{} restant • coût réservé {}",
+                index + 1,
+                definition.name,
+                order.target_level,
+                format_strategic_duration(galactic_sim::StrategicDuration::from_ticks(
+                    order.remaining_ticks,
+                ),),
+                construction_cost_label(order.cost),
+            ));
+        } else {
+            lines.push(format!(
+                "
+EN ATTENTE
+{}. {} — niveau {}
+coût réservé {}",
+                index + 1,
+                definition.name,
+                order.target_level,
+                construction_cost_label(order.cost),
+            ));
+        }
+    }
+
+    lines.push(format!(
+        "
+
+{} / {} emplacement(s) utilisé(s)",
+        colony.construction_queue.len(),
+        galactic_sim::MAX_CONSTRUCTION_QUEUE,
+    ));
+    lines.join(
+        "
+",
+    )
+}
+
+fn construction_progress_ratio(colony: &galactic_sim::ColonyState) -> f32 {
+    let Some(active) = colony.construction_queue.active() else {
+        return 0.0;
+    };
+    if active.total_ticks == 0 {
+        return 1.0;
+    }
+    let completed = active.total_ticks.saturating_sub(active.remaining_ticks);
+    (completed as f64 / active.total_ticks as f64).clamp(0.0, 1.0) as f32
 }
 
 fn construction_error_text(error: galactic_sim::ConstructionError) -> String {
@@ -2211,16 +2935,14 @@ fn construction_error_text(error: galactic_sim::ConstructionError) -> String {
             format!("File pleine ({maximum})")
         }
         galactic_sim::ConstructionError::MaximumLevel { .. } => "Niveau maximal".to_string(),
-        galactic_sim::ConstructionError::InsufficientResources { available, cost } => {
-            format!(
-                "Manque: {}",
-                construction_missing_resources_label(available, cost)
-            )
-        }
+        galactic_sim::ConstructionError::InsufficientResources { available, cost } => format!(
+            "Manque: {}",
+            construction_missing_resources_label(available, cost,),
+        ),
         galactic_sim::ConstructionError::EnergyDeficit {
             production,
             consumption,
-        } => format!("Énergie insuffisante {production}/{consumption}",),
+        } => format!("Énergie insuffisante : {production}/{consumption}",),
         galactic_sim::ConstructionError::Catalog(
             galactic_sim::BuildingCatalogError::UnsatisfiedPrerequisite {
                 prerequisite,
@@ -2231,7 +2953,7 @@ fn construction_error_text(error: galactic_sim::ConstructionError) -> String {
             let name = &galactic_sim::default_building_catalog()
                 .definition(prerequisite)
                 .name;
-            format!("Requiert {name} niv. {required}")
+            format!("Requiert {name} niveau {required}")
         }
         galactic_sim::ConstructionError::Catalog(_) => "Règle catalogue invalide".to_string(),
         galactic_sim::ConstructionError::Reservation(_) => "Réservation impossible".to_string(),
@@ -2545,36 +3267,45 @@ fn tick_simulation(time: Res<Time>, mut simulation: ResMut<SimulationResource>) 
     simulation.pending_events.extend(events);
 }
 
+#[derive(SystemParam)]
+struct StrategicCameraInput<'w> {
+    time: Res<'w, Time>,
+    keyboard: Res<'w, ButtonInput<KeyCode>>,
+    mouse_buttons: Res<'w, ButtonInput<MouseButton>>,
+    mouse_motion: Res<'w, AccumulatedMouseMotion>,
+    mouse_scroll: Res<'w, AccumulatedMouseScroll>,
+    management: Res<'w, ColonyManagementState>,
+}
+
 fn update_strategic_camera(
-    time: Res<Time>,
-    keyboard: Res<ButtonInput<KeyCode>>,
-    mouse_buttons: Res<ButtonInput<MouseButton>>,
-    mouse_motion: Res<AccumulatedMouseMotion>,
-    mouse_scroll: Res<AccumulatedMouseScroll>,
+    input: StrategicCameraInput,
     mut navigation: ResMut<StrategicNavigation>,
     mut query: Query<&mut Transform, With<StrategicCamera>>,
 ) {
     let Ok(mut transform) = query.single_mut() else {
         return;
     };
+    if input.management.open {
+        return;
+    }
 
-    let delta_seconds = time.delta_secs();
-    let motion = mouse_motion.delta;
-    let scroll_lines = match mouse_scroll.unit {
-        MouseScrollUnit::Line => mouse_scroll.delta.y,
-        MouseScrollUnit::Pixel => mouse_scroll.delta.y / 40.0,
+    let delta_seconds = input.time.delta_secs();
+    let motion = input.mouse_motion.delta;
+    let scroll_lines = match input.mouse_scroll.unit {
+        MouseScrollUnit::Line => input.mouse_scroll.delta.y,
+        MouseScrollUnit::Pixel => input.mouse_scroll.delta.y / 40.0,
     };
 
     match navigation.mode {
         StrategicViewMode::Universe => {
-            if mouse_buttons.pressed(MouseButton::Right) {
+            if input.mouse_buttons.pressed(MouseButton::Right) {
                 let mut yaw = navigation.universe_yaw;
                 let mut pitch = navigation.universe_pitch;
                 apply_orbit_drag(&mut yaw, &mut pitch, motion);
                 navigation.universe_yaw = yaw;
                 navigation.universe_pitch = pitch;
             }
-            if mouse_buttons.pressed(MouseButton::Middle) {
+            if input.mouse_buttons.pressed(MouseButton::Middle) {
                 let pan = mouse_pan_delta(
                     navigation.universe_yaw,
                     motion,
@@ -2583,14 +3314,14 @@ fn update_strategic_camera(
                 navigation.universe_focus += pan;
             }
 
-            let keyboard_pan = keyboard_pan_direction(&keyboard, navigation.universe_yaw);
+            let keyboard_pan = keyboard_pan_direction(&input.keyboard, navigation.universe_yaw);
             if keyboard_pan.length_squared() > 0.0 {
                 let pan_speed = (navigation.universe_distance * 0.55).max(18.0);
                 navigation.universe_focus += keyboard_pan.normalize() * pan_speed * delta_seconds;
             }
 
             apply_keyboard_zoom(
-                &keyboard,
+                &input.keyboard,
                 delta_seconds,
                 &mut navigation.universe_distance,
                 20.0,
@@ -2607,27 +3338,27 @@ fn update_strategic_camera(
             );
         }
         StrategicViewMode::System(_) => {
-            if mouse_buttons.pressed(MouseButton::Right) {
+            if input.mouse_buttons.pressed(MouseButton::Right) {
                 let mut yaw = navigation.system_yaw;
                 let mut pitch = navigation.system_pitch;
                 apply_orbit_drag(&mut yaw, &mut pitch, motion);
                 navigation.system_yaw = yaw;
                 navigation.system_pitch = pitch;
             }
-            if mouse_buttons.pressed(MouseButton::Middle) {
+            if input.mouse_buttons.pressed(MouseButton::Middle) {
                 let pan =
                     mouse_pan_delta(navigation.system_yaw, motion, navigation.system_distance);
                 navigation.system_focus += pan;
             }
 
-            let keyboard_pan = keyboard_pan_direction(&keyboard, navigation.system_yaw);
+            let keyboard_pan = keyboard_pan_direction(&input.keyboard, navigation.system_yaw);
             if keyboard_pan.length_squared() > 0.0 {
                 let pan_speed = (navigation.system_distance * 0.42).max(8.0);
                 navigation.system_focus += keyboard_pan.normalize() * pan_speed * delta_seconds;
             }
 
             apply_keyboard_zoom(
-                &keyboard,
+                &input.keyboard,
                 delta_seconds,
                 &mut navigation.system_distance,
                 10.0,
@@ -3020,37 +3751,43 @@ Chantier : {}",
 }
 
 fn colony_economy_text(colony: &galactic_sim::ColonyState) -> String {
-    let stock = colony.resources.stock();
     let available = colony.resources.available();
-    let reserved = colony.resources.reserved_total();
     let production = galactic_sim::colony_production_snapshot(colony);
+    let construction = colony
+        .construction_queue
+        .active()
+        .map(|order| {
+            let name = &galactic_sim::default_building_catalog()
+                .definition(order.kind)
+                .name;
+            format!(
+                "{} niveau {} — {}",
+                name,
+                order.target_level,
+                format_strategic_duration(galactic_sim::StrategicDuration::from_ticks(
+                    order.remaining_ticks,
+                ),),
+            )
+        })
+        .unwrap_or_else(|| "aucune".to_string());
 
     format!(
-        "STOCKS EXACTS\nTotal — Métal {}  Cristal {}  Carburant {}\nDisponible — Métal {}  Cristal {}  Carburant {}\nRéservé — Métal {}  Cristal {}  Carburant {}\nCapacité — Métal {}  Cristal {}  Carburant {}\n\nPRODUCTION ACTUELLE\nMétal +{:.2}/s  Cristal +{:.2}/s  Carburant +{:.2}/s\nSaturation — Métal {}  Cristal {}  Carburant {}\n\nÉNERGIE — CAPACITÉ\nNominale : {}\nEffective planète : {}\nConsommation catalogue : {}\nEfficacité extracteurs : {}%\nBilan effectif : {:+}",
-        stock.metal,
-        stock.crystal,
-        stock.fuel,
+        "ÉCONOMIE — RÉSUMÉ
+Disponible : {} métal, {} cristal, {} carburant
+Production : +{:.2} / +{:.2} / +{:.2} par seconde
+Énergie : {} produite, {} consommée
+Construction : {}
+
+Gestion complète : touche C",
         available.metal,
         available.crystal,
         available.fuel,
-        reserved.metal,
-        reserved.crystal,
-        reserved.fuel,
-        production.capacity.metal,
-        production.capacity.crystal,
-        production.capacity.fuel,
         production.effective_rate.metal_per_second(),
         production.effective_rate.crystal_per_second(),
         production.effective_rate.fuel_per_second(),
-        format_saturation_time(production.saturation.metal),
-        format_saturation_time(production.saturation.crystal),
-        format_saturation_time(production.saturation.fuel),
-        production.nominal_energy_production,
         production.effective_energy_production,
         production.energy_consumption,
-        u32::from(production.energy_efficiency_per_mille,) / 10,
-        i128::from(production.effective_energy_production)
-            - i128::from(production.energy_consumption),
+        construction,
     )
 }
 
@@ -3628,19 +4365,10 @@ mod tests {
     }
 
     #[test]
-    fn resource_status_distinguishes_reservations_and_saturation() {
-        assert_eq!(
-            resource_hud_status(40, 0, 40, 100),
-            ResourceHudStatus::Reserved
-        );
-        assert_eq!(
-            resource_hud_status(90, 90, 0, 100),
-            ResourceHudStatus::NearlyFull
-        );
-        assert_eq!(
-            resource_hud_status(100, 100, 0, 100),
-            ResourceHudStatus::Full
-        );
+    fn resource_status_distinguishes_normal_nearly_full_and_full() {
+        assert_eq!(resource_hud_status(40, 100), ResourceHudStatus::Normal);
+        assert_eq!(resource_hud_status(90, 100), ResourceHudStatus::NearlyFull);
+        assert_eq!(resource_hud_status(100, 100), ResourceHudStatus::Full);
     }
 
     #[test]
@@ -3670,88 +4398,110 @@ mod tests {
     }
 
     #[test]
-    fn resource_dashboard_system_queries_are_disjoint() {
-        let mut app = App::new();
-        app.add_plugins(MinimalPlugins)
-            .insert_resource(SimulationResource {
-                simulation: Simulation::new(UniverseConfig::mvp()),
-                pending_events: Vec::new(),
-            })
-            .add_systems(Update, update_resource_dashboard);
-
-        app.world_mut()
-            .spawn((Visibility::Hidden, ResourceDashboardRoot));
-        app.world_mut()
-            .spawn((Text::new(""), ResourceDashboardHeaderText));
-        app.world_mut().spawn((
-            Text::new(""),
-            TextColor(Color::WHITE),
-            ResourceHudCardText {
-                kind: ResourceHudKind::Metal,
-            },
-        ));
-        app.world_mut().spawn((
-            Node::default(),
-            BackgroundColor(Color::BLACK),
-            ResourceHudGaugeFill {
-                kind: ResourceHudKind::Metal,
-            },
-        ));
-
-        app.update();
+    fn energy_deficit_uses_a_full_warning_gauge() {
+        assert_eq!(energy_fill_ratio(60, 40), 1.0);
+        assert_eq!(energy_fill_ratio(0, 0), 0.0);
     }
 
     #[test]
-    fn construction_panel_system_queries_are_disjoint() {
-        let mut app = App::new();
-        app.add_plugins(MinimalPlugins)
-            .insert_resource(SimulationResource {
-                simulation: Simulation::new(UniverseConfig::mvp()),
-                pending_events: Vec::new(),
-            })
-            .add_systems(Update, update_construction_panel);
-
-        app.world_mut()
-            .spawn((Visibility::Hidden, ConstructionPanelRoot));
-        app.world_mut()
-            .spawn((Text::new(""), ConstructionQueueText));
-        app.world_mut().spawn((
-            Button,
-            Interaction::None,
-            BackgroundColor(Color::BLACK),
-            Outline::default(),
-            ConstructionButton {
-                kind: galactic_sim::BuildingKind::MetalMine,
-            },
-        ));
-        app.world_mut().spawn((
-            Text::new(""),
-            TextColor(Color::WHITE),
-            ConstructionButtonText {
-                kind: galactic_sim::BuildingKind::MetalMine,
-            },
-        ));
-
-        app.update();
-    }
-
-    #[test]
-    fn dashboard_uses_the_selected_player_colony() {
+    fn management_defaults_to_selected_player_colony() {
         let simulation = Simulation::new(UniverseConfig::mvp());
+        let mut management = ColonyManagementState::default();
 
-        let colony = selected_colony_for_resource_dashboard(&simulation)
-            .expect("the home planet is selected initially");
+        sync_management_colony(&mut management, &simulation);
 
         assert_eq!(
-            colony.planet_id,
-            PlanetId::from_system_index(MVP_HOME_SYSTEM_ID, 0,)
+            management.active_colony_id,
+            simulation
+                .state()
+                .player_home_colony()
+                .map(|colony| colony.id),
         );
     }
 
     #[test]
-    fn energy_deficit_uses_a_full_warning_gauge() {
-        assert_eq!(energy_fill_ratio(60, 40), 1.0);
-        assert_eq!(energy_fill_ratio(0, 0), 0.0);
+    fn management_colony_cycle_wraps() {
+        let mut simulation = SimulationResource {
+            simulation: Simulation::new(UniverseConfig::mvp()),
+            pending_events: Vec::new(),
+        };
+        let mut management = ColonyManagementState::default();
+        sync_management_colony(&mut management, simulation.simulation());
+        let initial = management.active_colony_id;
+
+        cycle_management_colony(&mut management, &mut simulation, false);
+
+        assert_eq!(management.active_colony_id, initial,);
+    }
+
+    #[test]
+    fn building_detail_uses_catalog_and_simulation_values() {
+        let simulation = Simulation::new(UniverseConfig::mvp());
+        let colony = simulation
+            .state()
+            .player_home_colony()
+            .expect("home colony exists");
+        let quote = galactic_sim::building_upgrade_quote(
+            simulation.state(),
+            colony.id,
+            galactic_sim::BuildingKind::MetalMine,
+        );
+
+        let text =
+            building_management_detail_text(colony, galactic_sim::BuildingKind::MetalMine, quote);
+
+        assert!(text.contains("MINE DE MÉTAL"));
+        assert!(text.contains("Niveau actif"));
+        assert!(text.contains("Coût"));
+        assert!(text.contains("Actuel"));
+    }
+
+    #[test]
+    fn queue_progress_is_clamped_and_empty_is_zero() {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+        let colony_id = simulation
+            .state()
+            .player_home_colony()
+            .expect("home colony exists")
+            .id;
+        assert_eq!(
+            construction_progress_ratio(
+                simulation.state().colony(colony_id).expect("colony exists"),
+            ),
+            0.0,
+        );
+
+        simulation.apply_command(GameCommand::QueueBuildingUpgrade {
+            colony_id,
+            kind: galactic_sim::BuildingKind::MetalMine,
+        });
+        let ratio = construction_progress_ratio(
+            simulation.state().colony(colony_id).expect("colony exists"),
+        );
+        assert!((0.0..=1.0).contains(&ratio));
+    }
+
+    #[test]
+    fn colony_management_screen_uses_global_overlay_layer() {
+        fn spawn_management_for_test(mut commands: Commands) {
+            spawn_colony_management_screen(&mut commands);
+        }
+
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_systems(Startup, spawn_management_for_test);
+
+        app.update();
+
+        let mut query = app
+            .world_mut()
+            .query_filtered::<&GlobalZIndex, With<ColonyManagementRoot>>();
+        let z_index = query
+            .single(app.world())
+            .expect("management root should have a global z-index");
+
+        assert_eq!(*z_index, GlobalZIndex(COLONY_MANAGEMENT_Z_INDEX));
+        assert!(z_index.0 > 0);
     }
 
     #[test]
@@ -3988,7 +4738,8 @@ mod tests {
 
         assert_eq!(panel.level, Some(KnowledgeLevel::Colonized));
         assert!(rendered.contains("Aster Prime Colony"));
-        assert!(rendered.contains("STOCKS EXACTS"));
+        assert!(rendered.contains("ÉCONOMIE — RÉSUMÉ"));
+        assert!(rendered.contains("Gestion complète : touche C"));
         assert!(rendered.contains("INFRASTRUCTURE"));
     }
 }

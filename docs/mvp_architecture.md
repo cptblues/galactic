@@ -695,3 +695,73 @@ conservés uniquement lorsqu’ils ont une conséquence métier :
 
 - `PLEIN — PRODUCTION BLOQUÉE` ;
 - `DÉFICIT ÉNERGÉTIQUE`.
+
+
+## MVP-015 — Écran de gestion planétaire
+
+La gestion économique n’est plus affichée sous forme de panneaux superposés à
+la vue stratégique.
+
+Un écran dédié s’ouvre avec la touche `C` ou le bouton `Gestion colonie`. Il
+occupe l’espace central entre la barre supérieure et les bords de la fenêtre.
+La vue 3D reste en arrière-plan mais la caméra et le picking sont neutralisés
+pendant la gestion.
+
+L’écran est organisé en quatre niveaux de lecture :
+
+1. en-tête de la colonie active ;
+2. bandeau Métal, Cristal, Carburant et Énergie ;
+3. liste compacte des bâtiments ;
+4. détail du bâtiment sélectionné et file de construction.
+
+### Sélection de la colonie
+
+Les boutons précédent et suivant parcourent uniquement les colonies du joueur.
+Changer de colonie met aussi à jour la sélection stratégique vers sa planète.
+L’architecture fonctionne déjà avec une seule colonie et prépare MVP-028.
+
+### Bâtiments
+
+La liste montre uniquement le nom, le niveau actif et le niveau déjà planifié.
+Sélectionner un bâtiment ouvre sa fiche détaillée :
+
+- niveau actif ;
+- niveau après la file ;
+- niveau maximal ;
+- effet actuel ;
+- effet après la file ;
+- effet du prochain niveau ;
+- coût ;
+- durée catalogue et durée effective ;
+- énergie projetée ;
+- raison précise d’un blocage.
+
+Le bouton principal lance l’amélioration sans outil de debug.
+
+### File de construction
+
+La colonne droite distingue clairement :
+
+- ordre en cours ;
+- progression ;
+- temps restant ;
+- coût réservé ;
+- ordres en attente ;
+- capacité utilisée de la file.
+
+Les refus, ajouts et achèvements apparaissent comme un message non bloquant au
+bas de l’écran.
+
+### HUD stratégique
+
+L’inspecteur de planète conserve seulement un résumé économique et indique la
+touche `C`. Les informations détaillées ne sont plus répétées dans plusieurs
+panneaux.
+
+Cette étape est client-only :
+
+- aucune modification du domaine ;
+- aucune modification de la simulation ;
+- aucune migration de sauvegarde ;
+- `GAME_STATE_VERSION` reste 8 ;
+- `SAVE_VERSION` reste 9.
