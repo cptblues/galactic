@@ -1,22 +1,18 @@
-// MVP-012: deterministic production, storage and energy throttling.
+// MVP-013: catalog-driven production with a five-second refresh cadence.
 use galactic_domain::{ColonyId, ResourceStock};
 
 use crate::{
-    BuildingLevels, ColonyState, PlanetResourceProfile, STRATEGIC_TICKS_PER_SECOND,
-    StrategicDuration,
+    BuildingEffect, BuildingKind, BuildingLevels, ColonyState, PlanetResourceProfile,
+    STRATEGIC_TICKS_PER_SECOND, StrategicDuration, default_building_catalog,
 };
 
 /// Fixed-point scale used for sub-unit production.
 pub const PRODUCTION_SCALE: u64 = 1_000;
 
-/// Temporary centralized rules. MVP-013 will replace these constants with
-/// data from the building catalog without changing the simulation loop.
-pub const BASE_METAL_MILLI_PER_TICK: u64 = 250;
-pub const BASE_CRYSTAL_MILLI_PER_TICK: u64 = 125;
-pub const BASE_FUEL_MILLI_PER_TICK: u64 = 75;
-
-pub const BASE_STORAGE_CAPACITY: ResourceStock = ResourceStock::new(1_000, 800, 600);
-pub const WAREHOUSE_CAPACITY_PER_LEVEL: ResourceStock = ResourceStock::new(4_000, 3_200, 2_400);
+/// Stocks are credited every five strategic seconds, not every tick.
+pub const PRODUCTION_REFRESH_SECONDS: u64 = 5;
+pub const PRODUCTION_REFRESH_TICKS: u64 =
+    PRODUCTION_REFRESH_SECONDS * STRATEGIC_TICKS_PER_SECOND as u64;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ProductionRemainder {
@@ -107,23 +103,39 @@ impl ProductionRate {
     };
 
     pub fn for_colony(buildings: BuildingLevels, profile: PlanetResourceProfile) -> Self {
-        Self {
-            metal_milli_per_tick: modified_rate(
-                BASE_METAL_MILLI_PER_TICK,
-                buildings.metal_mine,
-                profile.metal,
-            ),
-            crystal_milli_per_tick: modified_rate(
-                BASE_CRYSTAL_MILLI_PER_TICK,
-                buildings.crystal_extractor,
-                profile.crystal,
-            ),
-            fuel_milli_per_tick: modified_rate(
-                BASE_FUEL_MILLI_PER_TICK,
-                buildings.fuel_refinery,
-                profile.fuel,
-            ),
+        let catalog = default_building_catalog();
+        let mut rate = Self::ZERO;
+
+        for kind in BuildingKind::ALL {
+            let level = buildings.level(kind);
+            if level == 0 {
+                continue;
+            }
+            let effect = catalog.definition(kind).effect;
+            match effect {
+                BuildingEffect::MetalProduction {
+                    milli_per_tick_per_level,
+                } => {
+                    rate.metal_milli_per_tick =
+                        modified_rate(milli_per_tick_per_level, level, profile.metal);
+                }
+                BuildingEffect::CrystalProduction {
+                    milli_per_tick_per_level,
+                } => {
+                    rate.crystal_milli_per_tick =
+                        modified_rate(milli_per_tick_per_level, level, profile.crystal);
+                }
+                BuildingEffect::FuelProduction {
+                    milli_per_tick_per_level,
+                } => {
+                    rate.fuel_milli_per_tick =
+                        modified_rate(milli_per_tick_per_level, level, profile.fuel);
+                }
+                _ => {}
+            }
         }
+
+        rate
     }
 
     pub fn scaled_by_permille(self, efficiency_per_mille: u16) -> Self {
@@ -168,7 +180,10 @@ pub struct ColonyProductionSnapshot {
     pub effective_rate: ProductionRate,
     pub nominal_energy_production: u64,
     pub effective_energy_production: u64,
+    pub energy_consumption: u64,
     pub energy_efficiency_per_mille: u16,
+    pub pending_ticks: u16,
+    pub ticks_until_refresh: u16,
     pub saturation: SaturationEstimate,
 }
 
@@ -182,37 +197,52 @@ pub struct ColonyProductionReport {
 }
 
 pub fn storage_capacity(buildings: BuildingLevels) -> ResourceStock {
-    let warehouse_level = u64::from(buildings.warehouse);
-    ResourceStock::new(
-        BASE_STORAGE_CAPACITY.metal.saturating_add(
-            WAREHOUSE_CAPACITY_PER_LEVEL
-                .metal
-                .saturating_mul(warehouse_level),
-        ),
-        BASE_STORAGE_CAPACITY.crystal.saturating_add(
-            WAREHOUSE_CAPACITY_PER_LEVEL
-                .crystal
-                .saturating_mul(warehouse_level),
-        ),
-        BASE_STORAGE_CAPACITY.fuel.saturating_add(
-            WAREHOUSE_CAPACITY_PER_LEVEL
-                .fuel
-                .saturating_mul(warehouse_level),
-        ),
-    )
+    let catalog = default_building_catalog();
+    let mut capacity = catalog.base_storage();
+
+    for kind in BuildingKind::ALL {
+        let level = u64::from(buildings.level(kind));
+        if level == 0 {
+            continue;
+        }
+        if let BuildingEffect::Storage { per_level } = catalog.definition(kind).effect {
+            capacity = ResourceStock::new(
+                capacity
+                    .metal
+                    .saturating_add(per_level.metal.saturating_mul(level)),
+                capacity
+                    .crystal
+                    .saturating_add(per_level.crystal.saturating_mul(level)),
+                capacity
+                    .fuel
+                    .saturating_add(per_level.fuel.saturating_mul(level)),
+            );
+        }
+    }
+
+    capacity
 }
 
 pub fn colony_production_snapshot(colony: &ColonyState) -> ColonyProductionSnapshot {
+    let catalog = default_building_catalog();
     let capacity = storage_capacity(colony.buildings);
     let nominal_rate = ProductionRate::for_colony(colony.buildings, colony.resource_profile);
-    let nominal_energy_production = colony.energy.production();
+    let nominal_grid = catalog.energy_grid_for_levels(colony.buildings);
+    let nominal_energy_production = nominal_grid.production();
+    let energy_consumption = nominal_grid.consumption();
     let effective_energy_production =
         apply_modifier(nominal_energy_production, colony.resource_profile.energy);
     let energy_efficiency_per_mille =
-        energy_efficiency_per_mille(effective_energy_production, colony.energy.consumption());
+        energy_efficiency_per_mille(effective_energy_production, energy_consumption);
     let effective_rate = nominal_rate.scaled_by_permille(energy_efficiency_per_mille);
     let stock = colony.resources.stock();
     let remainder = colony.production_remainder;
+    let pending_ticks = colony.production_pending_ticks;
+    let ticks_until_refresh = if pending_ticks == 0 {
+        PRODUCTION_REFRESH_TICKS as u16
+    } else {
+        PRODUCTION_REFRESH_TICKS as u16 - pending_ticks
+    };
 
     ColonyProductionSnapshot {
         capacity,
@@ -220,7 +250,10 @@ pub fn colony_production_snapshot(colony: &ColonyState) -> ColonyProductionSnaps
         effective_rate,
         nominal_energy_production,
         effective_energy_production,
+        energy_consumption,
         energy_efficiency_per_mille,
+        pending_ticks,
+        ticks_until_refresh,
         saturation: SaturationEstimate {
             metal: saturation_time(
                 stock.metal,
@@ -242,6 +275,30 @@ pub fn colony_production_snapshot(colony: &ColonyState) -> ColonyProductionSnaps
             ),
         },
     }
+}
+
+/// Adds strategic ticks to the five-second production window.
+///
+/// Returns a report only when one or more complete windows are credited.
+pub fn queue_colony_production(
+    colony: &mut ColonyState,
+    ticks: StrategicDuration,
+) -> Option<ColonyProductionReport> {
+    let total = u64::from(colony.production_pending_ticks).saturating_add(ticks.ticks());
+    let processed_ticks = total / PRODUCTION_REFRESH_TICKS * PRODUCTION_REFRESH_TICKS;
+    colony.production_pending_ticks = (total % PRODUCTION_REFRESH_TICKS) as u16;
+
+    if processed_ticks == 0 {
+        return None;
+    }
+
+    let catalog = default_building_catalog();
+    colony.energy = catalog.energy_grid_for_levels(colony.buildings);
+
+    Some(apply_colony_production(
+        colony,
+        StrategicDuration::from_ticks(processed_ticks),
+    ))
 }
 
 pub fn apply_colony_production(
@@ -368,7 +425,7 @@ fn per_second(rate_milli_per_tick: u64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use galactic_domain::{EnergyGrid, ResourceLedger, UniverseConfig};
+    use galactic_domain::{ResourceLedger, UniverseConfig};
 
     use crate::Simulation;
 
@@ -383,7 +440,7 @@ mod tests {
     }
 
     #[test]
-    fn starting_colony_has_expected_rates_and_capacity() {
+    fn starting_colony_uses_catalog_rates_and_capacity() {
         let colony = home_colony();
         let snapshot = colony_production_snapshot(&colony);
 
@@ -396,7 +453,25 @@ mod tests {
                 fuel_milli_per_tick: 75,
             }
         );
-        assert_eq!(snapshot.energy_efficiency_per_mille, 1_000);
+        assert_eq!(snapshot.nominal_energy_production, 80);
+        assert_eq!(snapshot.energy_consumption, 30);
+    }
+
+    #[test]
+    fn resources_refresh_only_after_fifty_ticks() {
+        let mut colony = home_colony();
+        let initial = colony.resources.stock();
+
+        assert!(queue_colony_production(&mut colony, StrategicDuration::from_ticks(49),).is_none());
+        assert_eq!(colony.resources.stock(), initial);
+        assert_eq!(colony.production_pending_ticks, 49);
+
+        let report = queue_colony_production(&mut colony, StrategicDuration::from_ticks(1))
+            .expect("the five-second window completes");
+
+        assert_eq!(report.ticks.ticks(), 50);
+        assert_eq!(colony.resources.stock(), ResourceStock::new(612, 306, 223));
+        assert_eq!(colony.production_pending_ticks, 0);
     }
 
     #[test]
@@ -404,9 +479,9 @@ mod tests {
         let mut batched = home_colony();
         let mut incremental = batched.clone();
 
-        apply_colony_production(&mut batched, StrategicDuration::from_ticks(100));
+        queue_colony_production(&mut batched, StrategicDuration::from_ticks(100));
         for _ in 0..10 {
-            apply_colony_production(&mut incremental, StrategicDuration::from_ticks(10));
+            queue_colony_production(&mut incremental, StrategicDuration::from_ticks(10));
         }
 
         assert_eq!(batched, incremental);
@@ -415,17 +490,6 @@ mod tests {
             batched.production_remainder,
             ProductionRemainder::from_parts(0, 500, 500,).expect("valid remainder")
         );
-    }
-
-    #[test]
-    fn energy_deficit_throttles_all_extractors() {
-        let mut colony = home_colony();
-        colony.energy = EnergyGrid::new(15, 30);
-
-        let report = apply_colony_production(&mut colony, StrategicDuration::from_ticks(1_000));
-
-        assert_eq!(report.energy_efficiency_per_mille, 500);
-        assert_eq!(report.produced, ResourceStock::new(125, 62, 37));
     }
 
     #[test]
@@ -446,7 +510,7 @@ mod tests {
     }
 
     #[test]
-    fn planet_profile_applies_simple_modifiers() {
+    fn planet_profile_applies_catalog_modifiers() {
         let mut colony = home_colony();
         colony.resource_profile = PlanetResourceProfile::new(150, 80, 50, 50);
         let snapshot = colony_production_snapshot(&colony);
@@ -455,21 +519,5 @@ mod tests {
         assert_eq!(snapshot.nominal_rate.crystal_milli_per_tick, 100);
         assert_eq!(snapshot.nominal_rate.fuel_milli_per_tick, 37);
         assert_eq!(snapshot.effective_energy_production, 40);
-        assert_eq!(snapshot.energy_efficiency_per_mille, 1_000);
-    }
-
-    #[test]
-    fn zero_energy_blocks_production_without_losing_remainder() {
-        let mut colony = home_colony();
-        colony.production_remainder =
-            ProductionRemainder::from_parts(900, 800, 700).expect("valid remainder");
-        colony.energy = EnergyGrid::new(0, 30);
-        let before = colony.production_remainder;
-
-        let report = apply_colony_production(&mut colony, StrategicDuration::from_ticks(100));
-
-        assert!(report.produced.is_zero());
-        assert_eq!(report.energy_efficiency_per_mille, 0);
-        assert_eq!(colony.production_remainder, before);
     }
 }

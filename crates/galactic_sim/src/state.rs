@@ -1,4 +1,4 @@
-// MVP-012: persistent knowledge, production and storage
+// MVP-013: persistent catalog-driven production windows
 use galactic_domain::{ColonyId, EnergyGrid, FactionId, PlanetId, ResourceLedger, Route, SystemId};
 
 use crate::{
@@ -9,8 +9,8 @@ use crate::{
 
 /// Version of the mutable in-memory state contract.
 ///
-/// Version 6 adds persisted fixed-point production remainders.
-pub const GAME_STATE_VERSION: u32 = 6;
+/// Version 7 adds five-second production windows.
+pub const GAME_STATE_VERSION: u32 = 7;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemVisibility {
@@ -76,6 +76,7 @@ impl GameState {
                 resources: ResourceLedger::new(home.initial_stock),
                 energy: home.initial_energy,
                 production_remainder: ProductionRemainder::ZERO,
+                production_pending_ticks: 0,
                 buildings: home.buildings,
                 resource_profile: home.resource_profile,
             }],
@@ -364,6 +365,7 @@ pub struct ColonyState {
     pub resources: ResourceLedger,
     pub energy: EnergyGrid,
     pub production_remainder: ProductionRemainder,
+    pub production_pending_ticks: u16,
     pub buildings: BuildingLevels,
     pub resource_profile: PlanetResourceProfile,
 }

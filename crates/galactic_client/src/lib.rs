@@ -2254,6 +2254,8 @@ fn colony_economy_text(colony: &galactic_sim::ColonyState) -> String {
     let available = colony.resources.available();
     let reserved = colony.resources.reserved_total();
     let production = galactic_sim::colony_production_snapshot(colony);
+    let refresh =
+        galactic_sim::StrategicDuration::from_ticks(u64::from(production.ticks_until_refresh));
 
     format!(
         "STOCKS EXACTS
@@ -2264,12 +2266,14 @@ Capacité — Métal {}  Cristal {}  Carburant {}
 
 PRODUCTION ACTUELLE
 Métal +{:.2}/s  Cristal +{:.2}/s  Carburant +{:.2}/s
+Crédit des stocks : toutes les {} s stratégiques
+Prochaine actualisation : {}
 Saturation — Métal {}  Cristal {}  Carburant {}
 
 ÉNERGIE — CAPACITÉ
 Nominale : {}
 Effective planète : {}
-Consommation : {}
+Consommation catalogue : {}
 Efficacité extracteurs : {}%
 Bilan effectif : {:+}",
         stock.metal,
@@ -2287,15 +2291,17 @@ Bilan effectif : {:+}",
         production.effective_rate.metal_per_second(),
         production.effective_rate.crystal_per_second(),
         production.effective_rate.fuel_per_second(),
+        galactic_sim::PRODUCTION_REFRESH_SECONDS,
+        format_strategic_duration(refresh),
         format_saturation_time(production.saturation.metal),
         format_saturation_time(production.saturation.crystal),
         format_saturation_time(production.saturation.fuel),
         production.nominal_energy_production,
         production.effective_energy_production,
-        colony.energy.consumption(),
+        production.energy_consumption,
         u32::from(production.energy_efficiency_per_mille) / 10,
         i128::from(production.effective_energy_production)
-            - i128::from(colony.energy.consumption()),
+            - i128::from(production.energy_consumption),
     )
 }
 
@@ -2705,6 +2711,13 @@ fn event_label(event: GameEvent) -> String {
             ticks,
             current_tick,
         } => format!("+{} ticks -> {}", ticks.ticks(), current_tick),
+        GameEvent::ProductionRefreshed(report) => format!(
+            "ressources +{}/{}/{} sur {} ticks",
+            report.produced.metal,
+            report.produced.crystal,
+            report.produced.fuel,
+            report.ticks.ticks(),
+        ),
     }
 }
 

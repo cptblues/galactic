@@ -1,3 +1,4 @@
+pub mod building_catalog;
 pub mod command;
 pub mod event;
 pub mod knowledge;
@@ -8,6 +9,7 @@ pub mod state;
 pub mod time;
 pub mod universe;
 
+pub use building_catalog::*;
 pub use command::*;
 pub use event::*;
 pub use knowledge::*;

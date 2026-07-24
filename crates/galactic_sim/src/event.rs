@@ -1,6 +1,6 @@
 use galactic_domain::{PlanetId, SystemId};
 
-use crate::{KnowledgeChange, StrategicDuration, StrategicTick, TimeSpeed};
+use crate::{ColonyProductionReport, KnowledgeChange, StrategicDuration, StrategicTick, TimeSpeed};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SelectionTarget {
@@ -22,4 +22,5 @@ pub enum GameEvent {
         ticks: StrategicDuration,
         current_tick: StrategicTick,
     },
+    ProductionRefreshed(ColonyProductionReport),
 }

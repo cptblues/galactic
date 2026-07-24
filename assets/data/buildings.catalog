@@ -1,0 +1,14 @@
+# Galactic MVP building catalog v1
+# Format:
+# building=kind|name|max_level|base_cost M,C,F|cost_growth_permille|base_duration_ticks|duration_growth_permille|energy_consumption_per_level|effect|prerequisites
+version=1
+base_storage=1000,800,600
+
+building=metal_mine|Mine de métal|10|120,60,20|1450|300|1250|6|metal_production:250|-
+building=crystal_extractor|Extracteur de cristal|10|100,80,25|1450|320|1250|5|crystal_production:125|-
+building=fuel_refinery|Raffinerie de carburant|10|140,90,40|1500|360|1280|7|fuel_production:75|-
+building=power_plant|Centrale énergétique|10|160,120,40|1500|400|1300|0|energy_production:80|-
+building=warehouse|Entrepôt|10|180,100,30|1450|350|1250|2|storage:4000,3200,2400|-
+building=construction_center|Centre de construction|5|250,180,80|1600|600|1400|10|construction_speed:100|-
+building=research_lab|Laboratoire|5|300,250,100|1650|700|1450|12|research_points:25|construction_center:1
+building=shipyard|Chantier spatial|5|500,350,220|1700|900|1500|18|shipyard_points:20|construction_center:2,metal_mine:2,crystal_extractor:2

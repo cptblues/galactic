@@ -513,3 +513,71 @@ Versions après migration :
 
 MVP-013 remplacera les constantes de production et de stockage par les
 définitions du catalogue de bâtiments.
+
+
+## MVP-013 — Catalogue de bâtiments et cadence de production
+
+Les huit bâtiments du scope MVP sont définis dans :
+
+```text
+assets/data/buildings.catalog
+```
+
+Ce fichier contient pour chaque bâtiment :
+
+- nom ;
+- niveau maximal ;
+- coût de base ;
+- croissance du coût ;
+- durée de base ;
+- croissance de la durée ;
+- consommation énergétique par niveau ;
+- effet par niveau ;
+- prérequis.
+
+Le chargeur valide au démarrage :
+
+- présence exacte des huit bâtiments ;
+- unicité des définitions ;
+- niveaux maximaux ;
+- coûts et durées ;
+- prérequis existants et sans doublon ;
+- niveaux de prérequis valides ;
+- absence de dépendance sur soi-même ;
+- absence de cycle.
+
+La simulation ne contient plus les constantes propres aux mines, à la centrale
+ou à l'entrepôt. Production, capacité de stockage et bilan énergétique lisent
+le catalogue central. Modifier une valeur du fichier ne nécessite donc aucune
+modification des systèmes de simulation.
+
+Le fichier possède une version et un fingerprint. Les sauvegardes refusent un
+catalogue incompatible afin d'éviter qu'une partie change silencieusement de
+règles économiques.
+
+### Cadence des ressources
+
+L'horloge reste à 10 ticks stratégiques par seconde, mais les stocks ne sont
+crédités que toutes les 5 secondes stratégiques :
+
+```text
+50 ticks accumulés
+    ↓
+un crédit de production agrégé
+    ↓
+un événement ProductionRefreshed
+```
+
+Les ticks incomplets de la fenêtre sont sauvegardés par colonie. Les résultats
+restent identiques quel que soit le framerate ou la vitesse de jeu.
+
+Cette cadence concerne les stocks de ressources. Les futures constructions,
+recherches et missions pourront conserver leur propre fréquence métier.
+
+Versions après migration :
+
+- `GAME_STATE_VERSION = 7` ;
+- `SAVE_VERSION = 8`.
+
+Le checkpoint `MVP-013-B` est réservé à une amélioration visuelle complète des
+ressources avant la file de construction de MVP-014.

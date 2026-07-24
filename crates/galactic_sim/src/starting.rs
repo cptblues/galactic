@@ -19,7 +19,7 @@ pub const MVP_INITIAL_PLANET_KNOWLEDGE: [InitialPlanetKnowledge; 1] = [InitialPl
     level: KnowledgeLevel::Colonized,
 }];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum BuildingKind {
     MetalMine,
     CrystalExtractor,
@@ -201,6 +201,17 @@ impl StartingScenario {
         if self.home_colony.initial_energy.is_deficit() {
             return Err(StartingScenarioError::InitialEnergyDeficit);
         }
+        let expected_energy =
+            crate::default_building_catalog().energy_grid_for_levels(self.home_colony.buildings);
+        if self.home_colony.initial_energy != expected_energy {
+            return Err(StartingScenarioError::InitialEnergyCatalogMismatch {
+                expected: expected_energy,
+                found: self.home_colony.initial_energy,
+            });
+        }
+        crate::default_building_catalog()
+            .validate_levels(self.home_colony.buildings)
+            .map_err(|_| StartingScenarioError::InvalidBuildingLevels)?;
 
         let Some(system) = universe.system(self.home_colony.system_id) else {
             return Err(StartingScenarioError::UnknownHomeSystem(
@@ -283,6 +294,11 @@ pub enum StartingScenarioError {
     EmptyColonyName,
     InvalidResourceProfile,
     InitialEnergyDeficit,
+    InitialEnergyCatalogMismatch {
+        expected: EnergyGrid,
+        found: EnergyGrid,
+    },
+    InvalidBuildingLevels,
     ExplicitUnknownKnowledge,
     UnknownHomeSystem(SystemId),
     UnknownHomePlanet(PlanetId),
@@ -319,8 +335,9 @@ mod tests {
         let fingerprint = universe.definition().generation_fingerprint;
         let mut scenario = StartingScenario::mvp();
         scenario.home_colony.initial_stock = ResourceStock::new(999, 888, 777);
-        scenario.home_colony.initial_energy = EnergyGrid::new(120, 45);
         scenario.home_colony.buildings.research_lab = 1;
+        scenario.home_colony.initial_energy = crate::default_building_catalog()
+            .energy_grid_for_levels(scenario.home_colony.buildings);
 
         assert_eq!(scenario.validate(&universe), Ok(()));
         assert_eq!(universe.definition().generation_fingerprint, fingerprint);

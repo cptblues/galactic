@@ -1,4 +1,4 @@
-// MVP-012: simulation commands, production and validation
+// MVP-013: catalog-driven simulation and production windows
 use std::collections::HashSet;
 use std::time::Duration;
 
@@ -8,9 +8,10 @@ use galactic_domain::{
 };
 
 use crate::{
-    FactionKind, GAME_STATE_VERSION, GameCommand, GameEvent, GameState, KnowledgeLevel,
-    SelectionTarget, StartingScenario, StartingScenarioError, TimeSpeed, UniverseIndexError,
-    UniverseRepository, apply_colony_production, storage_capacity,
+    BuildingCatalogError, FactionKind, GAME_STATE_VERSION, GameCommand, GameEvent, GameState,
+    KnowledgeLevel, SelectionTarget, StartingScenario, StartingScenarioError, TimeSpeed,
+    UniverseIndexError, UniverseRepository, default_building_catalog, queue_colony_production,
+    storage_capacity,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,6 +26,14 @@ pub enum SimulationBuildError {
     UnknownPlayerFaction(FactionId),
     PlayerFactionIsNotPlayer(FactionId),
     DuplicateColony(ColonyId),
+    InvalidColonyBuildings {
+        colony_id: ColonyId,
+        error: BuildingCatalogError,
+    },
+    InvalidProductionWindow {
+        colony_id: ColonyId,
+        pending_ticks: u16,
+    },
     InvalidColonyResourceLedger {
         colony_id: ColonyId,
         error: ResourceLedgerError,
@@ -154,14 +163,16 @@ impl Simulation {
             return Vec::new();
         }
 
-        for colony in &mut self.state.colonies {
-            apply_colony_production(colony, advance.ticks);
-        }
-
-        vec![GameEvent::TicksAdvanced {
+        let mut events = vec![GameEvent::TicksAdvanced {
             ticks: advance.ticks,
             current_tick: advance.current_tick,
-        }]
+        }];
+        for colony in &mut self.state.colonies {
+            if let Some(report) = queue_colony_production(colony, advance.ticks) {
+                events.push(GameEvent::ProductionRefreshed(report));
+            }
+        }
+        events
     }
 
     fn set_speed(&mut self, speed: TimeSpeed) -> Vec<GameEvent> {
@@ -302,6 +313,18 @@ fn validate_state(
     for colony in &state.colonies {
         if !colony_ids.insert(colony.id) {
             return Err(SimulationBuildError::DuplicateColony(colony.id));
+        }
+        if let Err(error) = default_building_catalog().validate_levels(colony.buildings) {
+            return Err(SimulationBuildError::InvalidColonyBuildings {
+                colony_id: colony.id,
+                error,
+            });
+        }
+        if u64::from(colony.production_pending_ticks) >= crate::PRODUCTION_REFRESH_TICKS {
+            return Err(SimulationBuildError::InvalidProductionWindow {
+                colony_id: colony.id,
+                pending_ticks: colony.production_pending_ticks,
+            });
         }
         if let Err(error) = colony.resources.validate() {
             return Err(SimulationBuildError::InvalidColonyResourceLedger {
@@ -490,6 +513,47 @@ mod tests {
             Simulation::from_parts(universe, state),
             Err(SimulationBuildError::ColonyStockExceedsCapacity { .. })
         ));
+    }
+
+    #[test]
+    fn production_events_are_emitted_only_every_five_seconds() {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+
+        let early = simulation.advance(Duration::from_secs(4));
+        assert!(
+            early
+                .iter()
+                .all(|event| { !matches!(event, GameEvent::ProductionRefreshed(_)) })
+        );
+
+        let refresh = simulation.advance(Duration::from_secs(1));
+        assert!(refresh.iter().any(|event| {
+            matches!(
+                event,
+                GameEvent::ProductionRefreshed(report)
+                    if report.ticks.ticks()
+                        == crate::PRODUCTION_REFRESH_TICKS
+            )
+        }));
+    }
+
+    #[test]
+    fn five_second_windows_remain_frame_rate_independent() {
+        let mut fast = Simulation::new(UniverseConfig::mvp());
+        let mut slow = Simulation::new(UniverseConfig::mvp());
+
+        advance_in_equal_frames(&mut fast, 1_000, Duration::from_millis(10));
+        advance_in_equal_frames(&mut slow, 10, Duration::from_secs(1));
+
+        assert_eq!(fast.state(), slow.state());
+        assert_eq!(
+            fast.state()
+                .player_home_colony()
+                .expect("home colony exists")
+                .resources
+                .stock(),
+            ResourceStock::new(625, 312, 227)
+        );
     }
 
     #[test]
