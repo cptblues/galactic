@@ -446,3 +446,70 @@ Versions après migration :
 
 MVP-012 ajoutera la production par tick et les capacités maximales de
 stockage. MVP-013 ajoutera les coûts réels du catalogue de bâtiments.
+
+
+## MVP-012 — Production planétaire et capacités de stockage
+
+La production est exécutée uniquement à partir des ticks stratégiques :
+
+```text
+durée réelle
+    ↓ StrategicClock
+nombre entier de ticks
+    ↓
+production de chaque colonie
+    ↓
+crédit plafonné par la capacité
+```
+
+Une production possède un reliquat fixe au millième d'unité. Le reliquat est
+sauvegardé afin que plusieurs découpages de frames produisent exactement le
+même état.
+
+Règles temporaires centralisées, en attendant le catalogue MVP-013 :
+
+- Mine de métal niveau 1 : 2,50 unités/s à potentiel 100 ;
+- Extracteur de cristal niveau 1 : 1,25 unité/s à potentiel 100 ;
+- Raffinerie niveau 1 : 0,75 unité/s à potentiel 100 ;
+- chaque taux est multiplié par le niveau et le potentiel planétaire ;
+- capacité de base : 1 000 / 800 / 600 ;
+- chaque niveau d'entrepôt ajoute 4 000 / 3 200 / 2 400.
+
+L'énergie suit une règle proportionnelle documentée :
+
+```text
+production énergétique effective
+    = capacité nominale × potentiel énergétique / 100
+
+si production effective >= consommation
+    efficacité des extracteurs = 100 %
+sinon
+    efficacité = production effective / consommation
+```
+
+Tous les extracteurs sont ralentis par le même facteur. Une production
+énergétique effective nulle bloque la production mais conserve le reliquat
+fractionnaire déjà acquis.
+
+Quand un stockage est plein :
+
+- le stock ne dépasse jamais sa capacité ;
+- la production excédentaire est perdue ;
+- aucun reliquat caché n'est accumulé pour contourner la saturation.
+
+L'inspecteur de colonie affiche :
+
+- stock total, disponible et réservé ;
+- capacité de chaque ressource ;
+- production effective par seconde ;
+- temps estimé avant saturation ;
+- énergie nominale et effective ;
+- consommation, efficacité et bilan.
+
+Versions après migration :
+
+- `GAME_STATE_VERSION = 6` ;
+- `SAVE_VERSION = 7`.
+
+MVP-013 remplacera les constantes de production et de stockage par les
+définitions du catalogue de bâtiments.

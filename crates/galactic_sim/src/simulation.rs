@@ -1,15 +1,16 @@
-// MVP-009: simulation commands and validation for progressive knowledge
+// MVP-012: simulation commands, production and validation
 use std::collections::HashSet;
 use std::time::Duration;
 
 use galactic_domain::{
-    ColonyId, FactionId, PlanetId, SystemId, UniverseConfig, UniverseDefinition,
+    ColonyId, FactionId, PlanetId, ResourceLedgerError, ResourceStock, SystemId, UniverseConfig,
+    UniverseDefinition,
 };
 
 use crate::{
     FactionKind, GAME_STATE_VERSION, GameCommand, GameEvent, GameState, KnowledgeLevel,
     SelectionTarget, StartingScenario, StartingScenarioError, TimeSpeed, UniverseIndexError,
-    UniverseRepository,
+    UniverseRepository, apply_colony_production, storage_capacity,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,6 +25,15 @@ pub enum SimulationBuildError {
     UnknownPlayerFaction(FactionId),
     PlayerFactionIsNotPlayer(FactionId),
     DuplicateColony(ColonyId),
+    InvalidColonyResourceLedger {
+        colony_id: ColonyId,
+        error: ResourceLedgerError,
+    },
+    ColonyStockExceedsCapacity {
+        colony_id: ColonyId,
+        stock: ResourceStock,
+        capacity: ResourceStock,
+    },
     UnknownColonyFaction {
         colony_id: ColonyId,
         faction_id: FactionId,
@@ -144,8 +154,10 @@ impl Simulation {
             return Vec::new();
         }
 
-        // Future production, construction, research and mission systems will be
-        // processed once per strategic tick here.
+        for colony in &mut self.state.colonies {
+            apply_colony_production(colony, advance.ticks);
+        }
+
         vec![GameEvent::TicksAdvanced {
             ticks: advance.ticks,
             current_tick: advance.current_tick,
@@ -291,6 +303,21 @@ fn validate_state(
         if !colony_ids.insert(colony.id) {
             return Err(SimulationBuildError::DuplicateColony(colony.id));
         }
+        if let Err(error) = colony.resources.validate() {
+            return Err(SimulationBuildError::InvalidColonyResourceLedger {
+                colony_id: colony.id,
+                error,
+            });
+        }
+        let capacity = storage_capacity(colony.buildings);
+        let stock = colony.resources.stock();
+        if !stock.is_within(capacity) {
+            return Err(SimulationBuildError::ColonyStockExceedsCapacity {
+                colony_id: colony.id,
+                stock,
+                capacity,
+            });
+        }
         if state.faction(colony.faction).is_none() {
             return Err(SimulationBuildError::UnknownColonyFaction {
                 colony_id: colony.id,
@@ -404,7 +431,65 @@ mod tests {
         advance_in_equal_frames(&mut fast_frames, 100, Duration::from_millis(10));
         advance_in_equal_frames(&mut slow_frames, 10, Duration::from_millis(100));
 
-        assert_eq!(fast_frames.state().clock, slow_frames.state().clock);
+        assert_eq!(fast_frames.state(), slow_frames.state());
+    }
+
+    #[test]
+    fn production_is_independent_from_frame_rate() {
+        let mut fast_frames = Simulation::new(UniverseConfig::mvp());
+        let mut slow_frames = Simulation::new(UniverseConfig::mvp());
+
+        advance_in_equal_frames(&mut fast_frames, 1_000, Duration::from_millis(10));
+        advance_in_equal_frames(&mut slow_frames, 100, Duration::from_millis(100));
+
+        assert_eq!(fast_frames.state(), slow_frames.state());
+        assert_eq!(
+            fast_frames
+                .state()
+                .player_home_colony()
+                .expect("home colony exists")
+                .resources
+                .stock(),
+            ResourceStock::new(625, 312, 227)
+        );
+    }
+
+    #[test]
+    fn pause_and_speed_apply_expected_production_ticks() {
+        let mut paused = Simulation::new(UniverseConfig::mvp());
+        paused.apply_command(GameCommand::TogglePause);
+        let initial = paused.state().clone();
+        paused.advance(Duration::from_secs(10));
+        assert_eq!(paused.state(), &initial);
+
+        let mut x1 = Simulation::new(UniverseConfig::mvp());
+        let mut x4 = Simulation::new(UniverseConfig::mvp());
+        x4.apply_command(GameCommand::SetSpeed(TimeSpeed::X4));
+
+        x1.advance(Duration::from_secs(1));
+        x4.advance(Duration::from_millis(250));
+        x4.apply_command(GameCommand::SetSpeed(TimeSpeed::X1));
+
+        assert_eq!(x1.state(), x4.state());
+    }
+
+    #[test]
+    fn reconstruction_rejects_stock_above_capacity() {
+        let simulation = Simulation::new(UniverseConfig::mvp());
+        let universe = simulation.universe().clone();
+        let mut state = simulation.state().clone();
+        let colony = state.colonies.first_mut().expect("home colony exists");
+        let capacity = crate::storage_capacity(colony.buildings);
+        colony.resources = ResourceLedger::new(ResourceStock::new(
+            capacity.metal + 1,
+            capacity.crystal,
+            capacity.fuel,
+        ));
+
+        assert!(matches!(
+            Simulation::from_parts(universe, state),
+            Err(SimulationBuildError::ColonyStockExceedsCapacity { .. })
+        ));
     }
 
     #[test]

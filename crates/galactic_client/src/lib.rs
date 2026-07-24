@@ -2253,17 +2253,25 @@ fn colony_economy_text(colony: &galactic_sim::ColonyState) -> String {
     let stock = colony.resources.stock();
     let available = colony.resources.available();
     let reserved = colony.resources.reserved_total();
+    let production = galactic_sim::colony_production_snapshot(colony);
 
     format!(
         "STOCKS EXACTS
 Total — Métal {}  Cristal {}  Carburant {}
 Disponible — Métal {}  Cristal {}  Carburant {}
 Réservé — Métal {}  Cristal {}  Carburant {}
+Capacité — Métal {}  Cristal {}  Carburant {}
+
+PRODUCTION ACTUELLE
+Métal +{:.2}/s  Cristal +{:.2}/s  Carburant +{:.2}/s
+Saturation — Métal {}  Cristal {}  Carburant {}
 
 ÉNERGIE — CAPACITÉ
-Production : {}
+Nominale : {}
+Effective planète : {}
 Consommation : {}
-Bilan : {:+}",
+Efficacité extracteurs : {}%
+Bilan effectif : {:+}",
         stock.metal,
         stock.crystal,
         stock.fuel,
@@ -2273,10 +2281,45 @@ Bilan : {:+}",
         reserved.metal,
         reserved.crystal,
         reserved.fuel,
-        colony.energy.production(),
+        production.capacity.metal,
+        production.capacity.crystal,
+        production.capacity.fuel,
+        production.effective_rate.metal_per_second(),
+        production.effective_rate.crystal_per_second(),
+        production.effective_rate.fuel_per_second(),
+        format_saturation_time(production.saturation.metal),
+        format_saturation_time(production.saturation.crystal),
+        format_saturation_time(production.saturation.fuel),
+        production.nominal_energy_production,
+        production.effective_energy_production,
         colony.energy.consumption(),
-        colony.energy.balance(),
+        u32::from(production.energy_efficiency_per_mille) / 10,
+        i128::from(production.effective_energy_production)
+            - i128::from(colony.energy.consumption()),
     )
+}
+
+fn format_saturation_time(saturation: galactic_sim::SaturationTime) -> String {
+    match saturation {
+        galactic_sim::SaturationTime::Full => "plein".to_string(),
+        galactic_sim::SaturationTime::Never => "jamais".to_string(),
+        galactic_sim::SaturationTime::In(duration) => format_strategic_duration(duration),
+    }
+}
+
+fn format_strategic_duration(duration: galactic_sim::StrategicDuration) -> String {
+    let seconds = duration.as_duration().as_secs();
+    let hours = seconds / 3_600;
+    let minutes = (seconds % 3_600) / 60;
+    let remaining_seconds = seconds % 60;
+
+    if hours > 0 {
+        format!("{hours}h {minutes:02}m")
+    } else if minutes > 0 {
+        format!("{minutes}m {remaining_seconds:02}s")
+    } else {
+        format!("{remaining_seconds}s")
+    }
 }
 
 fn system_inspector_content(simulation: &Simulation, system_id: SystemId) -> InspectorContent {

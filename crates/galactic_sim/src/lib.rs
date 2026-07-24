@@ -1,6 +1,7 @@
 pub mod command;
 pub mod event;
 pub mod knowledge;
+pub mod production;
 pub mod simulation;
 pub mod starting;
 pub mod state;
@@ -10,6 +11,7 @@ pub mod universe;
 pub use command::*;
 pub use event::*;
 pub use knowledge::*;
+pub use production::*;
 pub use simulation::*;
 pub use starting::*;
 pub use state::*;

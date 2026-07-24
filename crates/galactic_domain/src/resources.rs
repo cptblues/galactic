@@ -1,4 +1,4 @@
-// MVP-011: atomic stored-resource ledger and energy capacity.
+// MVP-012: atomic resources with capacity-aware production credits.
 use std::collections::BTreeSet;
 use std::ops::Add;
 
@@ -7,8 +7,7 @@ pub enum ResourceKind {
     Metal,
     Crystal,
     Fuel,
-    /// Energy is retained as a catalog kind for compatibility, but is never
-    /// stored in `ResourceStock`.
+    /// Energy remains a catalog kind for compatibility, but is never stored.
     Energy,
 }
 
@@ -49,6 +48,40 @@ impl ResourceStock {
     {
         let cost = cost.into();
         self.metal >= cost.metal && self.crystal >= cost.crystal && self.fuel >= cost.fuel
+    }
+
+    pub const fn is_within(self, capacity: Self) -> bool {
+        self.metal <= capacity.metal
+            && self.crystal <= capacity.crystal
+            && self.fuel <= capacity.fuel
+    }
+
+    pub const fn component_min(self, other: Self) -> Self {
+        Self {
+            metal: if self.metal < other.metal {
+                self.metal
+            } else {
+                other.metal
+            },
+            crystal: if self.crystal < other.crystal {
+                self.crystal
+            } else {
+                other.crystal
+            },
+            fuel: if self.fuel < other.fuel {
+                self.fuel
+            } else {
+                other.fuel
+            },
+        }
+    }
+
+    pub const fn saturating_sub(self, other: Self) -> Self {
+        Self {
+            metal: self.metal.saturating_sub(other.metal),
+            crystal: self.crystal.saturating_sub(other.crystal),
+            fuel: self.fuel.saturating_sub(other.fuel),
+        }
     }
 
     pub fn checked_add(self, other: Self) -> Option<Self> {
@@ -203,6 +236,24 @@ impl ResourceLedger {
             .ok_or(ResourceLedgerError::AmountOverflow)?;
         self.stock = updated;
         Ok(())
+    }
+
+    /// Credits at most the free capacity and returns the amount accepted.
+    ///
+    /// Reservations are not changed: newly produced resources immediately
+    /// increase the unreserved availability.
+    pub fn credit_capped(
+        &mut self,
+        amount: ResourceStock,
+        capacity: ResourceStock,
+    ) -> ResourceStock {
+        let headroom = capacity.saturating_sub(self.stock);
+        let credited = amount.component_min(headroom);
+        self.stock = self
+            .stock
+            .checked_add(credited)
+            .expect("a capacity-capped credit cannot overflow");
+        credited
     }
 
     pub fn debit(&mut self, cost: ResourceCost) -> Result<(), ResourceLedgerError> {
@@ -391,6 +442,10 @@ impl EnergyGrid {
     pub fn set_production(&mut self, production: u64) {
         self.production = production;
     }
+
+    pub fn set_consumption(&mut self, consumption: u64) {
+        self.consumption = consumption;
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -470,6 +525,18 @@ mod tests {
     }
 
     #[test]
+    fn capped_credit_never_exceeds_capacity() {
+        let mut ledger = ResourceLedger::new(ResourceStock::new(95, 30, 8));
+        let capacity = ResourceStock::new(100, 40, 10);
+
+        let credited = ledger.credit_capped(ResourceStock::new(20, 4, 9), capacity);
+
+        assert_eq!(credited, ResourceStock::new(5, 4, 2));
+        assert_eq!(ledger.stock(), ResourceStock::new(100, 34, 10));
+        assert!(ledger.stock().is_within(capacity));
+    }
+
+    #[test]
     fn credit_overflow_does_not_mutate_stock() {
         let initial = ResourceStock::new(u64::MAX, 0, 0);
         let mut ledger = ResourceLedger::new(initial);
@@ -501,7 +568,7 @@ mod tests {
     }
 
     #[test]
-    fn configurable_cost_combines_all_resources_and_energy() {
+    fn configurable_cost_combines_resources_and_energy() {
         let ledger = ResourceLedger::new(ResourceStock::new(100, 80, 60));
         let grid = EnergyGrid::new(50, 20);
         let cost = EconomicCost::new(ResourceCost::new(90, 70, 50), 25);

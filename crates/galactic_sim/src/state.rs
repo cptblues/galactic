@@ -1,16 +1,16 @@
-// MVP-011: persistent knowledge and colony economy
+// MVP-012: persistent knowledge, production and storage
 use galactic_domain::{ColonyId, EnergyGrid, FactionId, PlanetId, ResourceLedger, Route, SystemId};
 
 use crate::{
     BuildingLevels, KnowledgeChange, KnowledgeCounts, KnowledgeLevel, KnowledgeTarget,
-    PlanetKnowledge, PlanetResourceProfile, SelectionTarget, StartingScenario,
+    PlanetKnowledge, PlanetResourceProfile, ProductionRemainder, SelectionTarget, StartingScenario,
     StartingScenarioError, StrategicClock, SystemKnowledge, UniverseRepository,
 };
 
 /// Version of the mutable in-memory state contract.
 ///
-/// Version 5 adds atomic resource ledgers and an energy grid per colony.
-pub const GAME_STATE_VERSION: u32 = 5;
+/// Version 6 adds persisted fixed-point production remainders.
+pub const GAME_STATE_VERSION: u32 = 6;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemVisibility {
@@ -75,6 +75,7 @@ impl GameState {
                 planet_id: home.planet_id,
                 resources: ResourceLedger::new(home.initial_stock),
                 energy: home.initial_energy,
+                production_remainder: ProductionRemainder::ZERO,
                 buildings: home.buildings,
                 resource_profile: home.resource_profile,
             }],
@@ -362,6 +363,7 @@ pub struct ColonyState {
     pub planet_id: PlanetId,
     pub resources: ResourceLedger,
     pub energy: EnergyGrid,
+    pub production_remainder: ProductionRemainder,
     pub buildings: BuildingLevels,
     pub resource_profile: PlanetResourceProfile,
 }
@@ -465,6 +467,17 @@ mod tests {
         assert_eq!(colony.energy.production(), 80);
         assert_eq!(colony.energy.consumption(), 30);
         assert_eq!(colony.energy.balance(), 50);
+    }
+
+    #[test]
+    fn home_stock_fits_derived_storage_capacity() {
+        let universe = UniverseRepository::generate(UniverseConfig::mvp());
+        let state = GameState::new(&universe);
+        let colony = state.player_home_colony().expect("home colony exists");
+        let capacity = crate::storage_capacity(colony.buildings);
+
+        assert!(colony.resources.stock().is_within(capacity));
+        assert_eq!(colony.production_remainder, ProductionRemainder::ZERO);
     }
 
     #[test]

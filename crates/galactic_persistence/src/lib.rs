@@ -1,15 +1,16 @@
-// MVP-011: persist resource reservations and energy capacity.
+// MVP-012: persist production remainders, storage-safe stocks and energy.
 use galactic_domain::{
     ColonyId, EnergyGrid, FactionId, PlanetId, ResourceLedger, ResourceLedgerError,
     ResourceReservation, ResourceStock, SystemId, UniverseConfig, UniverseId, generate_universe,
 };
 use galactic_sim::{
     BuildingLevels, ColonyState, FactionKind, FactionState, GameState, PlanetKnowledge,
-    PlanetResourceProfile, SelectionTarget, Simulation, SimulationBuildError, StrategicClock,
-    StrategicClockError, StrategicTick, SystemKnowledge, TimeSpeed,
+    PlanetResourceProfile, ProductionRemainder, ProductionRemainderError, SelectionTarget,
+    Simulation, SimulationBuildError, StrategicClock, StrategicClockError, StrategicTick,
+    SystemKnowledge, TimeSpeed,
 };
 
-pub const SAVE_VERSION: u32 = 6;
+pub const SAVE_VERSION: u32 = 7;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SaveGame {
@@ -66,6 +67,9 @@ pub struct ColonySave {
     pub next_reservation_id: u64,
     pub energy_production: u64,
     pub energy_consumption: u64,
+    pub production_remainder_metal: u16,
+    pub production_remainder_crystal: u16,
+    pub production_remainder_fuel: u16,
     pub buildings: BuildingLevels,
     pub resource_profile: PlanetResourceProfile,
 }
@@ -89,6 +93,10 @@ pub enum SaveError {
     InvalidResourceLedger {
         colony_id: ColonyId,
         error: ResourceLedgerError,
+    },
+    InvalidProductionRemainder {
+        colony_id: ColonyId,
+        error: ProductionRemainderError,
     },
     InvalidState(SimulationBuildError),
 }
@@ -141,6 +149,9 @@ pub fn snapshot_from_simulation(simulation: &Simulation) -> SaveGame {
                     next_reservation_id: colony.resources.next_reservation_id(),
                     energy_production: colony.energy.production(),
                     energy_consumption: colony.energy.consumption(),
+                    production_remainder_metal: colony.production_remainder.metal_milli(),
+                    production_remainder_crystal: colony.production_remainder.crystal_milli(),
+                    production_remainder_fuel: colony.production_remainder.fuel_milli(),
                     buildings: colony.buildings,
                     resource_profile: colony.resource_profile,
                 })
@@ -200,6 +211,15 @@ pub fn restore_from_snapshot(save: &SaveGame) -> Result<Simulation, SaveError> {
                 colony_id: colony.id,
                 error,
             })?;
+            let production_remainder = ProductionRemainder::from_parts(
+                colony.production_remainder_metal,
+                colony.production_remainder_crystal,
+                colony.production_remainder_fuel,
+            )
+            .map_err(|error| SaveError::InvalidProductionRemainder {
+                colony_id: colony.id,
+                error,
+            })?;
 
             Ok(ColonyState {
                 id: colony.id,
@@ -209,6 +229,7 @@ pub fn restore_from_snapshot(save: &SaveGame) -> Result<Simulation, SaveError> {
                 planet_id: colony.planet_id,
                 resources,
                 energy: EnergyGrid::new(colony.energy_production, colony.energy_consumption),
+                production_remainder,
                 buildings: colony.buildings,
                 resource_profile: colony.resource_profile,
             })
@@ -246,14 +267,14 @@ mod tests {
         ReservationId, ResourceCost, ResourceReservation, SystemId, UniverseConfig,
     };
     use galactic_sim::{
-        GAME_STATE_VERSION, GameCommand, KnowledgeLevel, STRATEGIC_TICK_NANOS, StrategicTick,
-        TimeSpeed,
+        GAME_STATE_VERSION, GameCommand, KnowledgeLevel, PRODUCTION_SCALE, STRATEGIC_TICK_NANOS,
+        StrategicTick, TimeSpeed,
     };
 
     use super::*;
 
     #[test]
-    fn snapshot_round_trips_economy_knowledge_and_clock() {
+    fn snapshot_round_trips_production_and_economy() {
         let mut simulation = Simulation::new(UniverseConfig::mvp());
         let target = simulation
             .universe_repository()
@@ -292,15 +313,31 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_contains_ledger_and_energy_balance() {
-        let simulation = Simulation::new(UniverseConfig::mvp());
+    fn snapshot_contains_production_remainders() {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+        simulation.advance(Duration::from_millis(100));
         let save = snapshot_from_simulation(&simulation);
         let colony = save.state.colonies.first().expect("home colony is saved");
 
         assert_eq!(save.state.version, GAME_STATE_VERSION);
         assert_eq!(colony.stock, ResourceStock::new(600, 300, 220));
+        assert_eq!(colony.production_remainder_metal, 250);
+        assert_eq!(colony.production_remainder_crystal, 125);
+        assert_eq!(colony.production_remainder_fuel, 75);
         assert_eq!(colony.energy_production, 80);
         assert_eq!(colony.energy_consumption, 30);
+    }
+
+    #[test]
+    fn invalid_production_remainder_is_rejected() {
+        let simulation = Simulation::new(UniverseConfig::mvp());
+        let mut save = snapshot_from_simulation(&simulation);
+        save.state.colonies[0].production_remainder_metal = PRODUCTION_SCALE as u16;
+
+        assert!(matches!(
+            restore_from_snapshot(&save),
+            Err(SaveError::InvalidProductionRemainder { .. })
+        ));
     }
 
     #[test]
