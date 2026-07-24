@@ -1,16 +1,17 @@
-// MVP-014: persistent production and construction queues
+// MVP-016: persistent production, construction and research
 use galactic_domain::{ColonyId, EnergyGrid, FactionId, PlanetId, ResourceLedger, Route, SystemId};
 
 use crate::{
     BuildingLevels, ConstructionQueue, KnowledgeChange, KnowledgeCounts, KnowledgeLevel,
-    KnowledgeTarget, PlanetKnowledge, PlanetResourceProfile, ProductionRemainder, SelectionTarget,
-    StartingScenario, StartingScenarioError, StrategicClock, SystemKnowledge, UniverseRepository,
+    KnowledgeTarget, PlanetKnowledge, PlanetResourceProfile, ProductionRemainder, ResearchState,
+    SelectionTarget, StartingScenario, StartingScenarioError, StrategicClock, SystemKnowledge,
+    UniverseRepository,
 };
 
 /// Version of the mutable in-memory state contract.
 ///
-/// Version 8 adds persistent construction queues.
-pub const GAME_STATE_VERSION: u32 = 8;
+/// Version 9 adds the global research state.
+pub const GAME_STATE_VERSION: u32 = 9;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemVisibility {
@@ -38,6 +39,7 @@ pub struct GameState {
     pub factions: Vec<FactionState>,
     pub player_faction: FactionId,
     pub colonies: Vec<ColonyState>,
+    pub research: ResearchState,
     pub system_knowledge: Vec<SystemKnowledge>,
     pub planet_knowledge: Vec<PlanetKnowledge>,
     pub selected: SelectionTarget,
@@ -81,6 +83,7 @@ impl GameState {
                 buildings: home.buildings,
                 resource_profile: home.resource_profile,
             }],
+            research: ResearchState::default(),
             system_knowledge: Vec::new(),
             planet_knowledge: Vec::new(),
             selected: SelectionTarget::Planet {

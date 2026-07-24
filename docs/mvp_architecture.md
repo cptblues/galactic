@@ -765,3 +765,93 @@ Cette étape est client-only :
 - aucune migration de sauvegarde ;
 - `GAME_STATE_VERSION` reste 8 ;
 - `SAVE_VERSION` reste 9.
+
+
+## MVP-016 — Recherche et arbre technologique minimal
+
+La recherche est une progression globale au joueur. Tous les Laboratoires des
+colonies du joueur contribuent à une seule production scientifique et à une
+file commune de six projets maximum.
+
+### Technologies
+
+L'arbre minimal contient :
+
+1. Détection spatiale ;
+2. Propulsion ;
+3. Capacité cargo ;
+4. Extraction distante ;
+5. Analyse planétaire ;
+6. Colonisation.
+
+Les dépendances sont déterministes :
+
+```text
+Détection spatiale
+├── Propulsion
+│   └── Capacité cargo
+│       ├── Extraction distante
+│       └── Colonisation
+└── Analyse planétaire
+    └── Colonisation
+```
+
+Chaque définition possède un nom, une description, un coût en milli-points,
+des prérequis et une capacité débloquée. Les capacités sont des clés métier
+stables qui seront consommées par les missions, crafts et commandes des
+checkpoints suivants.
+
+### Production scientifique
+
+Le Laboratoire du catalogue produit des milli-points par tick et par niveau.
+La production globale additionne les niveaux actifs de Laboratoire de toutes
+les colonies du joueur.
+
+Sans Laboratoire actif, aucune technologie ne peut être ajoutée à la file.
+Une amélioration de Laboratoire agit dès le tick stratégique où sa construction
+se termine.
+
+La simulation traite production, construction et recherche tick par tick à
+l'intérieur d'un lot de temps. Le résultat reste donc identique quel que soit
+le découpage des frames, y compris lorsqu'un Laboratoire termine pendant le
+lot.
+
+### File globale
+
+Une technologie peut être ajoutée lorsque :
+
+- un Laboratoire produit des points ;
+- ses prérequis sont acquis ou placés avant elle dans la file ;
+- elle n'est ni acquise ni déjà planifiée ;
+- la file n'est pas pleine.
+
+Une technologie terminée ne peut pas être relancée. Les points excédentaires
+d'un lot passent au projet suivant.
+
+### Interface
+
+La touche `T` et le bouton `Recherche` ouvrent un écran dédié au-dessus de la
+vue stratégique. Il présente :
+
+- les six technologies et leur état ;
+- les prérequis et le déblocage ;
+- le coût scientifique ;
+- la durée estimée avec la production actuelle ;
+- le projet actif, sa progression et les projets en attente ;
+- les refus et achèvements sous forme de messages non bloquants.
+
+L'écran de recherche et l'écran de gestion planétaire sont mutuellement
+exclusifs. La caméra stratégique est verrouillée lorsqu'un de ces écrans est
+ouvert.
+
+### Persistance
+
+Le snapshot conserve l'ensemble acquis, la file et la progression du projet
+actif. Il stocke également la version et l'empreinte du catalogue
+technologique.
+
+Versions après migration :
+
+- `GAME_STATE_VERSION = 9` ;
+- `SAVE_VERSION = 10` ;
+- `RESEARCH_CATALOG_VERSION = 1`.

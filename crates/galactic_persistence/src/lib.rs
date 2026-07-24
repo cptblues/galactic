@@ -1,4 +1,4 @@
-// MVP-014: persist construction queues and reserved upgrade costs.
+// MVP-016: persist construction and global research.
 use galactic_domain::{
     ColonyId, EnergyGrid, FactionId, PlanetId, ResourceLedger, ResourceLedgerError,
     ResourceReservation, ResourceStock, SystemId, UniverseConfig, UniverseId, generate_universe,
@@ -6,17 +6,20 @@ use galactic_domain::{
 use galactic_sim::{
     BuildingLevels, ColonyState, ConstructionQueue, FactionKind, FactionState, GameState,
     PRODUCTION_REFRESH_TICKS, PlanetKnowledge, PlanetResourceProfile, ProductionRemainder,
-    ProductionRemainderError, SelectionTarget, Simulation, SimulationBuildError, StrategicClock,
+    ProductionRemainderError, RESEARCH_CATALOG_FINGERPRINT, RESEARCH_CATALOG_VERSION,
+    ResearchState, SelectionTarget, Simulation, SimulationBuildError, StrategicClock,
     StrategicClockError, StrategicTick, SystemKnowledge, TimeSpeed, default_building_catalog,
 };
 
-pub const SAVE_VERSION: u32 = 9;
+pub const SAVE_VERSION: u32 = 10;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SaveGame {
     pub version: u32,
     pub catalog_version: u32,
     pub catalog_fingerprint: u64,
+    pub research_catalog_version: u32,
+    pub research_catalog_fingerprint: u64,
     pub universe: UniverseReference,
     pub state: MutableGameSave,
 }
@@ -40,6 +43,7 @@ pub struct MutableGameSave {
     pub system_knowledge: Vec<SystemKnowledge>,
     pub planet_knowledge: Vec<PlanetKnowledge>,
     pub colonies: Vec<ColonySave>,
+    pub research: ResearchState,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,6 +93,14 @@ pub enum SaveError {
         expected: u64,
         found: u64,
     },
+    ResearchCatalogVersionMismatch {
+        expected: u32,
+        found: u32,
+    },
+    ResearchCatalogFingerprintMismatch {
+        expected: u64,
+        found: u64,
+    },
     UniverseIdMismatch {
         expected: UniverseId,
         found: UniverseId,
@@ -126,6 +138,8 @@ pub fn snapshot_from_simulation(simulation: &Simulation) -> SaveGame {
         version: SAVE_VERSION,
         catalog_version: catalog.version(),
         catalog_fingerprint: catalog.fingerprint(),
+        research_catalog_version: RESEARCH_CATALOG_VERSION,
+        research_catalog_fingerprint: RESEARCH_CATALOG_FINGERPRINT,
         universe: UniverseReference {
             id: universe.id,
             seed: universe.seed,
@@ -177,6 +191,7 @@ pub fn snapshot_from_simulation(simulation: &Simulation) -> SaveGame {
                     resource_profile: colony.resource_profile,
                 })
                 .collect(),
+            research: state.research.clone(),
         },
     }
 }
@@ -197,6 +212,19 @@ pub fn restore_from_snapshot(save: &SaveGame) -> Result<Simulation, SaveError> {
         return Err(SaveError::CatalogFingerprintMismatch {
             expected: catalog.fingerprint(),
             found: save.catalog_fingerprint,
+        });
+    }
+
+    if save.research_catalog_version != RESEARCH_CATALOG_VERSION {
+        return Err(SaveError::ResearchCatalogVersionMismatch {
+            expected: RESEARCH_CATALOG_VERSION,
+            found: save.research_catalog_version,
+        });
+    }
+    if save.research_catalog_fingerprint != RESEARCH_CATALOG_FINGERPRINT {
+        return Err(SaveError::ResearchCatalogFingerprintMismatch {
+            expected: RESEARCH_CATALOG_FINGERPRINT,
+            found: save.research_catalog_fingerprint,
         });
     }
 
@@ -292,6 +320,7 @@ pub fn restore_from_snapshot(save: &SaveGame) -> Result<Simulation, SaveError> {
             .collect(),
         player_faction: save.state.player_faction,
         colonies,
+        research: save.state.research.clone(),
         system_knowledge: save.state.system_knowledge.clone(),
         planet_knowledge: save.state.planet_knowledge.clone(),
         selected: save.state.selected,
@@ -306,7 +335,7 @@ mod tests {
     use std::time::Duration;
 
     use galactic_domain::UniverseConfig;
-    use galactic_sim::{BuildingKind, GAME_STATE_VERSION, GameCommand};
+    use galactic_sim::{BuildingKind, GAME_STATE_VERSION, GameCommand, TechnologyId};
 
     use super::*;
 
@@ -340,6 +369,29 @@ mod tests {
     }
 
     #[test]
+    fn research_queue_survives_round_trip() {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+        let colony = simulation
+            .state_mut()
+            .colonies
+            .first_mut()
+            .expect("home colony exists");
+        colony.buildings.set_level(BuildingKind::ResearchLab, 1);
+        colony.energy = default_building_catalog().energy_grid_for_levels(colony.buildings);
+
+        simulation.apply_command(GameCommand::QueueResearch {
+            technology: TechnologyId::SpatialDetection,
+        });
+        simulation.advance(Duration::from_secs(12));
+
+        let save = snapshot_from_simulation(&simulation);
+        let restored = restore_from_snapshot(&save).expect("research save is compatible");
+
+        assert_eq!(restored.state().research, simulation.state().research,);
+        assert_eq!(restored.state(), simulation.state(),);
+    }
+
+    #[test]
     fn catalog_changes_are_detected() {
         let simulation = Simulation::new(UniverseConfig::mvp());
         let mut save = snapshot_from_simulation(&simulation);
@@ -352,7 +404,7 @@ mod tests {
     }
 
     #[test]
-    fn state_and_save_versions_match_mvp_014() {
+    fn state_and_save_versions_match_mvp_016() {
         let simulation = Simulation::new(UniverseConfig::mvp());
         let save = snapshot_from_simulation(&simulation);
 

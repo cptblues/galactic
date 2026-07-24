@@ -1,6 +1,6 @@
 use galactic_domain::{ColonyId, PlanetId, SystemId};
 
-use crate::{BuildingKind, TimeSpeed};
+use crate::{BuildingKind, TechnologyId, TimeSpeed};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GameCommand {
@@ -15,6 +15,9 @@ pub enum GameCommand {
     QueueBuildingUpgrade {
         colony_id: ColonyId,
         kind: BuildingKind,
+    },
+    QueueResearch {
+        technology: TechnologyId,
     },
     /// Temporary validation command until the probe mission loop is added.
     DebugAdvanceSelectedKnowledge,

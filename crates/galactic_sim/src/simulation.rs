@@ -1,4 +1,4 @@
-// MVP-014: catalog-driven production and construction
+// MVP-016: production, construction and research pipeline
 use std::collections::HashSet;
 use std::time::Duration;
 
@@ -9,10 +9,11 @@ use galactic_domain::{
 
 use crate::{
     BuildingCatalogError, ConstructionQueueError, FactionKind, GAME_STATE_VERSION, GameCommand,
-    GameEvent, GameState, KnowledgeLevel, SelectionTarget, StartingScenario, StartingScenarioError,
-    TimeSpeed, UniverseIndexError, UniverseRepository, advance_colony_construction,
-    default_building_catalog, enqueue_building_upgrade, queue_colony_production, storage_capacity,
-    validate_construction_queue,
+    GameEvent, GameState, KnowledgeLevel, ResearchStateError, SelectionTarget, StartingScenario,
+    StartingScenarioError, StrategicDuration, TimeSpeed, UniverseIndexError, UniverseRepository,
+    advance_colony_construction, advance_research, default_building_catalog,
+    enqueue_building_upgrade, enqueue_research, queue_colony_production, storage_capacity,
+    validate_construction_queue, validate_research_state,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,6 +40,7 @@ pub enum SimulationBuildError {
         colony_id: ColonyId,
         error: ConstructionQueueError,
     },
+    InvalidResearchState(ResearchStateError),
     InvalidColonyResourceLedger {
         colony_id: ColonyId,
         error: ResourceLedgerError,
@@ -166,6 +168,15 @@ impl Simulation {
                     )],
                 }
             }
+            GameCommand::QueueResearch { technology } => {
+                match enqueue_research(&mut self.state, technology) {
+                    Ok(queued) => vec![GameEvent::ResearchQueued(queued)],
+                    Err(error) => vec![GameEvent::ResearchRejected(crate::ResearchRejected {
+                        technology,
+                        error,
+                    })],
+                }
+            }
             GameCommand::DebugAdvanceSelectedKnowledge => self.debug_advance_selected_knowledge(),
         }
     }
@@ -184,13 +195,21 @@ impl Simulation {
             ticks: advance.ticks,
             current_tick: advance.current_tick,
         }];
-        for colony in &mut self.state.colonies {
-            if let Some(report) = queue_colony_production(colony, advance.ticks) {
-                events.push(GameEvent::ProductionRefreshed(report));
+        let one_tick = StrategicDuration::from_ticks(1);
+        for _ in 0..advance.ticks.ticks() {
+            for colony in &mut self.state.colonies {
+                if let Some(report) = queue_colony_production(colony, one_tick) {
+                    events.push(GameEvent::ProductionRefreshed(report));
+                }
+                let completed = advance_colony_construction(colony, one_tick)
+                    .expect("validated construction reservations must commit");
+                events.extend(completed.into_iter().map(GameEvent::ConstructionCompleted));
             }
-            let completed = advance_colony_construction(colony, advance.ticks)
-                .expect("validated construction reservations must commit");
-            events.extend(completed.into_iter().map(GameEvent::ConstructionCompleted));
+            events.extend(
+                advance_research(&mut self.state, one_tick)
+                    .into_iter()
+                    .map(GameEvent::ResearchCompleted),
+            );
         }
         events
     }
@@ -289,6 +308,10 @@ fn validate_state(
         return Err(SimulationBuildError::PlayerFactionIsNotPlayer(
             state.player_faction,
         ));
+    }
+
+    if let Err(error) = validate_research_state(state) {
+        return Err(SimulationBuildError::InvalidResearchState(error));
     }
 
     let mut system_knowledge_ids = HashSet::with_capacity(state.system_knowledge.len());
@@ -441,7 +464,7 @@ mod tests {
         ColonyId, PlanetId, ResourceLedger, ResourceStock, SystemId, UniverseConfig,
     };
 
-    use crate::KnowledgeTarget;
+    use crate::{BuildingKind, KnowledgeTarget, TechnologyId};
 
     use super::*;
 
@@ -580,6 +603,78 @@ mod tests {
                 .stock(),
             ResourceStock::new(625, 312, 227)
         );
+    }
+
+    #[test]
+    fn research_and_laboratory_upgrade_are_frame_independent() {
+        fn configured_simulation() -> Simulation {
+            let mut simulation = Simulation::new(UniverseConfig::mvp());
+            let colony_id = simulation
+                .state()
+                .player_home_colony()
+                .expect("home colony exists")
+                .id;
+            {
+                let colony = simulation
+                    .state_mut()
+                    .colony_mut(colony_id)
+                    .expect("home colony exists");
+                colony.buildings.set_level(BuildingKind::ResearchLab, 1);
+                colony.energy = default_building_catalog().energy_grid_for_levels(colony.buildings);
+                colony
+                    .resources
+                    .credit(ResourceStock::new(1_000, 1_000, 500))
+                    .expect("test funding fits capacity");
+            }
+
+            for technology in TechnologyId::ALL {
+                let events = simulation.apply_command(GameCommand::QueueResearch { technology });
+                assert!(matches!(events.as_slice(), [GameEvent::ResearchQueued(_)]));
+            }
+            let events = simulation.apply_command(GameCommand::QueueBuildingUpgrade {
+                colony_id,
+                kind: BuildingKind::ResearchLab,
+            });
+            assert!(matches!(
+                events.as_slice(),
+                [GameEvent::ConstructionQueued(_)]
+            ));
+            simulation
+        }
+
+        let mut single_batch = configured_simulation();
+        let mut many_batches = configured_simulation();
+
+        single_batch.advance(Duration::from_secs(200));
+        advance_in_equal_frames(&mut many_batches, 200, Duration::from_secs(1));
+
+        assert_eq!(single_batch.state(), many_batches.state(),);
+    }
+
+    #[test]
+    fn research_events_are_emitted_on_completion() {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+        let colony = simulation
+            .state_mut()
+            .colonies
+            .first_mut()
+            .expect("home colony exists");
+        colony.buildings.set_level(BuildingKind::ResearchLab, 1);
+        colony.energy = default_building_catalog().energy_grid_for_levels(colony.buildings);
+
+        simulation.apply_command(GameCommand::QueueResearch {
+            technology: TechnologyId::SpatialDetection,
+        });
+        let events = simulation.advance(Duration::from_secs(60));
+
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                GameEvent::ResearchCompleted(completed)
+                    if completed.technology
+                        == TechnologyId::SpatialDetection
+            )
+        }));
     }
 
     #[test]

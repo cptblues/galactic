@@ -1,3 +1,6 @@
+mod research_ui;
+
+use research_ui::ResearchUiPlugin;
 use std::{collections::HashMap, time::Duration};
 
 use bevy::ecs::system::SystemParam;
@@ -44,6 +47,7 @@ impl Plugin for ClientPlugin {
         .init_resource::<ColonyManagementState>()
         .add_plugins(SimulationBridgePlugin)
         .add_plugins(PresentationPlugin)
+        .add_plugins(ResearchUiPlugin)
         .add_systems(Startup, log_startup);
     }
 }
@@ -999,6 +1003,7 @@ fn spawn_ui(mut commands: Commands) {
             spawn_action_button(parent, UiAction::ToggleDebugGraph, "Debug graphe", "G");
             spawn_action_button(parent, UiAction::RebuildView, "Reconstruire", "R");
             spawn_colony_management_toggle(parent);
+            research_ui::spawn_research_toggle(parent);
         });
 
     commands
@@ -1643,7 +1648,12 @@ fn handle_view_input(
     mut rebuild: ResMut<ViewRebuildRequest>,
     mut pointer_state: ResMut<PointerSelectionState>,
     mut management: ResMut<ColonyManagementState>,
+    research: Res<research_ui::ResearchUiState>,
 ) {
+    if research.open {
+        return;
+    }
+
     if keyboard.just_pressed(KeyCode::KeyC) {
         toggle_colony_management(&mut management, &mut simulation);
         pointer_state.ambiguity = None;
@@ -3275,6 +3285,7 @@ struct StrategicCameraInput<'w> {
     mouse_motion: Res<'w, AccumulatedMouseMotion>,
     mouse_scroll: Res<'w, AccumulatedMouseScroll>,
     management: Res<'w, ColonyManagementState>,
+    research: Res<'w, research_ui::ResearchUiState>,
 }
 
 fn update_strategic_camera(
@@ -3285,7 +3296,7 @@ fn update_strategic_camera(
     let Ok(mut transform) = query.single_mut() else {
         return;
     };
-    if input.management.open {
+    if input.management.open || input.research.open {
         return;
     }
 
@@ -4209,6 +4220,17 @@ fn event_label(event: GameEvent) -> String {
         GameEvent::ConstructionRejected(rejected) => format!(
             "construction {:?} refusée : {:?}",
             rejected.kind, rejected.error,
+        ),
+        GameEvent::ResearchQueued(queued) => format!(
+            "recherche {:?} ajoutée ({})",
+            queued.project.technology, queued.queue_length,
+        ),
+        GameEvent::ResearchCompleted(completed) => {
+            format!("recherche {:?} terminée", completed.technology,)
+        }
+        GameEvent::ResearchRejected(rejected) => format!(
+            "recherche {:?} refusée : {:?}",
+            rejected.technology, rejected.error,
         ),
     }
 }
