@@ -1,7 +1,7 @@
-// MVP-009: persist progressive knowledge and the MVP-008 foundation
+// MVP-011: persist resource reservations and energy capacity.
 use galactic_domain::{
-    ColonyId, FactionId, PlanetId, ResourceStock, SystemId, UniverseConfig, UniverseId,
-    generate_universe,
+    ColonyId, EnergyGrid, FactionId, PlanetId, ResourceLedger, ResourceLedgerError,
+    ResourceReservation, ResourceStock, SystemId, UniverseConfig, UniverseId, generate_universe,
 };
 use galactic_sim::{
     BuildingLevels, ColonyState, FactionKind, FactionState, GameState, PlanetKnowledge,
@@ -9,7 +9,7 @@ use galactic_sim::{
     StrategicClockError, StrategicTick, SystemKnowledge, TimeSpeed,
 };
 
-pub const SAVE_VERSION: u32 = 5;
+pub const SAVE_VERSION: u32 = 6;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SaveGame {
@@ -62,6 +62,10 @@ pub struct ColonySave {
     pub system_id: SystemId,
     pub planet_id: PlanetId,
     pub stock: ResourceStock,
+    pub reservations: Vec<ResourceReservation>,
+    pub next_reservation_id: u64,
+    pub energy_production: u64,
+    pub energy_consumption: u64,
     pub buildings: BuildingLevels,
     pub resource_profile: PlanetResourceProfile,
 }
@@ -82,6 +86,10 @@ pub enum SaveError {
         found: u64,
     },
     InvalidClock(StrategicClockError),
+    InvalidResourceLedger {
+        colony_id: ColonyId,
+        error: ResourceLedgerError,
+    },
     InvalidState(SimulationBuildError),
 }
 
@@ -128,7 +136,11 @@ pub fn snapshot_from_simulation(simulation: &Simulation) -> SaveGame {
                     faction: colony.faction,
                     system_id: colony.system_id,
                     planet_id: colony.planet_id,
-                    stock: colony.stock,
+                    stock: colony.resources.stock(),
+                    reservations: colony.resources.reservations().to_vec(),
+                    next_reservation_id: colony.resources.next_reservation_id(),
+                    energy_production: colony.energy.production(),
+                    energy_consumption: colony.energy.consumption(),
                     buildings: colony.buildings,
                     resource_profile: colony.resource_profile,
                 })
@@ -174,6 +186,35 @@ pub fn restore_from_snapshot(save: &SaveGame) -> Result<Simulation, SaveError> {
     )
     .map_err(SaveError::InvalidClock)?;
 
+    let colonies = save
+        .state
+        .colonies
+        .iter()
+        .map(|colony| {
+            let resources = ResourceLedger::from_parts(
+                colony.stock,
+                colony.reservations.clone(),
+                colony.next_reservation_id,
+            )
+            .map_err(|error| SaveError::InvalidResourceLedger {
+                colony_id: colony.id,
+                error,
+            })?;
+
+            Ok(ColonyState {
+                id: colony.id,
+                name: colony.name.clone(),
+                faction: colony.faction,
+                system_id: colony.system_id,
+                planet_id: colony.planet_id,
+                resources,
+                energy: EnergyGrid::new(colony.energy_production, colony.energy_consumption),
+                buildings: colony.buildings,
+                resource_profile: colony.resource_profile,
+            })
+        })
+        .collect::<Result<Vec<_>, SaveError>>()?;
+
     let state = GameState {
         version: save.state.version,
         factions: save
@@ -187,21 +228,7 @@ pub fn restore_from_snapshot(save: &SaveGame) -> Result<Simulation, SaveError> {
             })
             .collect(),
         player_faction: save.state.player_faction,
-        colonies: save
-            .state
-            .colonies
-            .iter()
-            .map(|colony| ColonyState {
-                id: colony.id,
-                name: colony.name.clone(),
-                faction: colony.faction,
-                system_id: colony.system_id,
-                planet_id: colony.planet_id,
-                stock: colony.stock,
-                buildings: colony.buildings,
-                resource_profile: colony.resource_profile,
-            })
-            .collect(),
+        colonies,
         system_knowledge: save.state.system_knowledge.clone(),
         planet_knowledge: save.state.planet_knowledge.clone(),
         selected: save.state.selected,
@@ -215,7 +242,9 @@ pub fn restore_from_snapshot(save: &SaveGame) -> Result<Simulation, SaveError> {
 mod tests {
     use std::time::Duration;
 
-    use galactic_domain::{SystemId, UniverseConfig};
+    use galactic_domain::{
+        ReservationId, ResourceCost, ResourceReservation, SystemId, UniverseConfig,
+    };
     use galactic_sim::{
         GAME_STATE_VERSION, GameCommand, KnowledgeLevel, STRATEGIC_TICK_NANOS, StrategicTick,
         TimeSpeed,
@@ -224,7 +253,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn snapshot_round_trips_knowledge_and_starting_state() {
+    fn snapshot_round_trips_economy_knowledge_and_clock() {
         let mut simulation = Simulation::new(UniverseConfig::mvp());
         let target = simulation
             .universe_repository()
@@ -236,6 +265,20 @@ mod tests {
         simulation.apply_command(GameCommand::DebugAdvanceSelectedKnowledge);
         simulation.advance(Duration::from_millis(125));
         simulation.apply_command(GameCommand::SetSpeed(TimeSpeed::X4));
+
+        let colony = simulation
+            .state_mut()
+            .colonies
+            .first_mut()
+            .expect("home colony exists");
+        colony
+            .resources
+            .reserve(ResourceCost::new(50, 25, 10))
+            .expect("test reservation is funded");
+        colony
+            .energy
+            .allocate(10)
+            .expect("energy capacity is available");
 
         let save = snapshot_from_simulation(&simulation);
         let restored = restore_from_snapshot(&save).expect("save is compatible");
@@ -249,25 +292,36 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_contains_progressive_knowledge() {
+    fn snapshot_contains_ledger_and_energy_balance() {
         let simulation = Simulation::new(UniverseConfig::mvp());
         let save = snapshot_from_simulation(&simulation);
+        let colony = save.state.colonies.first().expect("home colony is saved");
 
         assert_eq!(save.state.version, GAME_STATE_VERSION);
-        assert!(!save.state.system_knowledge.is_empty());
-        assert!(!save.state.planet_knowledge.is_empty());
-        assert!(
-            save.state
-                .system_knowledge
-                .iter()
-                .any(|entry| { entry.level == KnowledgeLevel::Colonized })
-        );
-        assert!(
-            save.state
-                .system_knowledge
-                .iter()
-                .any(|entry| { entry.level == KnowledgeLevel::Detected })
-        );
+        assert_eq!(colony.stock, ResourceStock::new(600, 300, 220));
+        assert_eq!(colony.energy_production, 80);
+        assert_eq!(colony.energy_consumption, 30);
+    }
+
+    #[test]
+    fn invalid_over_reserved_ledger_is_rejected() {
+        let simulation = Simulation::new(UniverseConfig::mvp());
+        let mut save = snapshot_from_simulation(&simulation);
+        let colony = save
+            .state
+            .colonies
+            .first_mut()
+            .expect("home colony is saved");
+        colony.reservations.push(ResourceReservation::new(
+            ReservationId::new(1),
+            ResourceCost::new(700, 0, 0),
+        ));
+        colony.next_reservation_id = 2;
+
+        assert!(matches!(
+            restore_from_snapshot(&save),
+            Err(SaveError::InvalidResourceLedger { .. })
+        ));
     }
 
     #[test]

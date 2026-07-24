@@ -1,5 +1,5 @@
-// MVP-009: configurable starting knowledge and home-world state
-use galactic_domain::{ColonyId, FactionId, PlanetId, ResourceStock, SystemId};
+// MVP-011: configurable starting economy and knowledge
+use galactic_domain::{ColonyId, EnergyGrid, FactionId, PlanetId, ResourceStock, SystemId};
 
 use crate::{KnowledgeLevel, UniverseRepository};
 
@@ -139,6 +139,7 @@ pub struct StartingColonyConfig {
     pub system_id: SystemId,
     pub planet_id: PlanetId,
     pub initial_stock: ResourceStock,
+    pub initial_energy: EnergyGrid,
     pub buildings: BuildingLevels,
     pub resource_profile: PlanetResourceProfile,
 }
@@ -176,7 +177,8 @@ impl StartingScenario {
                 name: "Aster Prime Colony",
                 system_id: MVP_HOME_SYSTEM_ID,
                 planet_id: MVP_HOME_PLANET_ID,
-                initial_stock: ResourceStock::new(600, 300, 220, 80),
+                initial_stock: ResourceStock::new(600, 300, 220),
+                initial_energy: EnergyGrid::new(80, 30),
                 buildings: BuildingLevels::MVP_START,
                 resource_profile: PlanetResourceProfile::BALANCED,
             },
@@ -195,6 +197,9 @@ impl StartingScenario {
         }
         if !self.home_colony.resource_profile.is_viable() {
             return Err(StartingScenarioError::InvalidResourceProfile);
+        }
+        if self.home_colony.initial_energy.is_deficit() {
+            return Err(StartingScenarioError::InitialEnergyDeficit);
         }
 
         let Some(system) = universe.system(self.home_colony.system_id) else {
@@ -277,6 +282,7 @@ pub enum StartingScenarioError {
     EmptyFactionName,
     EmptyColonyName,
     InvalidResourceProfile,
+    InitialEnergyDeficit,
     ExplicitUnknownKnowledge,
     UnknownHomeSystem(SystemId),
     UnknownHomePlanet(PlanetId),
@@ -312,7 +318,8 @@ mod tests {
         let universe = UniverseRepository::generate(UniverseConfig::mvp());
         let fingerprint = universe.definition().generation_fingerprint;
         let mut scenario = StartingScenario::mvp();
-        scenario.home_colony.initial_stock = ResourceStock::new(999, 888, 777, 66);
+        scenario.home_colony.initial_stock = ResourceStock::new(999, 888, 777);
+        scenario.home_colony.initial_energy = EnergyGrid::new(120, 45);
         scenario.home_colony.buildings.research_lab = 1;
 
         assert_eq!(scenario.validate(&universe), Ok(()));

@@ -1,5 +1,5 @@
-// MVP-009: persistent progressive knowledge for systems and planets
-use galactic_domain::{ColonyId, FactionId, PlanetId, ResourceStock, Route, SystemId};
+// MVP-011: persistent knowledge and colony economy
+use galactic_domain::{ColonyId, EnergyGrid, FactionId, PlanetId, ResourceLedger, Route, SystemId};
 
 use crate::{
     BuildingLevels, KnowledgeChange, KnowledgeCounts, KnowledgeLevel, KnowledgeTarget,
@@ -9,9 +9,8 @@ use crate::{
 
 /// Version of the mutable in-memory state contract.
 ///
-/// Version 4 replaces the binary known-system list with monotone knowledge
-/// levels for systems and planets.
-pub const GAME_STATE_VERSION: u32 = 4;
+/// Version 5 adds atomic resource ledgers and an energy grid per colony.
+pub const GAME_STATE_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemVisibility {
@@ -74,7 +73,8 @@ impl GameState {
                 faction: player_faction,
                 system_id: home.system_id,
                 planet_id: home.planet_id,
-                stock: home.initial_stock,
+                resources: ResourceLedger::new(home.initial_stock),
+                energy: home.initial_energy,
                 buildings: home.buildings,
                 resource_profile: home.resource_profile,
             }],
@@ -360,7 +360,8 @@ pub struct ColonyState {
     pub faction: FactionId,
     pub system_id: SystemId,
     pub planet_id: PlanetId,
-    pub stock: ResourceStock,
+    pub resources: ResourceLedger,
+    pub energy: EnergyGrid,
     pub buildings: BuildingLevels,
     pub resource_profile: PlanetResourceProfile,
 }
@@ -448,6 +449,22 @@ mod tests {
             .expect("home colony is indexed");
 
         assert_eq!(colony.name, "Aster Prime Colony");
+    }
+
+    #[test]
+    fn home_colony_has_atomic_resources_and_energy_capacity() {
+        let universe = UniverseRepository::generate(UniverseConfig::mvp());
+        let state = GameState::new(&universe);
+        let colony = state.player_home_colony().expect("home colony exists");
+
+        assert_eq!(
+            colony.resources.stock(),
+            galactic_domain::ResourceStock::new(600, 300, 220)
+        );
+        assert_eq!(colony.resources.available(), colony.resources.stock());
+        assert_eq!(colony.energy.production(), 80);
+        assert_eq!(colony.energy.consumption(), 30);
+        assert_eq!(colony.energy.balance(), 50);
     }
 
     #[test]

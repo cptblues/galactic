@@ -390,3 +390,59 @@ donc pas devenir candidats.
 
 Les panneaux UI marqués comme bloqueurs empêchent les clics de traverser
 l'interface vers la scène 3D.
+
+
+## MVP-011 — Registre de ressources et énergie
+
+Le modèle économique distingue maintenant deux concepts :
+
+```text
+Ressources stockées
+├── Métal
+├── Cristal
+└── Carburant
+
+Énergie
+├── capacité produite
+├── capacité consommée
+└── bilan = production - consommation
+```
+
+L'énergie n'est plus un stock dépensable. Une allocation augmente la
+consommation sans réduire la production.
+
+`ResourceLedger` possède :
+
+- un stock total ;
+- une liste de réservations identifiées ;
+- un stock disponible calculé ;
+- des opérations atomiques de crédit et débit ;
+- `reserve`, `commit` et `release` ;
+- une validation des doublons, sur-réservations et identifiants.
+
+Une dépense ou réservation insuffisamment financée ne modifie aucune donnée.
+Les réservations sont soustraites du disponible et empêchent les doubles
+dépenses avant leur engagement définitif.
+
+`EconomicCost` combine un coût en Métal/Cristal/Carburant et une capacité
+énergétique requise. Les catalogues de bâtiments et crafts pourront utiliser
+ce format dans les étapes suivantes.
+
+La colonie initiale commence avec :
+
+- 600 Métal ;
+- 300 Cristal ;
+- 220 Carburant ;
+- 80 unités de production énergétique ;
+- 30 unités de consommation énergétique.
+
+Le HUD de colonie affiche stock total, disponible, réservé, production,
+consommation et bilan énergétique.
+
+Versions après migration :
+
+- `GAME_STATE_VERSION = 5` ;
+- `SAVE_VERSION = 6`.
+
+MVP-012 ajoutera la production par tick et les capacités maximales de
+stockage. MVP-013 ajoutera les coûts réels du catalogue de bâtiments.

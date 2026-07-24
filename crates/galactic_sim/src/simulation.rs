@@ -361,7 +361,9 @@ fn validate_state(
 
 #[cfg(test)]
 mod tests {
-    use galactic_domain::{ColonyId, PlanetId, ResourceStock, SystemId, UniverseConfig};
+    use galactic_domain::{
+        ColonyId, PlanetId, ResourceLedger, ResourceStock, SystemId, UniverseConfig,
+    };
 
     use crate::KnowledgeTarget;
 
@@ -497,7 +499,7 @@ mod tests {
             .state_mut()
             .colony_mut(ColonyId::new(0))
             .expect("home colony exists")
-            .stock = ResourceStock::new(999, 888, 777, 666);
+            .resources = ResourceLedger::new(ResourceStock::new(999, 888, 777));
 
         assert_eq!(simulation.universe(), &initial_universe);
     }

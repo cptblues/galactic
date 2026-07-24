@@ -2211,13 +2211,27 @@ fn home_inspector_content(simulation: &Simulation) -> InspectorContent {
         badge: knowledge_badge_fr(KnowledgeLevel::Colonized).to_string(),
         title: format!("{} — {}", system.name, planet.name),
         body: format!(
-            "Faction : {}\nHabitabilité : {}%\n\nSTOCKS EXACTS\nMétal : {}\nCristal : {}\nCarburant : {}\nÉnergie : {}\n\nPOTENTIEL EXACT\nMétal : {}\nCristal : {}\nCarburant : {}\nÉnergie : {}\n\nINFRASTRUCTURE\nMines : {}/{}/{}\nCentrale : {}\nEntrepôt : {}\nConstruction : {}\nLaboratoire : {}\nChantier : {}",
+            "Faction : {}
+Habitabilité : {}%
+
+{}
+
+POTENTIEL EXACT
+Métal : {}
+Cristal : {}
+Carburant : {}
+Énergie : {}
+
+INFRASTRUCTURE
+Mines : {}/{}/{}
+Centrale : {}
+Entrepôt : {}
+Construction : {}
+Laboratoire : {}
+Chantier : {}",
             faction.name,
             planet.habitability,
-            colony.stock.metal,
-            colony.stock.crystal,
-            colony.stock.fuel,
-            colony.stock.energy,
+            colony_economy_text(colony),
             colony.resource_profile.metal,
             colony.resource_profile.crystal,
             colony.resource_profile.fuel,
@@ -2231,8 +2245,38 @@ fn home_inspector_content(simulation: &Simulation) -> InspectorContent {
             colony.buildings.research_lab,
             colony.buildings.shipyard,
         ),
-        hint: "Colonie active : les valeurs affichées sont exactes.".to_string(),
+        hint: "Colonie active : ressources et énergie sont exactes.".to_string(),
     }
+}
+
+fn colony_economy_text(colony: &galactic_sim::ColonyState) -> String {
+    let stock = colony.resources.stock();
+    let available = colony.resources.available();
+    let reserved = colony.resources.reserved_total();
+
+    format!(
+        "STOCKS EXACTS
+Total — Métal {}  Cristal {}  Carburant {}
+Disponible — Métal {}  Cristal {}  Carburant {}
+Réservé — Métal {}  Cristal {}  Carburant {}
+
+ÉNERGIE — CAPACITÉ
+Production : {}
+Consommation : {}
+Bilan : {:+}",
+        stock.metal,
+        stock.crystal,
+        stock.fuel,
+        available.metal,
+        available.crystal,
+        available.fuel,
+        reserved.metal,
+        reserved.crystal,
+        reserved.fuel,
+        colony.energy.production(),
+        colony.energy.consumption(),
+        colony.energy.balance(),
+    )
 }
 
 fn system_inspector_content(simulation: &Simulation, system_id: SystemId) -> InspectorContent {
@@ -2339,21 +2383,38 @@ fn planet_inspector_content(
         KnowledgeLevel::Unknown => (
             "Corps inconnu".to_string(),
             format!(
-                "Système : {}\nNom : ???\nType : ???\nHabitabilité : ???\nPotentiel : ???\nLunes : ???\n{}",
+                "Système : {}
+Nom : ???
+Type : ???
+Habitabilité : ???
+Potentiel : ???
+Lunes : ???
+{}",
                 system_label, selection_note,
             ),
         ),
         KnowledgeLevel::Detected => (
             format!("Corps détecté {}", planet_id.index()),
             format!(
-                "Système : {}\nNom : ???\nType : ???\nHabitabilité : ???\nPotentiel : analyse requise\nLunes : non recensées\n{}",
+                "Système : {}
+Nom : ???
+Type : ???
+Habitabilité : ???
+Potentiel : analyse requise
+Lunes : non recensées
+{}",
                 system_label, selection_note,
             ),
         ),
         KnowledgeLevel::Probed => (
             planet.name.clone(),
             format!(
-                "Système : {}\nType : {:?}\nHabitabilité estimée : {}\nPotentiel : analyse requise\nLunes : non recensées\n{}",
+                "Système : {}
+Type : {:?}
+Habitabilité estimée : {}
+Potentiel : analyse requise
+Lunes : non recensées
+{}",
                 system_label,
                 planet.kind,
                 habitability_estimate(planet.habitability),
@@ -2363,14 +2424,25 @@ fn planet_inspector_content(
         KnowledgeLevel::Analyzed => (
             planet.name.clone(),
             format!(
-                "Système : {}\nType : {:?}\nHabitabilité exacte : {}%\nStatut : non colonisée\nPotentiel : aucune valeur économique générée pour ce corps\nLunes : aucune donnée disponible\n{}",
+                "Système : {}
+Type : {:?}
+Habitabilité exacte : {}%
+Statut : non colonisée
+Potentiel : aucune valeur économique générée pour ce corps
+Lunes : aucune donnée disponible
+{}",
                 system_label, planet.kind, planet.habitability, selection_note,
             ),
         ),
         KnowledgeLevel::Colonized => (
             planet.name.clone(),
             format!(
-                "Système : {}\nType : {:?}\nHabitabilité exacte : {}%\nStatut : {}\nLunes : aucune donnée disponible\n{}",
+                "Système : {}
+Type : {:?}
+Habitabilité exacte : {}%
+Statut : {}
+Lunes : aucune donnée disponible
+{}",
                 system_label,
                 planet.kind,
                 planet.habitability,
@@ -2384,11 +2456,24 @@ fn planet_inspector_content(
 
     if let Some(colony) = colony {
         body.push_str(&format!(
-            "\n\nSTOCKS EXACTS\nMétal : {}\nCristal : {}\nCarburant : {}\nÉnergie : {}\n\nPOTENTIEL EXACT\nMétal : {}\nCristal : {}\nCarburant : {}\nÉnergie : {}\n\nINFRASTRUCTURE\nMines : {}/{}/{}\nCentrale : {}\nEntrepôt : {}\nConstruction : {}\nLaboratoire : {}\nChantier : {}",
-            colony.stock.metal,
-            colony.stock.crystal,
-            colony.stock.fuel,
-            colony.stock.energy,
+            "
+
+{}
+
+POTENTIEL EXACT
+Métal : {}
+Cristal : {}
+Carburant : {}
+Énergie : {}
+
+INFRASTRUCTURE
+Mines : {}/{}/{}
+Centrale : {}
+Entrepôt : {}
+Construction : {}
+Laboratoire : {}
+Chantier : {}",
+            colony_economy_text(colony),
             colony.resource_profile.metal,
             colony.resource_profile.crystal,
             colony.resource_profile.fuel,
