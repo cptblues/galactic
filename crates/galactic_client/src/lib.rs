@@ -4,7 +4,9 @@ use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseSc
 use bevy::prelude::*;
 use bevy::text::FontSource;
 use bevy::window::{PresentMode, PrimaryWindow};
-use galactic_domain::{PlanetId, PlanetKind, StarClass, SystemId, UniverseConfig, WorldPosition};
+use galactic_domain::{
+    PlanetId, PlanetKind, ResourceStock, StarClass, SystemId, UniverseConfig, WorldPosition,
+};
 use galactic_sim::{
     GameCommand, GameEvent, KnowledgeLevel, KnowledgeTarget, MVP_HOME_SYSTEM_ID, SelectionTarget,
     Simulation, SystemVisibility, TimeSpeed,
@@ -38,6 +40,7 @@ impl Plugin for ClientPlugin {
         .init_resource::<StrategicNavigation>()
         .init_resource::<ViewRebuildRequest>()
         .init_resource::<PointerSelectionState>()
+        .init_resource::<ResourceDeltaState>()
         .add_plugins(SimulationBridgePlugin)
         .add_plugins(PresentationPlugin)
         .add_systems(Startup, log_startup);
@@ -70,6 +73,7 @@ impl Plugin for PresentationPlugin {
                 update_strategic_camera,
                 update_pointer_candidates,
                 handle_pointer_selection,
+                capture_resource_deltas,
                 collect_presentation_events,
                 update_system_visuals,
                 update_pointer_halos,
@@ -79,6 +83,8 @@ impl Plugin for PresentationPlugin {
                 update_action_buttons,
                 update_pointer_tooltip,
                 update_ambiguity_panel,
+                update_resource_dashboard,
+                update_resource_card_help,
                 update_ui,
                 update_info_panel,
             )
@@ -283,6 +289,104 @@ struct PointerTooltipText;
 
 #[derive(Component)]
 struct AmbiguityPanelText;
+
+// MVP-013-B: compact resource dashboard for colonized worlds.
+const RESOURCE_DELTA_DISPLAY_SECONDS: f32 = 2.2;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResourceHudKind {
+    Metal,
+    Crystal,
+    Fuel,
+    Energy,
+}
+
+impl ResourceHudKind {
+    const ALL: [Self; 4] = [Self::Metal, Self::Crystal, Self::Fuel, Self::Energy];
+
+    const fn title(self) -> &'static str {
+        match self {
+            Self::Metal => "MÉTAL",
+            Self::Crystal => "CRISTAL",
+            Self::Fuel => "CARBURANT",
+            Self::Energy => "ÉNERGIE",
+        }
+    }
+
+    const fn help(self) -> &'static str {
+        match self {
+            Self::Metal | Self::Crystal | Self::Fuel => {
+                "Total = stock physique. Disponible = total - réservé. \
+Capacité = limite de stockage. Une jauge orange ou rouge signale une saturation proche."
+            }
+            Self::Energy => {
+                "L’énergie est une capacité, pas un stock. Disponible = production effective - \
+consommation. Un déficit ralentit tous les extracteurs."
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResourceHudStatus {
+    Normal,
+    Reserved,
+    NearlyFull,
+    Full,
+    Deficit,
+}
+
+#[derive(Resource, Default)]
+struct ResourceDeltaState {
+    produced: ResourceStock,
+    remaining_seconds: f32,
+}
+
+impl ResourceDeltaState {
+    fn show(&mut self, produced: ResourceStock) {
+        self.produced = produced;
+        self.remaining_seconds = RESOURCE_DELTA_DISPLAY_SECONDS;
+    }
+
+    fn tick(&mut self, delta_seconds: f32) {
+        self.remaining_seconds = (self.remaining_seconds - delta_seconds).max(0.0);
+        if self.remaining_seconds == 0.0 {
+            self.produced = ResourceStock::ZERO;
+        }
+    }
+
+    fn active(&self) -> ResourceStock {
+        if self.remaining_seconds > 0.0 {
+            self.produced
+        } else {
+            ResourceStock::ZERO
+        }
+    }
+}
+
+#[derive(Component)]
+struct ResourceDashboardRoot;
+
+#[derive(Component)]
+struct ResourceDashboardHeaderText;
+
+#[derive(Component)]
+struct ResourceDashboardHelpText;
+
+#[derive(Component)]
+struct ResourceHudCard {
+    kind: ResourceHudKind,
+}
+
+#[derive(Component)]
+struct ResourceHudCardText {
+    kind: ResourceHudKind,
+}
+
+#[derive(Component)]
+struct ResourceHudGaugeFill {
+    kind: ResourceHudKind,
+}
 
 // MVP-010: partial-information inspectors must never reveal hidden data.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -951,6 +1055,135 @@ fn spawn_ui(mut commands: Commands) {
         UiPointerBlocker,
         AmbiguityPanelText,
     ));
+
+    spawn_resource_dashboard(&mut commands);
+}
+
+fn spawn_resource_dashboard(commands: &mut Commands) {
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(238.0),
+                right: Val::Px(372.0),
+                bottom: Val::Px(54.0),
+                min_width: Val::Px(580.0),
+                padding: UiRect::all(Val::Px(9.0)),
+                border: UiRect::all(Val::Px(1.0)),
+                border_radius: BorderRadius::all(Val::Px(7.0)),
+                flex_direction: FlexDirection::Column,
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.012, 0.020, 0.028, 0.96)),
+            Outline::new(
+                Val::Px(1.0),
+                Val::ZERO,
+                Color::srgba(0.30, 0.70, 0.76, 0.48),
+            ),
+            Visibility::Hidden,
+            Interaction::None,
+            UiPointerBlocker,
+            ResourceDashboardRoot,
+        ))
+        .with_children(|root| {
+            root.spawn((
+                Text::new("ÉCONOMIE"),
+                ui_text_font(13.0),
+                TextColor(Color::srgb(0.78, 0.92, 0.96)),
+                Node {
+                    margin: UiRect {
+                        bottom: Val::Px(7.0),
+                        ..default()
+                    },
+                    ..default()
+                },
+                ResourceDashboardHeaderText,
+            ));
+
+            root.spawn((Node {
+                width: Val::Percent(100.0),
+                min_height: Val::Px(104.0),
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Stretch,
+                ..default()
+            },))
+                .with_children(|row| {
+                    for kind in ResourceHudKind::ALL {
+                        spawn_resource_hud_card(row, kind);
+                    }
+                });
+
+            root.spawn((
+                Text::new("Survole une carte pour afficher son aide."),
+                ui_text_font(10.0),
+                TextColor(Color::srgb(0.62, 0.70, 0.76)),
+                Node {
+                    margin: UiRect {
+                        top: Val::Px(6.0),
+                        ..default()
+                    },
+                    ..default()
+                },
+                ResourceDashboardHelpText,
+            ));
+        });
+}
+
+fn spawn_resource_hud_card(parent: &mut ChildSpawnerCommands, kind: ResourceHudKind) {
+    parent
+        .spawn((
+            Node {
+                flex_grow: 1.0,
+                flex_basis: Val::Px(0.0),
+                min_width: Val::Px(126.0),
+                margin: UiRect {
+                    left: Val::Px(3.0),
+                    right: Val::Px(3.0),
+                    ..default()
+                },
+                padding: UiRect::all(Val::Px(8.0)),
+                border: UiRect::all(Val::Px(1.0)),
+                border_radius: BorderRadius::all(Val::Px(5.0)),
+                flex_direction: FlexDirection::Column,
+                justify_content: JustifyContent::SpaceBetween,
+                ..default()
+            },
+            BackgroundColor(resource_card_background(kind)),
+            Outline::new(Val::Px(1.0), Val::ZERO, resource_outline_color(kind)),
+            Interaction::None,
+            UiPointerBlocker,
+            ResourceHudCard { kind },
+        ))
+        .with_children(|card| {
+            card.spawn((
+                Text::new(kind.title()),
+                ui_text_font(11.0),
+                TextColor(resource_kind_color(kind)),
+                ResourceHudCardText { kind },
+            ));
+
+            card.spawn((
+                Node {
+                    width: Val::Percent(100.0),
+                    height: Val::Px(7.0),
+                    border_radius: BorderRadius::all(Val::Px(4.0)),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.10, 0.13, 0.16, 0.92)),
+            ))
+            .with_children(|gauge| {
+                gauge.spawn((
+                    Node {
+                        width: Val::Percent(0.0),
+                        height: Val::Percent(100.0),
+                        border_radius: BorderRadius::all(Val::Px(4.0)),
+                        ..default()
+                    },
+                    BackgroundColor(resource_kind_color(kind)),
+                    ResourceHudGaugeFill { kind },
+                ));
+            });
+        });
 }
 
 fn spawn_panel_heading(parent: &mut ChildSpawnerCommands<'_>, label: &str) {
@@ -1499,6 +1732,299 @@ fn pick_target_matches_selection(target: PickTarget, selection: SelectionTarget)
         ) => left_system == right_system && left_planet == right_planet,
         _ => false,
     }
+}
+
+fn capture_resource_deltas(
+    simulation: Res<SimulationResource>,
+    mut delta_state: ResMut<ResourceDeltaState>,
+) {
+    for event in &simulation.pending_events {
+        if let GameEvent::ProductionRefreshed(report) = event
+            && !report.produced.is_zero()
+        {
+            delta_state.show(report.produced);
+        }
+    }
+}
+
+fn update_resource_dashboard(
+    time: Res<Time>,
+    simulation: Res<SimulationResource>,
+    mut delta_state: ResMut<ResourceDeltaState>,
+    mut roots: Query<&mut Visibility, With<ResourceDashboardRoot>>,
+    mut headers: Query<
+        &mut Text,
+        (
+            With<ResourceDashboardHeaderText>,
+            Without<ResourceHudCardText>,
+        ),
+    >,
+    mut card_texts: Query<
+        (&ResourceHudCardText, &mut Text, &mut TextColor),
+        Without<ResourceDashboardHeaderText>,
+    >,
+    mut gauges: Query<(&ResourceHudGaugeFill, &mut Node, &mut BackgroundColor)>,
+) {
+    delta_state.tick(time.delta_secs());
+
+    let Some(colony) = selected_colony_for_resource_dashboard(simulation.simulation()) else {
+        for mut visibility in &mut roots {
+            *visibility = Visibility::Hidden;
+        }
+        return;
+    };
+
+    for mut visibility in &mut roots {
+        *visibility = Visibility::Visible;
+    }
+
+    let production = galactic_sim::colony_production_snapshot(colony);
+    let refresh =
+        galactic_sim::StrategicDuration::from_ticks(u64::from(production.ticks_until_refresh));
+    for mut header in &mut headers {
+        header.0 = format!(
+            "ÉCONOMIE — {}  •  prochain crédit {}  •  cadence {} s",
+            colony.name,
+            format_strategic_duration(refresh),
+            galactic_sim::PRODUCTION_REFRESH_SECONDS,
+        );
+    }
+
+    let active_delta = delta_state.active();
+    for (card, mut text, mut text_color) in &mut card_texts {
+        let view = resource_hud_view(card.kind, colony, production, active_delta);
+        text.0 = view.text;
+        text_color.0 = status_text_color(card.kind, view.status);
+    }
+
+    for (gauge, mut node, mut background) in &mut gauges {
+        let view = resource_hud_view(gauge.kind, colony, production, active_delta);
+        node.width = Val::Percent((view.fill_ratio * 100.0).clamp(0.0, 100.0));
+        background.0 = status_gauge_color(gauge.kind, view.status);
+    }
+}
+
+fn update_resource_card_help(
+    cards: Query<(&Interaction, &ResourceHudCard)>,
+    mut help_texts: Query<&mut Text, With<ResourceDashboardHelpText>>,
+) {
+    let hovered = cards
+        .iter()
+        .find(|(interaction, _)| **interaction != Interaction::None)
+        .map(|(_, card)| card.kind);
+
+    let text = hovered.map(ResourceHudKind::help).unwrap_or(
+        "Total / capacité • disponible = total - réservé • \
+les stocks sont crédités toutes les 5 secondes stratégiques.",
+    );
+    for mut help in &mut help_texts {
+        help.0 = text.to_string();
+    }
+}
+
+fn selected_colony_for_resource_dashboard(
+    simulation: &Simulation,
+) -> Option<&galactic_sim::ColonyState> {
+    let state = simulation.state();
+    match state.selected {
+        SelectionTarget::Planet { planet_id, .. } => state.colony_on_planet(planet_id),
+        SelectionTarget::System(system_id) => state
+            .colonies
+            .iter()
+            .find(|colony| colony.system_id == system_id && colony.faction == state.player_faction),
+        SelectionTarget::None => state.player_home_colony(),
+    }
+}
+
+struct ResourceHudView {
+    text: String,
+    fill_ratio: f32,
+    status: ResourceHudStatus,
+}
+
+fn resource_hud_view(
+    kind: ResourceHudKind,
+    colony: &galactic_sim::ColonyState,
+    production: galactic_sim::ColonyProductionSnapshot,
+    delta: ResourceStock,
+) -> ResourceHudView {
+    if kind == ResourceHudKind::Energy {
+        return energy_hud_view(production);
+    }
+
+    let stock = resource_value(kind, colony.resources.stock());
+    let available = resource_value(kind, colony.resources.available());
+    let reserved = resource_value(kind, colony.resources.reserved_total());
+    let capacity = resource_value(kind, production.capacity);
+    let delta = resource_value(kind, delta);
+    let rate = resource_rate_per_second(kind, production);
+    let saturation = resource_saturation(kind, production);
+    let fill_ratio = resource_fill_ratio(stock, capacity);
+    let status = resource_hud_status(stock, available, reserved, capacity);
+
+    let delta_text = if delta > 0 {
+        format!("\nDernier crédit  +{delta}")
+    } else {
+        String::new()
+    };
+
+    ResourceHudView {
+        text: format!(
+            "{}  {} / {}\nDisponible {}  •  Réservé {}\n+{:.2}/s  •  saturation {}\n{}{}",
+            kind.title(),
+            stock,
+            capacity,
+            available,
+            reserved,
+            rate,
+            format_saturation_time(saturation),
+            resource_status_label(status),
+            delta_text,
+        ),
+        fill_ratio,
+        status,
+    }
+}
+
+fn energy_hud_view(production: galactic_sim::ColonyProductionSnapshot) -> ResourceHudView {
+    let produced = production.effective_energy_production;
+    let consumed = production.energy_consumption;
+    let available = produced.saturating_sub(consumed);
+    let deficit = consumed > produced;
+    let status = if deficit {
+        ResourceHudStatus::Deficit
+    } else {
+        ResourceHudStatus::Normal
+    };
+    let fill_ratio = energy_fill_ratio(consumed, produced);
+    let balance = i128::from(produced) - i128::from(consumed);
+
+    ResourceHudView {
+        text: format!(
+            "ÉNERGIE  {} / {}\nDisponible {}  •  Bilan {:+}\nRendement extracteurs {}%\n{}",
+            consumed,
+            produced,
+            available,
+            balance,
+            u32::from(production.energy_efficiency_per_mille,) / 10,
+            resource_status_label(status),
+        ),
+        fill_ratio,
+        status,
+    }
+}
+
+fn resource_value(kind: ResourceHudKind, stock: ResourceStock) -> u64 {
+    match kind {
+        ResourceHudKind::Metal => stock.metal,
+        ResourceHudKind::Crystal => stock.crystal,
+        ResourceHudKind::Fuel => stock.fuel,
+        ResourceHudKind::Energy => 0,
+    }
+}
+
+fn resource_rate_per_second(
+    kind: ResourceHudKind,
+    production: galactic_sim::ColonyProductionSnapshot,
+) -> f64 {
+    match kind {
+        ResourceHudKind::Metal => production.effective_rate.metal_per_second(),
+        ResourceHudKind::Crystal => production.effective_rate.crystal_per_second(),
+        ResourceHudKind::Fuel => production.effective_rate.fuel_per_second(),
+        ResourceHudKind::Energy => 0.0,
+    }
+}
+
+fn resource_saturation(
+    kind: ResourceHudKind,
+    production: galactic_sim::ColonyProductionSnapshot,
+) -> galactic_sim::SaturationTime {
+    match kind {
+        ResourceHudKind::Metal => production.saturation.metal,
+        ResourceHudKind::Crystal => production.saturation.crystal,
+        ResourceHudKind::Fuel => production.saturation.fuel,
+        ResourceHudKind::Energy => galactic_sim::SaturationTime::Never,
+    }
+}
+
+fn resource_fill_ratio(stock: u64, capacity: u64) -> f32 {
+    if capacity == 0 {
+        return if stock == 0 { 0.0 } else { 1.0 };
+    }
+    (stock as f64 / capacity as f64).clamp(0.0, 1.0) as f32
+}
+
+fn energy_fill_ratio(consumption: u64, production: u64) -> f32 {
+    if production == 0 {
+        return if consumption == 0 { 0.0 } else { 1.0 };
+    }
+    (consumption as f64 / production as f64).clamp(0.0, 1.0) as f32
+}
+
+fn resource_hud_status(
+    stock: u64,
+    available: u64,
+    reserved: u64,
+    capacity: u64,
+) -> ResourceHudStatus {
+    if capacity > 0 && stock >= capacity {
+        ResourceHudStatus::Full
+    } else if capacity > 0 && stock.saturating_mul(100) >= capacity.saturating_mul(90) {
+        ResourceHudStatus::NearlyFull
+    } else if available == 0 && reserved > 0 {
+        ResourceHudStatus::Reserved
+    } else {
+        ResourceHudStatus::Normal
+    }
+}
+
+const fn resource_status_label(status: ResourceHudStatus) -> &'static str {
+    match status {
+        ResourceHudStatus::Normal => "STABLE",
+        ResourceHudStatus::Reserved => "INDISPONIBLE — RÉSERVÉ",
+        ResourceHudStatus::NearlyFull => "PRESQUE PLEIN",
+        ResourceHudStatus::Full => "PLEIN — PRODUCTION PERDUE",
+        ResourceHudStatus::Deficit => "DÉFICIT ÉNERGÉTIQUE",
+    }
+}
+
+fn resource_kind_color(kind: ResourceHudKind) -> Color {
+    match kind {
+        ResourceHudKind::Metal => Color::srgb(0.90, 0.66, 0.42),
+        ResourceHudKind::Crystal => Color::srgb(0.56, 0.82, 0.96),
+        ResourceHudKind::Fuel => Color::srgb(0.86, 0.82, 0.38),
+        ResourceHudKind::Energy => Color::srgb(0.52, 0.92, 0.62),
+    }
+}
+
+fn resource_outline_color(kind: ResourceHudKind) -> Color {
+    match kind {
+        ResourceHudKind::Metal => Color::srgba(0.90, 0.66, 0.42, 0.42),
+        ResourceHudKind::Crystal => Color::srgba(0.56, 0.82, 0.96, 0.42),
+        ResourceHudKind::Fuel => Color::srgba(0.86, 0.82, 0.38, 0.42),
+        ResourceHudKind::Energy => Color::srgba(0.52, 0.92, 0.62, 0.42),
+    }
+}
+
+fn resource_card_background(kind: ResourceHudKind) -> Color {
+    match kind {
+        ResourceHudKind::Metal => Color::srgba(0.16, 0.10, 0.06, 0.94),
+        ResourceHudKind::Crystal => Color::srgba(0.06, 0.11, 0.16, 0.94),
+        ResourceHudKind::Fuel => Color::srgba(0.15, 0.14, 0.05, 0.94),
+        ResourceHudKind::Energy => Color::srgba(0.05, 0.14, 0.08, 0.94),
+    }
+}
+
+fn status_text_color(kind: ResourceHudKind, status: ResourceHudStatus) -> Color {
+    match status {
+        ResourceHudStatus::Full | ResourceHudStatus::Deficit => Color::srgb(1.0, 0.48, 0.42),
+        ResourceHudStatus::NearlyFull | ResourceHudStatus::Reserved => Color::srgb(1.0, 0.78, 0.36),
+        ResourceHudStatus::Normal => resource_kind_color(kind),
+    }
+}
+
+fn status_gauge_color(kind: ResourceHudKind, status: ResourceHudStatus) -> Color {
+    status_text_color(kind, status)
 }
 
 fn update_action_buttons(
@@ -2861,6 +3387,94 @@ mod tests {
 
         assert!(label.contains("Signal"));
         assert!(!label.contains(actual_name));
+    }
+
+    #[test]
+    fn resource_fill_ratio_is_clamped() {
+        assert_eq!(resource_fill_ratio(0, 100), 0.0);
+        assert_eq!(resource_fill_ratio(50, 100), 0.5);
+        assert_eq!(resource_fill_ratio(150, 100), 1.0);
+        assert_eq!(resource_fill_ratio(0, 0), 0.0);
+        assert_eq!(resource_fill_ratio(1, 0), 1.0);
+    }
+
+    #[test]
+    fn resource_status_distinguishes_reservations_and_saturation() {
+        assert_eq!(
+            resource_hud_status(40, 0, 40, 100),
+            ResourceHudStatus::Reserved
+        );
+        assert_eq!(
+            resource_hud_status(90, 90, 0, 100),
+            ResourceHudStatus::NearlyFull
+        );
+        assert_eq!(
+            resource_hud_status(100, 100, 0, 100),
+            ResourceHudStatus::Full
+        );
+    }
+
+    #[test]
+    fn resource_delta_expires_without_mutating_simulation() {
+        let mut state = ResourceDeltaState::default();
+        state.show(ResourceStock::new(12, 6, 3));
+
+        assert_eq!(state.active(), ResourceStock::new(12, 6, 3));
+
+        state.tick(RESOURCE_DELTA_DISPLAY_SECONDS + 0.1);
+        assert_eq!(state.active(), ResourceStock::ZERO);
+    }
+
+    #[test]
+    fn resource_dashboard_system_queries_are_disjoint() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(SimulationResource {
+                simulation: Simulation::new(UniverseConfig::mvp()),
+                pending_events: Vec::new(),
+            })
+            .init_resource::<ResourceDeltaState>()
+            .add_systems(Update, update_resource_dashboard);
+
+        app.world_mut()
+            .spawn((Visibility::Hidden, ResourceDashboardRoot));
+        app.world_mut()
+            .spawn((Text::new(""), ResourceDashboardHeaderText));
+        app.world_mut().spawn((
+            Text::new(""),
+            TextColor(Color::WHITE),
+            ResourceHudCardText {
+                kind: ResourceHudKind::Metal,
+            },
+        ));
+        app.world_mut().spawn((
+            Node::default(),
+            BackgroundColor(Color::BLACK),
+            ResourceHudGaugeFill {
+                kind: ResourceHudKind::Metal,
+            },
+        ));
+
+        app.update();
+    }
+
+    #[test]
+    fn dashboard_uses_the_selected_player_colony() {
+        let simulation = Simulation::new(UniverseConfig::mvp());
+
+        let colony = selected_colony_for_resource_dashboard(&simulation)
+            .expect("the home planet is selected initially");
+
+        assert_eq!(
+            colony.planet_id,
+            PlanetId::from_system_index(MVP_HOME_SYSTEM_ID, 0,)
+        );
+    }
+
+    #[test]
+    fn energy_deficit_uses_a_full_warning_gauge() {
+        assert_eq!(energy_fill_ratio(60, 40), 1.0);
+        assert_eq!(energy_fill_ratio(0, 0), 0.0);
     }
 
     #[test]

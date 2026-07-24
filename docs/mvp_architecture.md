@@ -581,3 +581,60 @@ Versions après migration :
 
 Le checkpoint `MVP-013-B` est réservé à une amélioration visuelle complète des
 ressources avant la file de construction de MVP-014.
+
+
+## MVP-013-B — Affichage des ressources et de l’énergie
+
+Un tableau économique compact complète l’inspecteur détaillé lorsqu’une
+colonie du joueur est sélectionnée.
+
+Le tableau contient quatre cartes :
+
+```text
+Métal | Cristal | Carburant | Énergie
+```
+
+Chaque ressource stockée affiche :
+
+- stock total et capacité ;
+- quantité disponible ;
+- quantité réservée ;
+- production effective par seconde ;
+- temps avant saturation ;
+- jauge de remplissage ;
+- delta du dernier crédit de production.
+
+Les états visuels sont :
+
+```text
+STABLE
+INDISPONIBLE — RÉSERVÉ
+PRESQUE PLEIN
+PLEIN — PRODUCTION PERDUE
+DÉFICIT ÉNERGÉTIQUE
+```
+
+La carte Énergie distingue production effective, consommation, capacité libre,
+bilan et rendement des extracteurs. L’énergie reste une capacité et n’est
+jamais présentée comme un stock.
+
+L’en-tête affiche la colonie active, la prochaine actualisation des stocks et
+la cadence de cinq secondes stratégiques. Les deltas ne sont affichés qu’après
+un événement `ProductionRefreshed`, pendant une courte durée réelle.
+
+Survoler une carte affiche une aide contextuelle expliquant stocks,
+réservations, capacité ou rendement énergétique.
+
+Le tableau est placé entre les panneaux latéraux et reste lisible en
+1280×720. Il est masqué lorsqu’aucune colonie du joueur n’est sélectionnée.
+
+Cette étape est purement visuelle :
+
+- aucune modification du domaine ;
+- aucune nouvelle commande ;
+- aucune modification de sauvegarde ;
+- aucune modification des versions d’état ;
+- aucune modification de la cadence de simulation.
+
+MVP-014 pourra réutiliser les mêmes cartes pour signaler le coût et les
+ressources manquantes d’une construction.
