@@ -40,7 +40,6 @@ impl Plugin for ClientPlugin {
         .init_resource::<StrategicNavigation>()
         .init_resource::<ViewRebuildRequest>()
         .init_resource::<PointerSelectionState>()
-        .init_resource::<ResourceDeltaState>()
         .add_plugins(SimulationBridgePlugin)
         .add_plugins(PresentationPlugin)
         .add_systems(Startup, log_startup);
@@ -73,14 +72,15 @@ impl Plugin for PresentationPlugin {
                 update_strategic_camera,
                 update_pointer_candidates,
                 handle_pointer_selection,
-                capture_resource_deltas,
                 collect_presentation_events,
                 update_system_visuals,
                 update_pointer_halos,
                 update_system_labels,
                 draw_strategic_overlays,
                 handle_action_buttons,
+                handle_construction_buttons,
                 update_action_buttons,
+                update_construction_panel,
                 update_pointer_tooltip,
                 update_ambiguity_panel,
                 update_resource_dashboard,
@@ -290,9 +290,7 @@ struct PointerTooltipText;
 #[derive(Component)]
 struct AmbiguityPanelText;
 
-// MVP-013-B: compact resource dashboard for colonized worlds.
-const RESOURCE_DELTA_DISPLAY_SECONDS: f32 = 2.2;
-
+// MVP-014: compact resources and construction UI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ResourceHudKind {
     Metal,
@@ -317,7 +315,7 @@ impl ResourceHudKind {
         match self {
             Self::Metal | Self::Crystal | Self::Fuel => {
                 "Total = stock physique. Disponible = total - réservé. \
-Capacité = limite de stockage. Une jauge orange ou rouge signale une saturation proche."
+Capacité = limite de stockage. Une jauge pleine signifie que la production est bloquée."
             }
             Self::Energy => {
                 "L’énergie est une capacité, pas un stock. Disponible = production effective - \
@@ -334,34 +332,6 @@ enum ResourceHudStatus {
     NearlyFull,
     Full,
     Deficit,
-}
-
-#[derive(Resource, Default)]
-struct ResourceDeltaState {
-    produced: ResourceStock,
-    remaining_seconds: f32,
-}
-
-impl ResourceDeltaState {
-    fn show(&mut self, produced: ResourceStock) {
-        self.produced = produced;
-        self.remaining_seconds = RESOURCE_DELTA_DISPLAY_SECONDS;
-    }
-
-    fn tick(&mut self, delta_seconds: f32) {
-        self.remaining_seconds = (self.remaining_seconds - delta_seconds).max(0.0);
-        if self.remaining_seconds == 0.0 {
-            self.produced = ResourceStock::ZERO;
-        }
-    }
-
-    fn active(&self) -> ResourceStock {
-        if self.remaining_seconds > 0.0 {
-            self.produced
-        } else {
-            ResourceStock::ZERO
-        }
-    }
 }
 
 #[derive(Component)]
@@ -386,6 +356,29 @@ struct ResourceHudCardText {
 #[derive(Component)]
 struct ResourceHudGaugeFill {
     kind: ResourceHudKind,
+}
+
+#[derive(Component)]
+struct ConstructionPanelRoot;
+
+#[derive(Component)]
+struct ConstructionQueueText;
+
+#[derive(Component)]
+struct ConstructionButton {
+    kind: galactic_sim::BuildingKind,
+}
+
+type ConstructionButtonInteractionQuery<'w, 's> = Query<
+    'w,
+    's,
+    (&'static Interaction, &'static ConstructionButton),
+    (Changed<Interaction>, With<Button>),
+>;
+
+#[derive(Component)]
+struct ConstructionButtonText {
+    kind: galactic_sim::BuildingKind,
 }
 
 // MVP-010: partial-information inspectors must never reveal hidden data.
@@ -1057,6 +1050,7 @@ fn spawn_ui(mut commands: Commands) {
     ));
 
     spawn_resource_dashboard(&mut commands);
+    spawn_construction_panel(&mut commands);
 }
 
 fn spawn_resource_dashboard(commands: &mut Commands) {
@@ -1183,6 +1177,93 @@ fn spawn_resource_hud_card(parent: &mut ChildSpawnerCommands, kind: ResourceHudK
                     ResourceHudGaugeFill { kind },
                 ));
             });
+        });
+}
+
+fn spawn_construction_panel(commands: &mut Commands) {
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(290.0),
+                right: Val::Px(372.0),
+                bottom: Val::Px(218.0),
+                padding: UiRect::all(Val::Px(9.0)),
+                border: UiRect::all(Val::Px(1.0)),
+                border_radius: BorderRadius::all(Val::Px(7.0)),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(6.0),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.012, 0.020, 0.028, 0.96)),
+            Outline::new(
+                Val::Px(1.0),
+                Val::ZERO,
+                Color::srgba(0.58, 0.72, 0.76, 0.40),
+            ),
+            Visibility::Hidden,
+            Interaction::None,
+            UiPointerBlocker,
+            ConstructionPanelRoot,
+        ))
+        .with_children(|root| {
+            root.spawn((
+                Text::new("CONSTRUCTION"),
+                ui_text_font(12.0),
+                TextColor(Color::srgb(0.78, 0.92, 0.96)),
+            ));
+            root.spawn((
+                Text::new("File vide"),
+                ui_text_font(10.0),
+                TextColor(Color::srgb(0.68, 0.76, 0.80)),
+                ConstructionQueueText,
+            ));
+
+            for pair in galactic_sim::BuildingKind::ALL.chunks(2) {
+                root.spawn((Node {
+                    width: Val::Percent(100.0),
+                    flex_direction: FlexDirection::Row,
+                    column_gap: Val::Px(6.0),
+                    ..default()
+                },))
+                    .with_children(|row| {
+                        for kind in pair {
+                            spawn_construction_button(row, *kind);
+                        }
+                    });
+            }
+        });
+}
+
+fn spawn_construction_button(parent: &mut ChildSpawnerCommands, kind: galactic_sim::BuildingKind) {
+    parent
+        .spawn((
+            Button,
+            Node {
+                flex_grow: 1.0,
+                flex_basis: Val::Px(0.0),
+                min_height: Val::Px(44.0),
+                padding: UiRect::all(Val::Px(6.0)),
+                border: UiRect::all(Val::Px(1.0)),
+                border_radius: BorderRadius::all(Val::Px(5.0)),
+                ..default()
+            },
+            BackgroundColor(action_button_color(true, false, &Interaction::None)),
+            Outline::new(
+                Val::Px(1.0),
+                Val::ZERO,
+                Color::srgba(0.58, 0.72, 0.76, 0.30),
+            ),
+            ConstructionButton { kind },
+            UiPointerBlocker,
+        ))
+        .with_children(|button| {
+            button.spawn((
+                Text::new(""),
+                ui_text_font(10.0),
+                TextColor(Color::srgb(0.88, 0.94, 0.96)),
+                ConstructionButtonText { kind },
+            ));
         });
 }
 
@@ -1734,23 +1815,8 @@ fn pick_target_matches_selection(target: PickTarget, selection: SelectionTarget)
     }
 }
 
-fn capture_resource_deltas(
-    simulation: Res<SimulationResource>,
-    mut delta_state: ResMut<ResourceDeltaState>,
-) {
-    for event in &simulation.pending_events {
-        if let GameEvent::ProductionRefreshed(report) = event
-            && !report.produced.is_zero()
-        {
-            delta_state.show(report.produced);
-        }
-    }
-}
-
 fn update_resource_dashboard(
-    time: Res<Time>,
     simulation: Res<SimulationResource>,
-    mut delta_state: ResMut<ResourceDeltaState>,
     mut roots: Query<&mut Visibility, With<ResourceDashboardRoot>>,
     mut headers: Query<
         &mut Text,
@@ -1765,8 +1831,6 @@ fn update_resource_dashboard(
     >,
     mut gauges: Query<(&ResourceHudGaugeFill, &mut Node, &mut BackgroundColor)>,
 ) {
-    delta_state.tick(time.delta_secs());
-
     let Some(colony) = selected_colony_for_resource_dashboard(simulation.simulation()) else {
         for mut visibility in &mut roots {
             *visibility = Visibility::Hidden;
@@ -1777,28 +1841,19 @@ fn update_resource_dashboard(
     for mut visibility in &mut roots {
         *visibility = Visibility::Visible;
     }
-
-    let production = galactic_sim::colony_production_snapshot(colony);
-    let refresh =
-        galactic_sim::StrategicDuration::from_ticks(u64::from(production.ticks_until_refresh));
     for mut header in &mut headers {
-        header.0 = format!(
-            "ÉCONOMIE — {}  •  prochain crédit {}  •  cadence {} s",
-            colony.name,
-            format_strategic_duration(refresh),
-            galactic_sim::PRODUCTION_REFRESH_SECONDS,
-        );
+        header.0 = format!("ÉCONOMIE — {}", colony.name);
     }
 
-    let active_delta = delta_state.active();
+    let production = galactic_sim::colony_production_snapshot(colony);
     for (card, mut text, mut text_color) in &mut card_texts {
-        let view = resource_hud_view(card.kind, colony, production, active_delta);
+        let view = resource_hud_view(card.kind, colony, production);
         text.0 = view.text;
         text_color.0 = status_text_color(card.kind, view.status);
     }
 
     for (gauge, mut node, mut background) in &mut gauges {
-        let view = resource_hud_view(gauge.kind, colony, production, active_delta);
+        let view = resource_hud_view(gauge.kind, colony, production);
         node.width = Val::Percent((view.fill_ratio * 100.0).clamp(0.0, 100.0));
         background.0 = status_gauge_color(gauge.kind, view.status);
     }
@@ -1813,10 +1868,9 @@ fn update_resource_card_help(
         .find(|(interaction, _)| **interaction != Interaction::None)
         .map(|(_, card)| card.kind);
 
-    let text = hovered.map(ResourceHudKind::help).unwrap_or(
-        "Total / capacité • disponible = total - réservé • \
-les stocks sont crédités toutes les 5 secondes stratégiques.",
-    );
+    let text = hovered
+        .map(ResourceHudKind::help)
+        .unwrap_or("Total / capacité • disponible = total - réservé.");
     for mut help in &mut help_texts {
         help.0 = text.to_string();
     }
@@ -1846,7 +1900,6 @@ fn resource_hud_view(
     kind: ResourceHudKind,
     colony: &galactic_sim::ColonyState,
     production: galactic_sim::ColonyProductionSnapshot,
-    delta: ResourceStock,
 ) -> ResourceHudView {
     if kind == ResourceHudKind::Energy {
         return energy_hud_view(production);
@@ -1856,21 +1909,20 @@ fn resource_hud_view(
     let available = resource_value(kind, colony.resources.available());
     let reserved = resource_value(kind, colony.resources.reserved_total());
     let capacity = resource_value(kind, production.capacity);
-    let delta = resource_value(kind, delta);
     let rate = resource_rate_per_second(kind, production);
     let saturation = resource_saturation(kind, production);
     let fill_ratio = resource_fill_ratio(stock, capacity);
     let status = resource_hud_status(stock, available, reserved, capacity);
-
-    let delta_text = if delta > 0 {
-        format!("\nDernier crédit  +{delta}")
-    } else {
+    let warning = resource_status_label(status);
+    let warning_text = if warning.is_empty() {
         String::new()
+    } else {
+        format!("\n{warning}")
     };
 
     ResourceHudView {
         text: format!(
-            "{}  {} / {}\nDisponible {}  •  Réservé {}\n+{:.2}/s  •  saturation {}\n{}{}",
+            "{}  {} / {}\nDisponible {}  •  Réservé {}\n+{:.2}/s  •  saturation {}{}",
             kind.title(),
             stock,
             capacity,
@@ -1878,8 +1930,7 @@ fn resource_hud_view(
             reserved,
             rate,
             format_saturation_time(saturation),
-            resource_status_label(status),
-            delta_text,
+            warning_text,
         ),
         fill_ratio,
         status,
@@ -1901,13 +1952,17 @@ fn energy_hud_view(production: galactic_sim::ColonyProductionSnapshot) -> Resour
 
     ResourceHudView {
         text: format!(
-            "ÉNERGIE  {} / {}\nDisponible {}  •  Bilan {:+}\nRendement extracteurs {}%\n{}",
+            "ÉNERGIE  {} / {}\nDisponible {}  •  Bilan {:+}\nRendement extracteurs {}%{}",
             consumed,
             produced,
             available,
             balance,
             u32::from(production.energy_efficiency_per_mille,) / 10,
-            resource_status_label(status),
+            if status == ResourceHudStatus::Deficit {
+                "\nDÉFICIT ÉNERGÉTIQUE"
+            } else {
+                ""
+            },
         ),
         fill_ratio,
         status,
@@ -1980,10 +2035,10 @@ fn resource_hud_status(
 
 const fn resource_status_label(status: ResourceHudStatus) -> &'static str {
     match status {
-        ResourceHudStatus::Normal => "STABLE",
-        ResourceHudStatus::Reserved => "INDISPONIBLE — RÉSERVÉ",
-        ResourceHudStatus::NearlyFull => "PRESQUE PLEIN",
-        ResourceHudStatus::Full => "PLEIN — PRODUCTION PERDUE",
+        ResourceHudStatus::Normal | ResourceHudStatus::Reserved | ResourceHudStatus::NearlyFull => {
+            ""
+        }
+        ResourceHudStatus::Full => "PLEIN — PRODUCTION BLOQUÉE",
         ResourceHudStatus::Deficit => "DÉFICIT ÉNERGÉTIQUE",
     }
 }
@@ -2025,6 +2080,192 @@ fn status_text_color(kind: ResourceHudKind, status: ResourceHudStatus) -> Color 
 
 fn status_gauge_color(kind: ResourceHudKind, status: ResourceHudStatus) -> Color {
     status_text_color(kind, status)
+}
+
+fn handle_construction_buttons(
+    mut simulation: ResMut<SimulationResource>,
+    interactions: ConstructionButtonInteractionQuery,
+) {
+    for (interaction, button) in &interactions {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+        let colony_id =
+            selected_colony_for_resource_dashboard(simulation.simulation()).map(|colony| colony.id);
+        let Some(colony_id) = colony_id else {
+            continue;
+        };
+        apply_simulation_command(
+            &mut simulation,
+            GameCommand::QueueBuildingUpgrade {
+                colony_id,
+                kind: button.kind,
+            },
+        );
+    }
+}
+
+fn update_construction_panel(
+    simulation: Res<SimulationResource>,
+    mut roots: Query<&mut Visibility, With<ConstructionPanelRoot>>,
+    mut queue_texts: Query<
+        &mut Text,
+        (With<ConstructionQueueText>, Without<ConstructionButtonText>),
+    >,
+    mut buttons: Query<(
+        &ConstructionButton,
+        &Interaction,
+        &mut BackgroundColor,
+        &mut Outline,
+    )>,
+    mut labels: Query<
+        (&ConstructionButtonText, &mut Text, &mut TextColor),
+        Without<ConstructionQueueText>,
+    >,
+) {
+    let Some(colony) = selected_colony_for_resource_dashboard(simulation.simulation()) else {
+        for mut visibility in &mut roots {
+            *visibility = Visibility::Hidden;
+        }
+        return;
+    };
+
+    for mut visibility in &mut roots {
+        *visibility = Visibility::Visible;
+    }
+
+    let catalog = galactic_sim::default_building_catalog();
+    for mut text in &mut queue_texts {
+        text.0 = construction_queue_label(colony);
+    }
+
+    for (button, interaction, mut background, mut outline) in &mut buttons {
+        let available = galactic_sim::building_upgrade_quote(
+            simulation.simulation().state(),
+            colony.id,
+            button.kind,
+        )
+        .is_ok();
+        background.0 = action_button_color(available, false, interaction);
+        outline.color = action_button_outline(available, false, interaction);
+    }
+
+    for (label, mut text, mut color) in &mut labels {
+        let definition = catalog.definition(label.kind);
+        match galactic_sim::building_upgrade_quote(
+            simulation.simulation().state(),
+            colony.id,
+            label.kind,
+        ) {
+            Ok(quote) => {
+                text.0 = format!(
+                    "{}  {}→{}\nCoût: {}  •  {}",
+                    definition.name,
+                    quote.current_level,
+                    quote.target_level,
+                    construction_cost_label(quote.cost),
+                    format_strategic_duration(galactic_sim::StrategicDuration::from_ticks(
+                        quote.duration_ticks,
+                    ),),
+                );
+                color.0 = Color::srgb(0.88, 0.94, 0.96);
+            }
+            Err(error) => {
+                let current = galactic_sim::projected_building_levels(colony).level(label.kind);
+                text.0 = format!(
+                    "{}  niveau {}\n{}",
+                    definition.name,
+                    current,
+                    construction_error_text(error),
+                );
+                color.0 = Color::srgb(0.64, 0.66, 0.66);
+            }
+        }
+    }
+}
+
+fn construction_queue_label(colony: &galactic_sim::ColonyState) -> String {
+    let catalog = galactic_sim::default_building_catalog();
+    let Some(active) = colony.construction_queue.active() else {
+        return "File vide — sélectionne une amélioration.".to_string();
+    };
+    let active_name = &catalog.definition(active.kind).name;
+    let waiting = colony.construction_queue.len().saturating_sub(1);
+
+    format!(
+        "EN COURS — {} niveau {}  •  restant {}  •  en attente {}",
+        active_name,
+        active.target_level,
+        format_strategic_duration(galactic_sim::StrategicDuration::from_ticks(
+            active.remaining_ticks,
+        ),),
+        waiting,
+    )
+}
+
+fn construction_error_text(error: galactic_sim::ConstructionError) -> String {
+    match error {
+        galactic_sim::ConstructionError::UnknownColony(_)
+        | galactic_sim::ConstructionError::NotPlayerOwned(_) => "Colonie indisponible".to_string(),
+        galactic_sim::ConstructionError::QueueFull { maximum } => {
+            format!("File pleine ({maximum})")
+        }
+        galactic_sim::ConstructionError::MaximumLevel { .. } => "Niveau maximal".to_string(),
+        galactic_sim::ConstructionError::InsufficientResources { available, cost } => {
+            format!(
+                "Manque: {}",
+                construction_missing_resources_label(available, cost)
+            )
+        }
+        galactic_sim::ConstructionError::EnergyDeficit {
+            production,
+            consumption,
+        } => format!("Énergie insuffisante {production}/{consumption}",),
+        galactic_sim::ConstructionError::Catalog(
+            galactic_sim::BuildingCatalogError::UnsatisfiedPrerequisite {
+                prerequisite,
+                required,
+                ..
+            },
+        ) => {
+            let name = &galactic_sim::default_building_catalog()
+                .definition(prerequisite)
+                .name;
+            format!("Requiert {name} niv. {required}")
+        }
+        galactic_sim::ConstructionError::Catalog(_) => "Règle catalogue invalide".to_string(),
+        galactic_sim::ConstructionError::Reservation(_) => "Réservation impossible".to_string(),
+    }
+}
+
+fn construction_cost_label(cost: galactic_domain::ResourceCost) -> String {
+    construction_resource_amounts_label(cost.as_stock(), "gratuit")
+}
+
+fn construction_missing_resources_label(
+    available: ResourceStock,
+    cost: galactic_domain::ResourceCost,
+) -> String {
+    construction_resource_amounts_label(cost.as_stock().saturating_sub(available), "0")
+}
+
+fn construction_resource_amounts_label(resources: ResourceStock, empty_label: &str) -> String {
+    let mut parts = Vec::new();
+    append_resource_amount(&mut parts, resources.metal, "métal");
+    append_resource_amount(&mut parts, resources.crystal, "cristal");
+    append_resource_amount(&mut parts, resources.fuel, "carburant");
+
+    if parts.is_empty() {
+        empty_label.to_string()
+    } else {
+        parts.join(", ")
+    }
+}
+
+fn append_resource_amount(parts: &mut Vec<String>, amount: u64, label: &str) {
+    if amount > 0 {
+        parts.push(format!("{amount} {label}"));
+    }
 }
 
 fn update_action_buttons(
@@ -2480,6 +2721,9 @@ fn collect_presentation_events(
     mut rebuild: ResMut<ViewRebuildRequest>,
 ) {
     for event in simulation.pending_events.drain(..) {
+        if matches!(event, GameEvent::ProductionRefreshed(_)) {
+            continue;
+        }
         if matches!(event, GameEvent::KnowledgeChanged(_)) {
             rebuild.0 = true;
         }
@@ -2780,28 +3024,9 @@ fn colony_economy_text(colony: &galactic_sim::ColonyState) -> String {
     let available = colony.resources.available();
     let reserved = colony.resources.reserved_total();
     let production = galactic_sim::colony_production_snapshot(colony);
-    let refresh =
-        galactic_sim::StrategicDuration::from_ticks(u64::from(production.ticks_until_refresh));
 
     format!(
-        "STOCKS EXACTS
-Total — Métal {}  Cristal {}  Carburant {}
-Disponible — Métal {}  Cristal {}  Carburant {}
-Réservé — Métal {}  Cristal {}  Carburant {}
-Capacité — Métal {}  Cristal {}  Carburant {}
-
-PRODUCTION ACTUELLE
-Métal +{:.2}/s  Cristal +{:.2}/s  Carburant +{:.2}/s
-Crédit des stocks : toutes les {} s stratégiques
-Prochaine actualisation : {}
-Saturation — Métal {}  Cristal {}  Carburant {}
-
-ÉNERGIE — CAPACITÉ
-Nominale : {}
-Effective planète : {}
-Consommation catalogue : {}
-Efficacité extracteurs : {}%
-Bilan effectif : {:+}",
+        "STOCKS EXACTS\nTotal — Métal {}  Cristal {}  Carburant {}\nDisponible — Métal {}  Cristal {}  Carburant {}\nRéservé — Métal {}  Cristal {}  Carburant {}\nCapacité — Métal {}  Cristal {}  Carburant {}\n\nPRODUCTION ACTUELLE\nMétal +{:.2}/s  Cristal +{:.2}/s  Carburant +{:.2}/s\nSaturation — Métal {}  Cristal {}  Carburant {}\n\nÉNERGIE — CAPACITÉ\nNominale : {}\nEffective planète : {}\nConsommation catalogue : {}\nEfficacité extracteurs : {}%\nBilan effectif : {:+}",
         stock.metal,
         stock.crystal,
         stock.fuel,
@@ -2817,15 +3042,13 @@ Bilan effectif : {:+}",
         production.effective_rate.metal_per_second(),
         production.effective_rate.crystal_per_second(),
         production.effective_rate.fuel_per_second(),
-        galactic_sim::PRODUCTION_REFRESH_SECONDS,
-        format_strategic_duration(refresh),
         format_saturation_time(production.saturation.metal),
         format_saturation_time(production.saturation.crystal),
         format_saturation_time(production.saturation.fuel),
         production.nominal_energy_production,
         production.effective_energy_production,
         production.energy_consumption,
-        u32::from(production.energy_efficiency_per_mille) / 10,
+        u32::from(production.energy_efficiency_per_mille,) / 10,
         i128::from(production.effective_energy_production)
             - i128::from(production.energy_consumption),
     )
@@ -3237,12 +3460,18 @@ fn event_label(event: GameEvent) -> String {
             ticks,
             current_tick,
         } => format!("+{} ticks -> {}", ticks.ticks(), current_tick),
-        GameEvent::ProductionRefreshed(report) => format!(
-            "ressources +{}/{}/{} sur {} ticks",
-            report.produced.metal,
-            report.produced.crystal,
-            report.produced.fuel,
-            report.ticks.ticks(),
+        GameEvent::ProductionRefreshed(_) => "production actualisée".to_string(),
+        GameEvent::ConstructionQueued(queued) => format!(
+            "construction {:?} niveau {} ajoutée ({})",
+            queued.order.kind, queued.order.target_level, queued.queue_length,
+        ),
+        GameEvent::ConstructionCompleted(done) => format!(
+            "construction {:?} niveau {} terminée",
+            done.kind, done.new_level,
+        ),
+        GameEvent::ConstructionRejected(rejected) => format!(
+            "construction {:?} refusée : {:?}",
+            rejected.kind, rejected.error,
         ),
     }
 }
@@ -3415,14 +3644,29 @@ mod tests {
     }
 
     #[test]
-    fn resource_delta_expires_without_mutating_simulation() {
-        let mut state = ResourceDeltaState::default();
-        state.show(ResourceStock::new(12, 6, 3));
+    fn construction_resource_labels_use_names_and_omit_zeroes() {
+        assert_eq!(
+            construction_cost_label(galactic_domain::ResourceCost::new(0, 315, 0)),
+            "315 cristal"
+        );
+        assert_eq!(
+            construction_missing_resources_label(
+                ResourceStock::new(120, 96, 3),
+                galactic_domain::ResourceCost::new(120, 300, 10),
+            ),
+            "204 cristal, 7 carburant"
+        );
 
-        assert_eq!(state.active(), ResourceStock::new(12, 6, 3));
+        let text =
+            construction_error_text(galactic_sim::ConstructionError::InsufficientResources {
+                available: ResourceStock::new(120, 96, 3),
+                cost: galactic_domain::ResourceCost::new(120, 300, 10),
+            });
 
-        state.tick(RESOURCE_DELTA_DISPLAY_SECONDS + 0.1);
-        assert_eq!(state.active(), ResourceStock::ZERO);
+        assert_eq!(text, "Manque: 204 cristal, 7 carburant");
+        assert!(!text.contains("M0"));
+        assert!(!text.contains("C0"));
+        assert!(!text.contains("F0"));
     }
 
     #[test]
@@ -3433,7 +3677,6 @@ mod tests {
                 simulation: Simulation::new(UniverseConfig::mvp()),
                 pending_events: Vec::new(),
             })
-            .init_resource::<ResourceDeltaState>()
             .add_systems(Update, update_resource_dashboard);
 
         app.world_mut()
@@ -3452,6 +3695,40 @@ mod tests {
             BackgroundColor(Color::BLACK),
             ResourceHudGaugeFill {
                 kind: ResourceHudKind::Metal,
+            },
+        ));
+
+        app.update();
+    }
+
+    #[test]
+    fn construction_panel_system_queries_are_disjoint() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(SimulationResource {
+                simulation: Simulation::new(UniverseConfig::mvp()),
+                pending_events: Vec::new(),
+            })
+            .add_systems(Update, update_construction_panel);
+
+        app.world_mut()
+            .spawn((Visibility::Hidden, ConstructionPanelRoot));
+        app.world_mut()
+            .spawn((Text::new(""), ConstructionQueueText));
+        app.world_mut().spawn((
+            Button,
+            Interaction::None,
+            BackgroundColor(Color::BLACK),
+            Outline::default(),
+            ConstructionButton {
+                kind: galactic_sim::BuildingKind::MetalMine,
+            },
+        ));
+        app.world_mut().spawn((
+            Text::new(""),
+            TextColor(Color::WHITE),
+            ConstructionButtonText {
+                kind: galactic_sim::BuildingKind::MetalMine,
             },
         ));
 

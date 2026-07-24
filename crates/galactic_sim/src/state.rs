@@ -1,16 +1,16 @@
-// MVP-013: persistent catalog-driven production windows
+// MVP-014: persistent production and construction queues
 use galactic_domain::{ColonyId, EnergyGrid, FactionId, PlanetId, ResourceLedger, Route, SystemId};
 
 use crate::{
-    BuildingLevels, KnowledgeChange, KnowledgeCounts, KnowledgeLevel, KnowledgeTarget,
-    PlanetKnowledge, PlanetResourceProfile, ProductionRemainder, SelectionTarget, StartingScenario,
-    StartingScenarioError, StrategicClock, SystemKnowledge, UniverseRepository,
+    BuildingLevels, ConstructionQueue, KnowledgeChange, KnowledgeCounts, KnowledgeLevel,
+    KnowledgeTarget, PlanetKnowledge, PlanetResourceProfile, ProductionRemainder, SelectionTarget,
+    StartingScenario, StartingScenarioError, StrategicClock, SystemKnowledge, UniverseRepository,
 };
 
 /// Version of the mutable in-memory state contract.
 ///
-/// Version 7 adds five-second production windows.
-pub const GAME_STATE_VERSION: u32 = 7;
+/// Version 8 adds persistent construction queues.
+pub const GAME_STATE_VERSION: u32 = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemVisibility {
@@ -77,6 +77,7 @@ impl GameState {
                 energy: home.initial_energy,
                 production_remainder: ProductionRemainder::ZERO,
                 production_pending_ticks: 0,
+                construction_queue: ConstructionQueue::default(),
                 buildings: home.buildings,
                 resource_profile: home.resource_profile,
             }],
@@ -366,6 +367,7 @@ pub struct ColonyState {
     pub energy: EnergyGrid,
     pub production_remainder: ProductionRemainder,
     pub production_pending_ticks: u16,
+    pub construction_queue: ConstructionQueue,
     pub buildings: BuildingLevels,
     pub resource_profile: PlanetResourceProfile,
 }

@@ -638,3 +638,60 @@ Cette étape est purement visuelle :
 
 MVP-014 pourra réutiliser les mêmes cartes pour signaler le coût et les
 ressources manquantes d’une construction.
+
+
+## MVP-014 — File de construction et améliorations
+
+Chaque colonie possède une file de construction séquentielle de cinq ordres
+maximum.
+
+Lancer une amélioration :
+
+1. calcule le prochain niveau en tenant compte des ordres déjà en file ;
+2. valide le niveau maximal et les prérequis ;
+3. vérifie l’énergie projetée ;
+4. vérifie les ressources disponibles ;
+5. réserve le coût dans `ResourceLedger` ;
+6. ajoute l’ordre à la file.
+
+Les ressources restent dans le stock total mais disparaissent du disponible.
+Elles sont consommées définitivement lorsque la construction se termine.
+
+La progression utilise exclusivement les ticks stratégiques. Pause, x1, x2 et
+x4 produisent donc le même résultat métier. Une file peut terminer plusieurs
+ordres dans un même lot de ticks.
+
+À l’achèvement :
+
+- la réservation est engagée ;
+- le niveau du bâtiment augmente ;
+- le réseau énergétique de la colonie est recalculé ;
+- la production et le stockage utilisent automatiquement le nouveau niveau ;
+- un événement `ConstructionCompleted` est émis.
+
+L’interface affiche les huit bâtiments en quatre rangées de deux boutons. Un
+bouton disponible montre niveau actuel, niveau cible, coût et durée. Un bouton
+bloqué explique directement la cause : ressources manquantes, prérequis,
+énergie, niveau maximal ou file pleine.
+
+La file, sa progression et les réservations survivent aux sauvegardes.
+
+Versions après migration :
+
+- `GAME_STATE_VERSION = 8` ;
+- `SAVE_VERSION = 9`.
+
+### Simplification du tableau de ressources
+
+Les informations de debug ont été retirées :
+
+- dernier crédit ;
+- prochain crédit ;
+- cadence de rafraîchissement ;
+- libellés `STABLE` et `PRESQUE PLEIN`.
+
+La jauge suffit à communiquer le remplissage. Les avertissements textuels sont
+conservés uniquement lorsqu’ils ont une conséquence métier :
+
+- `PLEIN — PRODUCTION BLOQUÉE` ;
+- `DÉFICIT ÉNERGÉTIQUE`.

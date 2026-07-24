@@ -1,4 +1,4 @@
-// MVP-013: catalog-driven simulation and production windows
+// MVP-014: catalog-driven production and construction
 use std::collections::HashSet;
 use std::time::Duration;
 
@@ -8,10 +8,11 @@ use galactic_domain::{
 };
 
 use crate::{
-    BuildingCatalogError, FactionKind, GAME_STATE_VERSION, GameCommand, GameEvent, GameState,
-    KnowledgeLevel, SelectionTarget, StartingScenario, StartingScenarioError, TimeSpeed,
-    UniverseIndexError, UniverseRepository, default_building_catalog, queue_colony_production,
-    storage_capacity,
+    BuildingCatalogError, ConstructionQueueError, FactionKind, GAME_STATE_VERSION, GameCommand,
+    GameEvent, GameState, KnowledgeLevel, SelectionTarget, StartingScenario, StartingScenarioError,
+    TimeSpeed, UniverseIndexError, UniverseRepository, advance_colony_construction,
+    default_building_catalog, enqueue_building_upgrade, queue_colony_production, storage_capacity,
+    validate_construction_queue,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,6 +34,10 @@ pub enum SimulationBuildError {
     InvalidProductionWindow {
         colony_id: ColonyId,
         pending_ticks: u16,
+    },
+    InvalidConstructionQueue {
+        colony_id: ColonyId,
+        error: ConstructionQueueError,
     },
     InvalidColonyResourceLedger {
         colony_id: ColonyId,
@@ -149,6 +154,18 @@ impl Simulation {
                 planet_id,
             } => self.select_planet(system_id, planet_id),
             GameCommand::ClearSelection => self.set_selection(SelectionTarget::None),
+            GameCommand::QueueBuildingUpgrade { colony_id, kind } => {
+                match enqueue_building_upgrade(&mut self.state, colony_id, kind) {
+                    Ok(queued) => vec![GameEvent::ConstructionQueued(queued)],
+                    Err(error) => vec![GameEvent::ConstructionRejected(
+                        crate::ConstructionRejected {
+                            colony_id,
+                            kind,
+                            error,
+                        },
+                    )],
+                }
+            }
             GameCommand::DebugAdvanceSelectedKnowledge => self.debug_advance_selected_knowledge(),
         }
     }
@@ -171,6 +188,9 @@ impl Simulation {
             if let Some(report) = queue_colony_production(colony, advance.ticks) {
                 events.push(GameEvent::ProductionRefreshed(report));
             }
+            let completed = advance_colony_construction(colony, advance.ticks)
+                .expect("validated construction reservations must commit");
+            events.extend(completed.into_iter().map(GameEvent::ConstructionCompleted));
         }
         events
     }
@@ -324,6 +344,12 @@ fn validate_state(
             return Err(SimulationBuildError::InvalidProductionWindow {
                 colony_id: colony.id,
                 pending_ticks: colony.production_pending_ticks,
+            });
+        }
+        if let Err(error) = validate_construction_queue(colony) {
+            return Err(SimulationBuildError::InvalidConstructionQueue {
+                colony_id: colony.id,
+                error,
             });
         }
         if let Err(error) = colony.resources.validate() {

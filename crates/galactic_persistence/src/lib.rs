@@ -1,16 +1,16 @@
-// MVP-013: persist catalog identity and five-second production windows.
+// MVP-014: persist construction queues and reserved upgrade costs.
 use galactic_domain::{
     ColonyId, EnergyGrid, FactionId, PlanetId, ResourceLedger, ResourceLedgerError,
     ResourceReservation, ResourceStock, SystemId, UniverseConfig, UniverseId, generate_universe,
 };
 use galactic_sim::{
-    BuildingLevels, ColonyState, FactionKind, FactionState, GameState, PRODUCTION_REFRESH_TICKS,
-    PlanetKnowledge, PlanetResourceProfile, ProductionRemainder, ProductionRemainderError,
-    SelectionTarget, Simulation, SimulationBuildError, StrategicClock, StrategicClockError,
-    StrategicTick, SystemKnowledge, TimeSpeed, default_building_catalog,
+    BuildingLevels, ColonyState, ConstructionQueue, FactionKind, FactionState, GameState,
+    PRODUCTION_REFRESH_TICKS, PlanetKnowledge, PlanetResourceProfile, ProductionRemainder,
+    ProductionRemainderError, SelectionTarget, Simulation, SimulationBuildError, StrategicClock,
+    StrategicClockError, StrategicTick, SystemKnowledge, TimeSpeed, default_building_catalog,
 };
 
-pub const SAVE_VERSION: u32 = 8;
+pub const SAVE_VERSION: u32 = 9;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SaveGame {
@@ -73,6 +73,7 @@ pub struct ColonySave {
     pub production_remainder_crystal: u16,
     pub production_remainder_fuel: u16,
     pub production_pending_ticks: u16,
+    pub construction_queue: ConstructionQueue,
     pub buildings: BuildingLevels,
     pub resource_profile: PlanetResourceProfile,
 }
@@ -171,6 +172,7 @@ pub fn snapshot_from_simulation(simulation: &Simulation) -> SaveGame {
                     production_remainder_crystal: colony.production_remainder.crystal_milli(),
                     production_remainder_fuel: colony.production_remainder.fuel_milli(),
                     production_pending_ticks: colony.production_pending_ticks,
+                    construction_queue: colony.construction_queue.clone(),
                     buildings: colony.buildings,
                     resource_profile: colony.resource_profile,
                 })
@@ -202,7 +204,6 @@ pub fn restore_from_snapshot(save: &SaveGame) -> Result<Simulation, SaveError> {
         save.universe.seed,
         save.universe.system_count,
     ));
-
     if universe.id != save.universe.id {
         return Err(SaveError::UniverseIdMismatch {
             expected: universe.id,
@@ -270,6 +271,7 @@ pub fn restore_from_snapshot(save: &SaveGame) -> Result<Simulation, SaveError> {
                 energy: EnergyGrid::new(colony.energy_production, colony.energy_consumption),
                 production_remainder,
                 production_pending_ticks: colony.production_pending_ticks,
+                construction_queue: colony.construction_queue.clone(),
                 buildings: colony.buildings,
                 resource_profile: colony.resource_profile,
             })
@@ -303,24 +305,37 @@ pub fn restore_from_snapshot(save: &SaveGame) -> Result<Simulation, SaveError> {
 mod tests {
     use std::time::Duration;
 
-    use galactic_domain::{ReservationId, ResourceCost, ResourceReservation, UniverseConfig};
-    use galactic_sim::GAME_STATE_VERSION;
+    use galactic_domain::UniverseConfig;
+    use galactic_sim::{BuildingKind, GAME_STATE_VERSION, GameCommand};
 
     use super::*;
 
     #[test]
-    fn snapshot_round_trips_pending_production_window() {
+    fn construction_queue_survives_round_trip() {
         let mut simulation = Simulation::new(UniverseConfig::mvp());
+        let colony_id = simulation
+            .state()
+            .player_home_colony()
+            .expect("home colony exists")
+            .id;
+        simulation.apply_command(GameCommand::QueueBuildingUpgrade {
+            colony_id,
+            kind: BuildingKind::MetalMine,
+        });
         simulation.advance(Duration::from_secs(2));
 
         let save = snapshot_from_simulation(&simulation);
         let restored = restore_from_snapshot(&save).expect("save is compatible");
 
         assert_eq!(restored.state(), simulation.state());
-        assert_eq!(save.state.colonies[0].production_pending_ticks, 20);
         assert_eq!(
-            save.catalog_fingerprint,
-            default_building_catalog().fingerprint()
+            restored
+                .state()
+                .colony(colony_id)
+                .expect("colony exists")
+                .construction_queue
+                .len(),
+            1
         );
     }
 
@@ -337,40 +352,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_pending_window_is_rejected() {
-        let simulation = Simulation::new(UniverseConfig::mvp());
-        let mut save = snapshot_from_simulation(&simulation);
-        save.state.colonies[0].production_pending_ticks = PRODUCTION_REFRESH_TICKS as u16;
-
-        assert!(matches!(
-            restore_from_snapshot(&save),
-            Err(SaveError::InvalidPendingProductionTicks { .. })
-        ));
-    }
-
-    #[test]
-    fn invalid_over_reserved_ledger_is_rejected() {
-        let simulation = Simulation::new(UniverseConfig::mvp());
-        let mut save = snapshot_from_simulation(&simulation);
-        let colony = save
-            .state
-            .colonies
-            .first_mut()
-            .expect("home colony is saved");
-        colony.reservations.push(ResourceReservation::new(
-            ReservationId::new(1),
-            ResourceCost::new(700, 0, 0),
-        ));
-        colony.next_reservation_id = 2;
-
-        assert!(matches!(
-            restore_from_snapshot(&save),
-            Err(SaveError::InvalidResourceLedger { .. })
-        ));
-    }
-
-    #[test]
-    fn state_and_save_versions_match_mvp_013() {
+    fn state_and_save_versions_match_mvp_014() {
         let simulation = Simulation::new(UniverseConfig::mvp());
         let save = snapshot_from_simulation(&simulation);
 

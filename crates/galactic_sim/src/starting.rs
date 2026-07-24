@@ -92,6 +92,19 @@ impl BuildingLevels {
         }
     }
 
+    pub fn set_level(&mut self, kind: BuildingKind, level: u8) {
+        match kind {
+            BuildingKind::MetalMine => self.metal_mine = level,
+            BuildingKind::CrystalExtractor => self.crystal_extractor = level,
+            BuildingKind::FuelRefinery => self.fuel_refinery = level,
+            BuildingKind::PowerPlant => self.power_plant = level,
+            BuildingKind::Warehouse => self.warehouse = level,
+            BuildingKind::ConstructionCenter => self.construction_center = level,
+            BuildingKind::ResearchLab => self.research_lab = level,
+            BuildingKind::Shipyard => self.shipyard = level,
+        }
+    }
+
     pub fn total_levels(self) -> u32 {
         BuildingKind::ALL
             .into_iter()
