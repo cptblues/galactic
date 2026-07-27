@@ -2,11 +2,13 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 
-use galactic_domain::{ColonyId, ReservationId, ResourceCost, ResourceLedgerError, ResourceStock};
+use galactic_domain::{
+    ColonyId, FactionId, ReservationId, ResourceCost, ResourceLedgerError, ResourceStock,
+};
 use serde::Deserialize;
 
 use crate::{
-    BuildingCatalog, BuildingEffect, BuildingKind, ColonyState, GameState,
+    AuthorizationError, BuildingCatalog, BuildingEffect, BuildingKind, ColonyState, GameState,
     STRATEGIC_TICKS_PER_SECOND, StrategicDuration, TechnologyCatalog, TechnologyId,
     default_ruleset,
 };
@@ -517,7 +519,7 @@ pub struct CraftRejected {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CraftError {
     UnknownColony(ColonyId),
-    NotPlayerOwned(ColonyId),
+    Access(AuthorizationError),
     UnknownCraftable(CraftableId),
     QueueFull {
         maximum: usize,
@@ -588,15 +590,16 @@ pub enum CraftStateError {
 
 pub fn craft_quote(
     state: &GameState,
+    actor: FactionId,
     colony_id: ColonyId,
     craftable: CraftableId,
 ) -> Result<CraftQuote, CraftError> {
     let colony = state
         .colony(colony_id)
         .ok_or(CraftError::UnknownColony(colony_id))?;
-    if colony.faction != state.player_faction {
-        return Err(CraftError::NotPlayerOwned(colony_id));
-    }
+    state
+        .authorize_management(actor, colony.owner)
+        .map_err(CraftError::Access)?;
     let maximum = max_craft_queue();
     if colony.craft_queue.len() >= maximum {
         return Err(CraftError::QueueFull { maximum });
@@ -657,10 +660,11 @@ pub fn craft_quote(
 
 pub fn enqueue_craft(
     state: &mut GameState,
+    actor: FactionId,
     colony_id: ColonyId,
     craftable: CraftableId,
 ) -> Result<CraftQueued, CraftError> {
-    let quote = craft_quote(state, colony_id, craftable)?;
+    let quote = craft_quote(state, actor, colony_id, craftable)?;
     let colony = state
         .colony_mut(colony_id)
         .ok_or(CraftError::UnknownColony(colony_id))?;
@@ -1018,10 +1022,16 @@ mod tests {
     fn queueing_reserves_resources_atomically() {
         let mut simulation = ready_simulation();
         let colony_id = simulation.state().colonies[0].id;
+        let actor = simulation.state().player_faction;
         let before = simulation.state().colonies[0].resources.available();
 
-        enqueue_craft(simulation.state_mut(), colony_id, CraftableId::LIGHT_PROBE)
-            .expect("probe prerequisites are met");
+        enqueue_craft(
+            simulation.state_mut(),
+            actor,
+            colony_id,
+            CraftableId::LIGHT_PROBE,
+        )
+        .expect("probe prerequisites are met");
 
         let colony = simulation.state().colony(colony_id).expect("colony exists");
         assert_eq!(colony.craft_queue.len(), 1);
@@ -1037,8 +1047,14 @@ mod tests {
     fn craft_progress_is_chunk_independent_and_adds_inventory() {
         let mut whole = ready_simulation();
         let colony_id = whole.state().colonies[0].id;
-        enqueue_craft(whole.state_mut(), colony_id, CraftableId::LIGHT_PROBE)
-            .expect("probe can be queued");
+        let actor = whole.state().player_faction;
+        enqueue_craft(
+            whole.state_mut(),
+            actor,
+            colony_id,
+            CraftableId::LIGHT_PROBE,
+        )
+        .expect("probe can be queued");
         let mut split = whole.clone();
 
         advance_colony_craft(
@@ -1079,7 +1095,12 @@ mod tests {
         let colony_id = simulation.state().colonies[0].id;
 
         assert_eq!(
-            craft_quote(simulation.state(), colony_id, CraftableId::LIGHT_PROBE,),
+            craft_quote(
+                simulation.state(),
+                simulation.state().player_faction,
+                colony_id,
+                CraftableId::LIGHT_PROBE,
+            ),
             Err(CraftError::MissingTechnology(
                 TechnologyId::SPATIAL_DETECTION,
             )),

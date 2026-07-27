@@ -1,6 +1,5 @@
 (
-    faction_id: 0,
-    faction_name: "Aster Expedition",
+    player_faction_id: 0,
     colony_id: 0,
     colony_name: "Aster Prime Colony",
     home_system_index: 0,

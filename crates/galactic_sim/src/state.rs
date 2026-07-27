@@ -1,5 +1,7 @@
-// MVP-017: persistent production, construction, research and shipyard craft.
-use galactic_domain::{ColonyId, EnergyGrid, FactionId, PlanetId, ResourceLedger, Route, SystemId};
+// MVP-018: faction-owned state with centralized management authorization.
+use galactic_domain::{
+    ColonyId, EnergyGrid, FactionId, Owned, Owner, PlanetId, ResourceLedger, Route, SystemId,
+};
 
 use crate::{
     BuildingLevels, ConstructionQueue, CraftInventory, CraftQueue, KnowledgeChange,
@@ -10,8 +12,8 @@ use crate::{
 
 /// Version of the mutable in-memory state contract.
 ///
-/// Version 11 adds per-colony craft queues and inventories.
-pub const GAME_STATE_VERSION: u32 = 11;
+/// Version 12 adds generic owners, configurable faction data and authorization.
+pub const GAME_STATE_VERSION: u32 = 12;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemVisibility {
@@ -27,16 +29,26 @@ pub enum FactionKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FactionState {
+pub struct FactionData {
     pub id: FactionId,
     pub name: String,
     pub kind: FactionKind,
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthorizationError {
+    UnknownActor(FactionId),
+    InactiveActor(FactionId),
+    UnownedTarget,
+    UnknownOwner(FactionId),
+    NotOwner { actor: FactionId, owner: FactionId },
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct GameState {
     pub version: u32,
-    pub factions: Vec<FactionState>,
+    pub factions: Vec<FactionData>,
     pub player_faction: FactionId,
     pub colonies: Vec<ColonyState>,
     pub research: ResearchState,
@@ -58,21 +70,26 @@ impl GameState {
     ) -> Result<Self, StartingScenarioError> {
         scenario.validate(universe)?;
 
-        let player_faction = scenario.player_faction.id;
+        let player_faction = scenario.player_faction_id;
         let home = scenario.home_colony;
 
         let mut state = Self {
             version: GAME_STATE_VERSION,
-            factions: vec![FactionState {
-                id: player_faction,
-                name: scenario.player_faction.name.to_string(),
-                kind: FactionKind::Player,
-            }],
+            factions: scenario
+                .factions
+                .iter()
+                .map(|faction| FactionData {
+                    id: faction.id,
+                    name: faction.name.to_string(),
+                    kind: faction.kind,
+                    active: faction.active,
+                })
+                .collect(),
             player_faction,
             colonies: vec![ColonyState {
                 id: home.id,
                 name: home.name.to_string(),
-                faction: player_faction,
+                owner: home.owner,
                 system_id: home.system_id,
                 planet_id: home.planet_id,
                 resources: ResourceLedger::new(home.initial_stock),
@@ -105,12 +122,48 @@ impl GameState {
         Ok(state)
     }
 
-    pub fn faction(&self, id: FactionId) -> Option<&FactionState> {
+    pub fn faction(&self, id: FactionId) -> Option<&FactionData> {
         self.factions.iter().find(|faction| faction.id == id)
     }
 
-    pub fn player_faction_state(&self) -> Option<&FactionState> {
+    pub fn player_faction_state(&self) -> Option<&FactionData> {
         self.faction(self.player_faction)
+    }
+
+    pub fn authorize_management(
+        &self,
+        actor: FactionId,
+        owner: Owner,
+    ) -> Result<(), AuthorizationError> {
+        let Some(actor_data) = self.faction(actor) else {
+            return Err(AuthorizationError::UnknownActor(actor));
+        };
+        if !actor_data.active {
+            return Err(AuthorizationError::InactiveActor(actor));
+        }
+        let Owner::Faction(owner_id) = owner else {
+            return Err(AuthorizationError::UnownedTarget);
+        };
+        if self.faction(owner_id).is_none() {
+            return Err(AuthorizationError::UnknownOwner(owner_id));
+        }
+        if actor != owner_id {
+            return Err(AuthorizationError::NotOwner {
+                actor,
+                owner: owner_id,
+            });
+        }
+        Ok(())
+    }
+
+    pub fn can_manage(&self, actor: FactionId, owner: Owner) -> bool {
+        self.authorize_management(actor, owner).is_ok()
+    }
+
+    pub fn player_colonies(&self) -> impl Iterator<Item = &ColonyState> {
+        self.colonies
+            .iter()
+            .filter(|colony| self.can_manage(self.player_faction, colony.owner))
     }
 
     pub fn colony(&self, id: ColonyId) -> Option<&ColonyState> {
@@ -128,9 +181,7 @@ impl GameState {
     }
 
     pub fn player_home_colony(&self) -> Option<&ColonyState> {
-        self.colonies
-            .iter()
-            .find(|colony| colony.faction == self.player_faction)
+        self.player_colonies().next()
     }
 
     pub fn system_knowledge_level(&self, system_id: SystemId) -> KnowledgeLevel {
@@ -365,7 +416,7 @@ impl GameState {
 pub struct ColonyState {
     pub id: ColonyId,
     pub name: String,
-    pub faction: FactionId,
+    pub owner: Owner,
     pub system_id: SystemId,
     pub planet_id: PlanetId,
     pub resources: ResourceLedger,
@@ -379,9 +430,15 @@ pub struct ColonyState {
     pub resource_profile: PlanetResourceProfile,
 }
 
+impl Owned for ColonyState {
+    fn owner(&self) -> Owner {
+        self.owner
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use galactic_domain::{ColonyId, PlanetId, SystemId, UniverseConfig};
+    use galactic_domain::{ColonyId, FactionId, Owner, PlanetId, SystemId, UniverseConfig};
 
     use super::*;
 
@@ -406,6 +463,56 @@ mod tests {
                 .all(|neighbor| {
                     state.system_knowledge_level(neighbor) == KnowledgeLevel::Detected
                 })
+        );
+    }
+
+    #[test]
+    fn new_game_contains_configured_dormant_factions() {
+        let universe = UniverseRepository::generate(UniverseConfig::mvp());
+        let state = GameState::new(&universe);
+
+        assert_eq!(state.factions.len(), 3);
+        assert_eq!(
+            state
+                .factions
+                .iter()
+                .filter(|faction| faction.active)
+                .count(),
+            1,
+        );
+        assert!(
+            state
+                .factions
+                .iter()
+                .any(|faction| faction.kind == FactionKind::Neutral && !faction.active)
+        );
+        assert!(
+            state
+                .factions
+                .iter()
+                .any(|faction| faction.kind == FactionKind::FutureAi && !faction.active)
+        );
+    }
+
+    #[test]
+    fn management_authorization_is_owner_based() {
+        let universe = UniverseRepository::generate(UniverseConfig::mvp());
+        let state = GameState::new(&universe);
+        let player = state.player_faction;
+        let foreign = FactionId::new(2);
+
+        assert_eq!(
+            state.authorize_management(player, Owner::Faction(player)),
+            Ok(()),
+        );
+        assert!(matches!(
+            state.authorize_management(player, Owner::Faction(foreign)),
+            Err(AuthorizationError::NotOwner { actor, owner })
+                if actor == player && owner == foreign
+        ));
+        assert_eq!(
+            state.authorize_management(foreign, Owner::Faction(foreign)),
+            Err(AuthorizationError::InactiveActor(foreign)),
         );
     }
 

@@ -2,12 +2,14 @@
 use std::collections::{BTreeSet, VecDeque};
 
 use galactic_domain::{
-    ColonyId, EnergyGrid, ReservationId, ResourceCost, ResourceLedgerError, ResourceStock,
+    ColonyId, EnergyGrid, FactionId, ReservationId, ResourceCost, ResourceLedgerError,
+    ResourceStock,
 };
 
 use crate::{
-    BuildingCatalogError, BuildingEffect, BuildingKind, BuildingLevels, ColonyState, GameState,
-    PlanetResourceProfile, StrategicDuration, default_building_catalog, default_ruleset,
+    AuthorizationError, BuildingCatalogError, BuildingEffect, BuildingKind, BuildingLevels,
+    ColonyState, GameState, PlanetResourceProfile, StrategicDuration, default_building_catalog,
+    default_ruleset,
 };
 
 pub fn max_construction_queue() -> usize {
@@ -93,7 +95,7 @@ pub struct ConstructionRejected {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConstructionError {
     UnknownColony(ColonyId),
-    NotPlayerOwned(ColonyId),
+    Access(AuthorizationError),
     QueueFull {
         maximum: usize,
     },
@@ -159,15 +161,16 @@ pub enum ConstructionQueueError {
 
 pub fn building_upgrade_quote(
     state: &GameState,
+    actor: FactionId,
     colony_id: ColonyId,
     kind: BuildingKind,
 ) -> Result<BuildingUpgradeQuote, ConstructionError> {
     let colony = state
         .colony(colony_id)
         .ok_or(ConstructionError::UnknownColony(colony_id))?;
-    if colony.faction != state.player_faction {
-        return Err(ConstructionError::NotPlayerOwned(colony_id));
-    }
+    state
+        .authorize_management(actor, colony.owner)
+        .map_err(ConstructionError::Access)?;
     let maximum = max_construction_queue();
     if colony.construction_queue.len() >= maximum {
         return Err(ConstructionError::QueueFull { maximum });
@@ -227,10 +230,11 @@ pub fn building_upgrade_quote(
 
 pub fn enqueue_building_upgrade(
     state: &mut GameState,
+    actor: FactionId,
     colony_id: ColonyId,
     kind: BuildingKind,
 ) -> Result<ConstructionQueued, ConstructionError> {
-    let quote = building_upgrade_quote(state, colony_id, kind)?;
+    let quote = building_upgrade_quote(state, actor, colony_id, kind)?;
     let colony = state
         .colony_mut(colony_id)
         .ok_or(ConstructionError::UnknownColony(colony_id))?;
@@ -422,7 +426,7 @@ fn effective_energy_production(grid: EnergyGrid, profile: PlanetResourceProfile)
 mod tests {
     use std::time::Duration;
 
-    use galactic_domain::UniverseConfig;
+    use galactic_domain::{ColonyId, FactionId, Owner, UniverseConfig};
 
     use crate::{STRATEGIC_TICK_NANOS, Simulation};
 
@@ -436,6 +440,7 @@ mod tests {
             .player_home_colony()
             .expect("home colony exists")
             .id;
+        let actor = simulation.state().player_faction;
         let before = simulation
             .state()
             .colony(colony_id)
@@ -443,9 +448,13 @@ mod tests {
             .resources
             .available();
 
-        let queued =
-            enqueue_building_upgrade(simulation.state_mut(), colony_id, BuildingKind::METAL_MINE)
-                .expect("upgrade is affordable");
+        let queued = enqueue_building_upgrade(
+            simulation.state_mut(),
+            actor,
+            colony_id,
+            BuildingKind::METAL_MINE,
+        )
+        .expect("upgrade is affordable");
 
         let colony = simulation.state().colony(colony_id).expect("colony exists");
         assert_eq!(colony.construction_queue.len(), 1);
@@ -466,9 +475,14 @@ mod tests {
             .player_home_colony()
             .expect("home colony exists")
             .id;
-        let queued =
-            enqueue_building_upgrade(simulation.state_mut(), colony_id, BuildingKind::METAL_MINE)
-                .expect("upgrade is affordable");
+        let actor = simulation.state().player_faction;
+        let queued = enqueue_building_upgrade(
+            simulation.state_mut(),
+            actor,
+            colony_id,
+            BuildingKind::METAL_MINE,
+        )
+        .expect("upgrade is affordable");
 
         let duration = Duration::from_nanos(
             queued
@@ -492,9 +506,14 @@ mod tests {
             .player_home_colony()
             .expect("home colony exists")
             .id;
-        let queued =
-            enqueue_building_upgrade(simulation.state_mut(), colony_id, BuildingKind::METAL_MINE)
-                .expect("upgrade is affordable");
+        let actor = simulation.state().player_faction;
+        let queued = enqueue_building_upgrade(
+            simulation.state_mut(),
+            actor,
+            colony_id,
+            BuildingKind::METAL_MINE,
+        )
+        .expect("upgrade is affordable");
 
         let mut batched = simulation
             .state()
@@ -529,7 +548,12 @@ mod tests {
             .expect("home colony exists");
 
         assert!(matches!(
-            building_upgrade_quote(simulation.state(), colony.id, BuildingKind::SHIPYARD,),
+            building_upgrade_quote(
+                simulation.state(),
+                simulation.state().player_faction,
+                colony.id,
+                BuildingKind::SHIPYARD,
+            ),
             Err(ConstructionError::Catalog(
                 BuildingCatalogError::UnsatisfiedPrerequisite { .. }
             ))
@@ -544,6 +568,7 @@ mod tests {
             .player_home_colony()
             .expect("home colony exists")
             .id;
+        let actor = simulation.state().player_faction;
 
         simulation
             .state_mut()
@@ -555,21 +580,55 @@ mod tests {
 
         enqueue_building_upgrade(
             simulation.state_mut(),
+            actor,
             colony_id,
             BuildingKind::CONSTRUCTION_CENTER,
         )
         .expect("center level 2 can be queued");
-        enqueue_building_upgrade(simulation.state_mut(), colony_id, BuildingKind::METAL_MINE)
-            .expect("metal level 2 can be queued");
         enqueue_building_upgrade(
             simulation.state_mut(),
+            actor,
+            colony_id,
+            BuildingKind::METAL_MINE,
+        )
+        .expect("metal level 2 can be queued");
+        enqueue_building_upgrade(
+            simulation.state_mut(),
+            actor,
             colony_id,
             BuildingKind::CRYSTAL_EXTRACTOR,
         )
         .expect("crystal level 2 can be queued");
 
         assert!(
-            building_upgrade_quote(simulation.state(), colony_id, BuildingKind::SHIPYARD,).is_ok()
+            building_upgrade_quote(simulation.state(), actor, colony_id, BuildingKind::SHIPYARD,)
+                .is_ok()
         );
+    }
+
+    #[test]
+    fn foreign_colony_rejects_player_management() {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+        let player = simulation.state().player_faction;
+        let mut foreign_colony = simulation
+            .state()
+            .player_home_colony()
+            .expect("home colony exists")
+            .clone();
+        foreign_colony.id = ColonyId::new(99);
+        foreign_colony.owner = Owner::Faction(FactionId::new(2));
+        simulation.state_mut().colonies.push(foreign_colony);
+
+        assert!(matches!(
+            building_upgrade_quote(
+                simulation.state(),
+                player,
+                ColonyId::new(99),
+                BuildingKind::METAL_MINE,
+            ),
+            Err(ConstructionError::Access(
+                AuthorizationError::NotOwner { actor, owner },
+            )) if actor == player && owner == FactionId::new(2)
+        ));
     }
 }

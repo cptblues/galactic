@@ -4,14 +4,15 @@ Galactic charge son ruleset au démarrage depuis
 `assets/rulesets/default/`. La variable d'environnement
 `GALACTIC_RULESET_DIR` permet de sélectionner un autre dossier.
 
-Le ruleset est composé de six fichiers RON :
+Le ruleset est composé de sept fichiers RON :
 
 - `manifest.ron` : identifiant et versions ;
 - `economy.ron` : stockage de base, limites de files et cadence de production ;
+- `factions.ron` : factions, types et activation initiale ;
 - `buildings.ron` : bâtiments, coûts, durées, effets et prérequis ;
 - `technologies.ron` : arbre de recherche, coûts et déblocages ;
 - `craftables.ron` : objets fabricables, coûts, durées, prérequis et capacités ;
-- `starting_scenario.ron` : faction, colonie, ressources et bâtiments initiaux.
+- `starting_scenario.ron` : faction joueur, colonie, ressources et bâtiments initiaux.
 
 Les durées de construction et de fabrication sont exprimées en secondes dans
 les données puis converties en ticks stratégiques au chargement. La fréquence
@@ -22,6 +23,11 @@ de dix ticks par seconde reste une règle du moteur.
 Les identifiants sont stables, en minuscules, avec des chiffres et des `_`.
 Ils sont enregistrés dans l'état de partie et ne doivent pas être renommés
 après publication d'un ruleset.
+
+Les identifiants numériques de faction sont également stables. Une faction
+`Player` active représente le joueur. Les factions `Neutral` et `FutureAi`
+peuvent rester inactives : elles sont persistées et disponibles pour les
+prochains systèmes de relations et d'IA, sans exécuter de boucle d'action.
 
 Un nouveau bâtiment ou une nouvelle technologie peut être ajouté sans modifier
 Rust s'il utilise un effet ou un déblocage déjà pris en charge. Les effets de

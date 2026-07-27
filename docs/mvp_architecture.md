@@ -912,3 +912,27 @@ Versions après migration :
 - `SAVE_VERSION = 12` ;
 - `RULESET_SCHEMA_VERSION = 2` ;
 - `CRAFTABLE_CATALOG_VERSION = 1`.
+
+
+## MVP-018 — Propriété et factions
+
+Tout objet possédable expose désormais un `Owner`, indépendant de son type
+concret. Une colonie utilise `Owner::Faction(FactionId)` ; `Owner::Unowned`
+réserve le cas des futurs objets sans contrôle territorial.
+
+Les contrôles de gestion passent par une autorisation unique qui vérifie
+l'existence et l'activation de la faction émettrice, puis sa correspondance
+avec le propriétaire. Construction, craft et recherche reçoivent explicitement
+la faction agissante. L'enveloppe de commande avec émetteur reste le périmètre
+du MVP-019.
+
+Les factions sont chargées depuis `factions.ron`. Le ruleset par défaut contient
+une faction joueur active, une faction neutre inactive et une future faction IA
+inactive. Ces factions dormantes sont persistées mais n'exécutent aucune boucle
+d'action.
+
+Versions après migration :
+
+- `GAME_STATE_VERSION = 12` ;
+- `SAVE_VERSION = 13` ;
+- `RULESET_SCHEMA_VERSION = 3`.

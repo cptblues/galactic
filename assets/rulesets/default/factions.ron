@@ -1,0 +1,23 @@
+(
+    version: 1,
+    factions: [
+        (
+            id: 0,
+            name: "Aster Expedition",
+            kind: Player,
+            active: true,
+        ),
+        (
+            id: 1,
+            name: "Mondes indépendants",
+            kind: Neutral,
+            active: false,
+        ),
+        (
+            id: 2,
+            name: "Directoire dormant",
+            kind: FutureAi,
+            active: false,
+        ),
+    ],
+)

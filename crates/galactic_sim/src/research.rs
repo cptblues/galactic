@@ -2,10 +2,11 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 
+use galactic_domain::{FactionId, Owner};
 use serde::Deserialize;
 
 use crate::{
-    BuildingEffect, GameState, STRATEGIC_TICKS_PER_SECOND, StrategicDuration,
+    AuthorizationError, BuildingEffect, GameState, STRATEGIC_TICKS_PER_SECOND, StrategicDuration,
     default_building_catalog, default_ruleset,
 };
 
@@ -353,6 +354,7 @@ pub struct ResearchRejected {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResearchError {
+    Access(AuthorizationError),
     NoResearchCapacity,
     AlreadyCompleted(TechnologyId),
     AlreadyQueued(TechnologyId),
@@ -397,8 +399,12 @@ pub enum ResearchStateError {
 
 pub fn research_quote(
     state: &GameState,
+    actor: FactionId,
     technology: TechnologyId,
 ) -> Result<ResearchQuote, ResearchError> {
+    state
+        .authorize_management(actor, Owner::Faction(state.player_faction))
+        .map_err(ResearchError::Access)?;
     if state.research.has_completed(technology) {
         return Err(ResearchError::AlreadyCompleted(technology));
     }
@@ -410,7 +416,7 @@ pub fn research_quote(
         return Err(ResearchError::QueueFull { maximum });
     }
 
-    let output = research_output_milli_points_per_tick(state);
+    let output = research_output_milli_points_per_tick(state, actor);
     if output == 0 {
         return Err(ResearchError::NoResearchCapacity);
     }
@@ -436,9 +442,10 @@ pub fn research_quote(
 
 pub fn enqueue_research(
     state: &mut GameState,
+    actor: FactionId,
     technology: TechnologyId,
 ) -> Result<ResearchQueued, ResearchError> {
-    let quote = research_quote(state, technology)?;
+    let quote = research_quote(state, actor, technology)?;
     let project = ResearchProject {
         technology,
         required_milli_points: quote.required_milli_points,
@@ -452,8 +459,12 @@ pub fn enqueue_research(
     })
 }
 
-pub fn advance_research(state: &mut GameState, ticks: StrategicDuration) -> Vec<ResearchCompleted> {
-    let output = research_output_milli_points_per_tick(state);
+pub fn advance_research(
+    state: &mut GameState,
+    actor: FactionId,
+    ticks: StrategicDuration,
+) -> Vec<ResearchCompleted> {
+    let output = research_output_milli_points_per_tick(state, actor);
     let mut budget = output.saturating_mul(ticks.ticks());
     if budget == 0 {
         return Vec::new();
@@ -489,12 +500,12 @@ pub fn advance_research(state: &mut GameState, ticks: StrategicDuration) -> Vec<
     completed
 }
 
-pub fn research_output_milli_points_per_tick(state: &GameState) -> u64 {
+pub fn research_output_milli_points_per_tick(state: &GameState, actor: FactionId) -> u64 {
     let catalog = default_building_catalog();
     state
         .colonies
         .iter()
-        .filter(|colony| colony.faction == state.player_faction)
+        .filter(|colony| state.can_manage(actor, colony.owner))
         .map(|colony| {
             catalog
                 .definitions()
@@ -512,12 +523,12 @@ pub fn research_output_milli_points_per_tick(state: &GameState) -> u64 {
         .fold(0_u64, u64::saturating_add)
 }
 
-pub fn research_lab_level_total(state: &GameState) -> u32 {
+pub fn research_lab_level_total(state: &GameState, actor: FactionId) -> u32 {
     let catalog = default_building_catalog();
     state
         .colonies
         .iter()
-        .filter(|colony| colony.faction == state.player_faction)
+        .filter(|colony| state.can_manage(actor, colony.owner))
         .map(|colony| {
             catalog
                 .definitions()
@@ -530,8 +541,9 @@ pub fn research_lab_level_total(state: &GameState) -> u32 {
         .sum()
 }
 
-pub fn research_output_points_per_second(state: &GameState) -> f64 {
-    research_output_milli_points_per_tick(state) as f64 * f64::from(STRATEGIC_TICKS_PER_SECOND)
+pub fn research_output_points_per_second(state: &GameState, actor: FactionId) -> f64 {
+    research_output_milli_points_per_tick(state, actor) as f64
+        * f64::from(STRATEGIC_TICKS_PER_SECOND)
         / 1_000.0
 }
 
@@ -721,7 +733,11 @@ mod tests {
     fn research_requires_an_active_laboratory() {
         let simulation = Simulation::new(UniverseConfig::mvp());
         assert_eq!(
-            research_quote(simulation.state(), TechnologyId::SPATIAL_DETECTION),
+            research_quote(
+                simulation.state(),
+                simulation.state().player_faction,
+                TechnologyId::SPATIAL_DETECTION,
+            ),
             Err(ResearchError::NoResearchCapacity),
         );
     }
@@ -729,8 +745,10 @@ mod tests {
     #[test]
     fn configured_tree_can_be_queued_in_order() {
         let mut simulation = simulation_with_lab();
+        let actor = simulation.state().player_faction;
         for technology in technology_catalog().ids() {
-            enqueue_research(simulation.state_mut(), technology).expect("ordered tree is valid");
+            enqueue_research(simulation.state_mut(), actor, technology)
+                .expect("ordered tree is valid");
         }
         assert_eq!(
             simulation.state().research.queue_len(),

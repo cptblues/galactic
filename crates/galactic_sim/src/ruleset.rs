@@ -6,19 +6,19 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use galactic_domain::{ColonyId, FactionId, PlanetId, SystemId};
+use galactic_domain::{ColonyId, FactionId, Owner, PlanetId, SystemId};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
 use crate::{
     BuildingCatalog, BuildingCatalogConfig, BuildingCatalogError, BuildingLevels,
-    CraftCatalogError, CraftableCatalog, CraftableCatalogConfig, InitialPlanetKnowledge,
-    InitialSystemKnowledge, KnowledgeLevel, PlanetResourceProfile, ResourceValuesConfig,
-    StartingColonyConfig, StartingFactionConfig, StartingScenario, TechnologyCatalog,
-    TechnologyCatalogConfig, TechnologyCatalogError,
+    CraftCatalogError, CraftableCatalog, CraftableCatalogConfig, FactionKind,
+    InitialPlanetKnowledge, InitialSystemKnowledge, KnowledgeLevel, PlanetResourceProfile,
+    ResourceValuesConfig, StartingColonyConfig, StartingFactionConfig, StartingScenario,
+    TechnologyCatalog, TechnologyCatalogConfig, TechnologyCatalogError,
 };
 
-pub const RULESET_SCHEMA_VERSION: u32 = 2;
+pub const RULESET_SCHEMA_VERSION: u32 = 3;
 pub const RULESET_DIRECTORY_ENV: &str = "GALACTIC_RULESET_DIR";
 pub const DEFAULT_RULESET_DIRECTORY: &str = "assets/rulesets/default";
 
@@ -62,6 +62,8 @@ impl Ruleset {
 
         let economy_config: EconomyConfig = read_ron(directory, "economy.ron")?;
         let economy = economy_config.compile()?;
+        let faction_config: FactionCatalogConfig = read_ron(directory, "factions.ron")?;
+        let factions = faction_config.compile()?;
         let building_config: BuildingCatalogConfig = read_ron(directory, "buildings.ron")?;
         let buildings =
             BuildingCatalog::from_config(building_config, economy_config.base_storage.into_stock())
@@ -73,12 +75,13 @@ impl Ruleset {
         let craftables = CraftableCatalog::from_config(craftable_config, &buildings, &technologies)
             .map_err(RulesetLoadError::Craftables)?;
         let starting_config: StartingScenarioConfig = read_ron(directory, "starting_scenario.ron")?;
-        let starting_scenario = starting_config.compile(&buildings, &technologies)?;
+        let starting_scenario = starting_config.compile(&buildings, &technologies, factions)?;
 
         let mut structure = format!(
             "ruleset:{};schema:{};",
             manifest.id, manifest.schema_version,
         );
+        append_faction_structure(factions, &mut structure);
         buildings.append_structure(&mut structure);
         technologies.append_structure(&mut structure);
         craftables.append_structure(&mut structure);
@@ -130,6 +133,10 @@ impl Ruleset {
 
     pub const fn starting_scenario(&self) -> StartingScenario {
         self.starting_scenario
+    }
+
+    pub const fn factions(&self) -> &'static [StartingFactionConfig] {
+        self.starting_scenario.factions
     }
 }
 
@@ -187,6 +194,7 @@ pub enum RulesetLoadError {
     },
     InvalidContentVersion,
     InvalidEconomy(&'static str),
+    InvalidFactions(&'static str),
     Buildings(BuildingCatalogError),
     Technologies(TechnologyCatalogError),
     Craftables(CraftCatalogError),
@@ -211,6 +219,7 @@ impl fmt::Display for RulesetLoadError {
                 formatter.write_str("ruleset content_version must be greater than zero")
             }
             Self::InvalidEconomy(message) => write!(formatter, "invalid economy: {message}"),
+            Self::InvalidFactions(message) => write!(formatter, "invalid factions: {message}"),
             Self::Buildings(error) => write!(formatter, "invalid buildings catalog: {error:?}"),
             Self::Technologies(error) => {
                 write!(formatter, "invalid technologies catalog: {error:?}")
@@ -246,6 +255,75 @@ struct EconomyConfig {
     research_queue_limit: usize,
     craft_queue_limit: usize,
     production_refresh_seconds: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct FactionCatalogConfig {
+    version: u32,
+    factions: Vec<FactionConfig>,
+}
+
+impl FactionCatalogConfig {
+    fn compile(self) -> Result<&'static [StartingFactionConfig], RulesetLoadError> {
+        if self.version != 1 {
+            return Err(RulesetLoadError::InvalidFactions(
+                "factions.ron version must be 1",
+            ));
+        }
+        if self.factions.is_empty() {
+            return Err(RulesetLoadError::InvalidFactions(
+                "at least one faction is required",
+            ));
+        }
+
+        let mut ids = BTreeSet::new();
+        let mut compiled = Vec::with_capacity(self.factions.len());
+        for faction in self.factions {
+            if !ids.insert(faction.id) {
+                return Err(RulesetLoadError::InvalidFactions(
+                    "a faction id is duplicated",
+                ));
+            }
+            if faction.name.trim().is_empty() {
+                return Err(RulesetLoadError::InvalidFactions(
+                    "faction names must not be empty",
+                ));
+            }
+            compiled.push(StartingFactionConfig {
+                id: FactionId::new(faction.id),
+                name: Box::leak(faction.name.into_boxed_str()),
+                kind: faction.kind.into(),
+                active: faction.active,
+            });
+        }
+        compiled.sort_by_key(|faction| faction.id);
+        Ok(Box::leak(compiled.into_boxed_slice()))
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct FactionConfig {
+    id: u64,
+    name: String,
+    kind: FactionKindConfig,
+    active: bool,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+enum FactionKindConfig {
+    Player,
+    Neutral,
+    FutureAi,
+}
+
+impl From<FactionKindConfig> for FactionKind {
+    fn from(kind: FactionKindConfig) -> Self {
+        match kind {
+            FactionKindConfig::Player => Self::Player,
+            FactionKindConfig::Neutral => Self::Neutral,
+            FactionKindConfig::FutureAi => Self::FutureAi,
+        }
+    }
 }
 
 impl EconomyConfig {
@@ -291,8 +369,7 @@ impl EconomyConfig {
 
 #[derive(Debug, Deserialize)]
 struct StartingScenarioConfig {
-    faction_id: u64,
-    faction_name: String,
+    player_faction_id: u64,
     colony_id: u64,
     colony_name: String,
     home_system_index: u32,
@@ -309,9 +386,18 @@ impl StartingScenarioConfig {
         self,
         catalog: &BuildingCatalog,
         technologies: &TechnologyCatalog,
+        factions: &'static [StartingFactionConfig],
     ) -> Result<StartingScenario, RulesetLoadError> {
-        let faction_name = leak_non_empty(self.faction_name, "faction_name must not be empty")?;
         let colony_name = leak_non_empty(self.colony_name, "colony_name must not be empty")?;
+        let player_faction_id = FactionId::new(self.player_faction_id);
+        if factions
+            .iter()
+            .all(|faction| faction.id != player_faction_id)
+        {
+            return Err(RulesetLoadError::StartingScenario(
+                "player_faction_id does not exist in factions.ron",
+            ));
+        }
         let system_id = SystemId::from_index(self.home_system_index);
         let planet_id = PlanetId::from_system_index(system_id, self.home_planet_index);
         let mut buildings = BuildingLevels::EMPTY;
@@ -393,13 +479,12 @@ impl StartingScenarioConfig {
         }
 
         Ok(StartingScenario {
-            player_faction: StartingFactionConfig {
-                id: FactionId::new(self.faction_id),
-                name: faction_name,
-            },
+            factions,
+            player_faction_id,
             home_colony: StartingColonyConfig {
                 id: ColonyId::new(self.colony_id),
                 name: colony_name,
+                owner: Owner::Faction(player_faction_id),
                 system_id,
                 planet_id,
                 initial_stock,
@@ -412,6 +497,25 @@ impl StartingScenarioConfig {
             initial_technologies,
             minimum_home_habitability: self.minimum_home_habitability,
         })
+    }
+}
+
+fn append_faction_structure(factions: &[StartingFactionConfig], output: &mut String) {
+    for faction in factions {
+        output.push_str("faction:");
+        output.push_str(&faction.id.raw().to_string());
+        output.push(':');
+        output.push_str(match faction.kind {
+            FactionKind::Player => "player",
+            FactionKind::Neutral => "neutral",
+            FactionKind::FutureAi => "future_ai",
+        });
+        output.push(':');
+        output.push_str(if faction.active {
+            "active;"
+        } else {
+            "inactive;"
+        });
     }
 }
 
@@ -488,6 +592,15 @@ mod tests {
         assert_eq!(ruleset.id(), "default");
         assert_eq!(ruleset.schema_version(), RULESET_SCHEMA_VERSION);
         assert_ne!(ruleset.structure_fingerprint(), 0);
+        assert_eq!(ruleset.factions().len(), 3);
+        assert_eq!(
+            ruleset
+                .factions()
+                .iter()
+                .filter(|faction| faction.active)
+                .count(),
+            1,
+        );
         assert_eq!(ruleset.buildings().definitions().count(), 8);
         assert_eq!(ruleset.technologies().definitions().count(), 6);
         assert_eq!(ruleset.craftables().definitions().count(), 3);
@@ -496,6 +609,7 @@ mod tests {
     #[test]
     fn text_is_not_part_of_the_structure_fingerprint() {
         let mut first = format!("ruleset:default;schema:{RULESET_SCHEMA_VERSION};");
+        append_faction_structure(default_ruleset().factions(), &mut first);
         default_ruleset().buildings().append_structure(&mut first);
         default_ruleset()
             .technologies()

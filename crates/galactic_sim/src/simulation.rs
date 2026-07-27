@@ -1,10 +1,10 @@
-// MVP-017: ruleset-driven production, construction, research and craft pipeline.
+// MVP-018: faction-authorized production, construction, research and craft pipeline.
 use std::collections::HashSet;
 use std::time::Duration;
 
 use galactic_domain::{
-    ColonyId, FactionId, PlanetId, ResourceLedgerError, ResourceStock, SystemId, UniverseConfig,
-    UniverseDefinition,
+    ColonyId, FactionId, Owner, PlanetId, ResourceLedgerError, ResourceStock, SystemId,
+    UniverseConfig, UniverseDefinition,
 };
 
 use crate::{
@@ -28,6 +28,7 @@ pub enum SimulationBuildError {
     DuplicateFaction(FactionId),
     UnknownPlayerFaction(FactionId),
     PlayerFactionIsNotPlayer(FactionId),
+    PlayerFactionIsInactive(FactionId),
     DuplicateColony(ColonyId),
     InvalidColonyBuildings {
         colony_id: ColonyId,
@@ -59,6 +60,7 @@ pub enum SimulationBuildError {
         colony_id: ColonyId,
         faction_id: FactionId,
     },
+    UnownedColony(ColonyId),
     DuplicateSystemKnowledge(SystemId),
     DuplicatePlanetKnowledge(PlanetId),
     ExplicitUnknownSystemKnowledge(SystemId),
@@ -162,7 +164,8 @@ impl Simulation {
             } => self.select_planet(system_id, planet_id),
             GameCommand::ClearSelection => self.set_selection(SelectionTarget::None),
             GameCommand::QueueBuildingUpgrade { colony_id, kind } => {
-                match enqueue_building_upgrade(&mut self.state, colony_id, kind) {
+                let actor = self.state.player_faction;
+                match enqueue_building_upgrade(&mut self.state, actor, colony_id, kind) {
                     Ok(queued) => vec![GameEvent::ConstructionQueued(queued)],
                     Err(error) => vec![GameEvent::ConstructionRejected(
                         crate::ConstructionRejected {
@@ -174,7 +177,8 @@ impl Simulation {
                 }
             }
             GameCommand::QueueResearch { technology } => {
-                match enqueue_research(&mut self.state, technology) {
+                let actor = self.state.player_faction;
+                match enqueue_research(&mut self.state, actor, technology) {
                     Ok(queued) => vec![GameEvent::ResearchQueued(queued)],
                     Err(error) => vec![GameEvent::ResearchRejected(crate::ResearchRejected {
                         technology,
@@ -185,14 +189,17 @@ impl Simulation {
             GameCommand::QueueCraft {
                 colony_id,
                 craftable,
-            } => match enqueue_craft(&mut self.state, colony_id, craftable) {
-                Ok(queued) => vec![GameEvent::CraftQueued(queued)],
-                Err(error) => vec![GameEvent::CraftRejected(crate::CraftRejected {
-                    colony_id,
-                    craftable,
-                    error,
-                })],
-            },
+            } => {
+                let actor = self.state.player_faction;
+                match enqueue_craft(&mut self.state, actor, colony_id, craftable) {
+                    Ok(queued) => vec![GameEvent::CraftQueued(queued)],
+                    Err(error) => vec![GameEvent::CraftRejected(crate::CraftRejected {
+                        colony_id,
+                        craftable,
+                        error,
+                    })],
+                }
+            }
             GameCommand::DebugAdvanceSelectedKnowledge => self.debug_advance_selected_knowledge(),
         }
     }
@@ -224,8 +231,9 @@ impl Simulation {
                     .expect("validated craft reservations must commit");
                 events.extend(crafted.into_iter().map(GameEvent::CraftCompleted));
             }
+            let research_owner = self.state.player_faction;
             events.extend(
-                advance_research(&mut self.state, one_tick)
+                advance_research(&mut self.state, research_owner, one_tick)
                     .into_iter()
                     .map(GameEvent::ResearchCompleted),
             );
@@ -328,6 +336,11 @@ fn validate_state(
             state.player_faction,
         ));
     }
+    if !player_faction.active {
+        return Err(SimulationBuildError::PlayerFactionIsInactive(
+            state.player_faction,
+        ));
+    }
 
     if let Err(error) = validate_research_state(state) {
         return Err(SimulationBuildError::InvalidResearchState(error));
@@ -415,11 +428,17 @@ fn validate_state(
                 capacity,
             });
         }
-        if state.faction(colony.faction).is_none() {
-            return Err(SimulationBuildError::UnknownColonyFaction {
-                colony_id: colony.id,
-                faction_id: colony.faction,
-            });
+        match colony.owner {
+            Owner::Unowned => {
+                return Err(SimulationBuildError::UnownedColony(colony.id));
+            }
+            Owner::Faction(faction_id) if state.faction(faction_id).is_none() => {
+                return Err(SimulationBuildError::UnknownColonyFaction {
+                    colony_id: colony.id,
+                    faction_id,
+                });
+            }
+            Owner::Faction(_) => {}
         }
         if universe.system(colony.system_id).is_none() {
             return Err(SimulationBuildError::UnknownColonySystem {
@@ -609,6 +628,23 @@ mod tests {
                         == crate::production_refresh_ticks()
             )
         }));
+    }
+
+    #[test]
+    fn dormant_factions_do_not_change_the_player_loop() {
+        let mut configured = Simulation::new(UniverseConfig::mvp());
+        let mut player_only = configured.clone();
+        player_only
+            .state_mut()
+            .factions
+            .retain(|faction| faction.active);
+
+        configured.advance(Duration::from_secs(30));
+        player_only.advance(Duration::from_secs(30));
+
+        assert_eq!(configured.state().colonies, player_only.state().colonies);
+        assert_eq!(configured.state().research, player_only.state().research);
+        assert_eq!(configured.state().clock, player_only.state().clock);
     }
 
     #[test]

@@ -1,17 +1,17 @@
-// MVP-017: persist construction, research, craft and active ruleset identity.
+// MVP-018: persist faction data, owners and the active ruleset identity.
 use galactic_domain::{
-    ColonyId, EnergyGrid, FactionId, PlanetId, ResourceLedger, ResourceLedgerError,
+    ColonyId, EnergyGrid, FactionId, Owner, PlanetId, ResourceLedger, ResourceLedgerError,
     ResourceReservation, ResourceStock, SystemId, UniverseConfig, UniverseId, generate_universe,
 };
 use galactic_sim::{
-    BuildingLevels, ColonyState, ConstructionQueue, CraftInventory, CraftQueue, FactionKind,
-    FactionState, GameState, PlanetKnowledge, PlanetResourceProfile, ProductionRemainder,
+    BuildingLevels, ColonyState, ConstructionQueue, CraftInventory, CraftQueue, FactionData,
+    FactionKind, GameState, PlanetKnowledge, PlanetResourceProfile, ProductionRemainder,
     ProductionRemainderError, ResearchState, SelectionTarget, Simulation, SimulationBuildError,
     StrategicClock, StrategicClockError, StrategicTick, SystemKnowledge, TimeSpeed,
     default_ruleset, production_refresh_ticks,
 };
 
-pub const SAVE_VERSION: u32 = 12;
+pub const SAVE_VERSION: u32 = 13;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SaveGame {
@@ -51,6 +51,7 @@ pub struct FactionSave {
     pub id: FactionId,
     pub name: String,
     pub kind: FactionKind,
+    pub active: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,7 +66,7 @@ pub struct StrategicClockSave {
 pub struct ColonySave {
     pub id: ColonyId,
     pub name: String,
-    pub faction: FactionId,
+    pub owner: Owner,
     pub system_id: SystemId,
     pub planet_id: PlanetId,
     pub stock: ResourceStock,
@@ -151,6 +152,7 @@ pub fn snapshot_from_simulation(simulation: &Simulation) -> SaveGame {
                     id: faction.id,
                     name: faction.name.clone(),
                     kind: faction.kind,
+                    active: faction.active,
                 })
                 .collect(),
             player_faction: state.player_faction,
@@ -169,7 +171,7 @@ pub fn snapshot_from_simulation(simulation: &Simulation) -> SaveGame {
                 .map(|colony| ColonySave {
                     id: colony.id,
                     name: colony.name.clone(),
-                    faction: colony.faction,
+                    owner: colony.owner,
                     system_id: colony.system_id,
                     planet_id: colony.planet_id,
                     stock: colony.resources.stock(),
@@ -279,7 +281,7 @@ pub fn restore_from_snapshot(save: &SaveGame) -> Result<Simulation, SaveError> {
             Ok(ColonyState {
                 id: colony.id,
                 name: colony.name.clone(),
-                faction: colony.faction,
+                owner: colony.owner,
                 system_id: colony.system_id,
                 planet_id: colony.planet_id,
                 resources,
@@ -301,10 +303,11 @@ pub fn restore_from_snapshot(save: &SaveGame) -> Result<Simulation, SaveError> {
             .state
             .factions
             .iter()
-            .map(|faction| FactionState {
+            .map(|faction| FactionData {
                 id: faction.id,
                 name: faction.name.clone(),
                 kind: faction.kind,
+                active: faction.active,
             })
             .collect(),
         player_faction: save.state.player_faction,
@@ -441,7 +444,21 @@ mod tests {
     }
 
     #[test]
-    fn state_and_save_versions_match_mvp_017() {
+    fn faction_data_and_owner_survive_round_trip() {
+        let simulation = Simulation::new(UniverseConfig::mvp());
+        let save = snapshot_from_simulation(&simulation);
+        let restored = restore_from_snapshot(&save).expect("faction save is compatible");
+
+        assert_eq!(restored.state().factions, simulation.state().factions);
+        assert_eq!(
+            restored.state().colonies[0].owner,
+            simulation.state().colonies[0].owner,
+        );
+        assert_eq!(restored.state().factions.len(), 3);
+    }
+
+    #[test]
+    fn state_and_save_versions_match_mvp_018() {
         let simulation = Simulation::new(UniverseConfig::mvp());
         let save = snapshot_from_simulation(&simulation);
 

@@ -651,9 +651,10 @@ fn update_craft_detail(
     if !ui.open {
         return;
     }
+    let state = simulation.simulation().state();
     let quote = ui
         .active_colony_id
-        .map(|colony_id| craft_quote(simulation.simulation().state(), colony_id, ui.selected))
+        .map(|colony_id| craft_quote(state, state.player_faction, colony_id, ui.selected))
         .unwrap_or(Err(CraftError::NoShipyardCapacity));
     let available = quote.is_ok();
     let detail = craft_detail_text(ui.selected, quote);
@@ -719,7 +720,8 @@ fn queue_selected_craft(simulation: &mut SimulationResource, ui: &mut CraftUiSta
         ui.feedback = "Aucune colonie contrôlée.".to_string();
         return;
     };
-    match craft_quote(simulation.simulation().state(), colony_id, ui.selected) {
+    let state = simulation.simulation().state();
+    match craft_quote(state, state.player_faction, colony_id, ui.selected) {
         Ok(_) => apply_simulation_command(
             simulation,
             GameCommand::QueueCraft {
@@ -867,7 +869,7 @@ fn craft_queue_text(colony: &galactic_sim::ColonyState) -> String {
 fn craft_error_text(error: CraftError) -> String {
     match error {
         CraftError::UnknownColony(_) => "Colonie introuvable".to_string(),
-        CraftError::NotPlayerOwned(_) => "Colonie non contrôlée".to_string(),
+        CraftError::Access(_) => "Colonie non contrôlée".to_string(),
         CraftError::UnknownCraftable(craftable) => {
             format!("Fabrication inconnue ({})", craftable.key())
         }
@@ -908,23 +910,17 @@ fn sync_craft_colony(ui: &mut CraftUiState, simulation: &galactic_sim::Simulatio
     if ui
         .active_colony_id
         .and_then(|colony_id| state.colony(colony_id))
-        .is_some_and(|colony| colony.faction == state.player_faction)
+        .is_some_and(|colony| state.can_manage(state.player_faction, colony.owner))
     {
         return;
     }
-    ui.active_colony_id = state
-        .colonies
-        .iter()
-        .find(|colony| colony.faction == state.player_faction)
-        .map(|colony| colony.id);
+    ui.active_colony_id = state.player_colonies().next().map(|colony| colony.id);
 }
 
 fn cycle_craft_colony(ui: &mut CraftUiState, simulation: &galactic_sim::Simulation, reverse: bool) {
     let colonies = simulation
         .state()
-        .colonies
-        .iter()
-        .filter(|colony| colony.faction == simulation.state().player_faction)
+        .player_colonies()
         .map(|colony| colony.id)
         .collect::<Vec<_>>();
     if colonies.is_empty() {

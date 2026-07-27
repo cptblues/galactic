@@ -1,11 +1,17 @@
-// MVP-011: configurable starting economy and knowledge
-use galactic_domain::{ColonyId, EnergyGrid, FactionId, PlanetId, ResourceStock, SystemId};
+// MVP-018: configurable factions, ownership, starting economy and knowledge.
+use std::collections::BTreeSet;
 
-use crate::{BuildingLevels, KnowledgeLevel, TechnologyId, UniverseRepository, default_ruleset};
+use galactic_domain::{ColonyId, EnergyGrid, FactionId, Owner, PlanetId, ResourceStock, SystemId};
+
+use crate::{
+    BuildingLevels, FactionKind, KnowledgeLevel, TechnologyId, UniverseRepository, default_ruleset,
+};
 
 pub const MVP_HOME_SYSTEM_ID: SystemId = SystemId::from_index(0);
 pub const MVP_HOME_PLANET_ID: PlanetId = PlanetId::from_system_index(MVP_HOME_SYSTEM_ID, 0);
 pub const MVP_PLAYER_FACTION_ID: FactionId = FactionId::new(0);
+pub const MVP_NEUTRAL_FACTION_ID: FactionId = FactionId::new(1);
+pub const MVP_FUTURE_AI_FACTION_ID: FactionId = FactionId::new(2);
 pub const MVP_HOME_COLONY_ID: ColonyId = ColonyId::new(0);
 pub const MVP_MIN_HOME_HABITABILITY: u8 = 80;
 
@@ -49,12 +55,15 @@ impl PlanetResourceProfile {
 pub struct StartingFactionConfig {
     pub id: FactionId,
     pub name: &'static str,
+    pub kind: FactionKind,
+    pub active: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StartingColonyConfig {
     pub id: ColonyId,
     pub name: &'static str,
+    pub owner: Owner,
     pub system_id: SystemId,
     pub planet_id: PlanetId,
     pub initial_stock: ResourceStock,
@@ -77,7 +86,8 @@ pub struct InitialPlanetKnowledge {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StartingScenario {
-    pub player_faction: StartingFactionConfig,
+    pub factions: &'static [StartingFactionConfig],
+    pub player_faction_id: FactionId,
     pub home_colony: StartingColonyConfig,
     pub initial_system_knowledge: &'static [InitialSystemKnowledge],
     pub initial_planet_knowledge: &'static [InitialPlanetKnowledge],
@@ -91,8 +101,48 @@ impl StartingScenario {
     }
 
     pub fn validate(self, universe: &UniverseRepository) -> Result<(), StartingScenarioError> {
-        if self.player_faction.name.trim().is_empty() {
-            return Err(StartingScenarioError::EmptyFactionName);
+        if self.factions.is_empty() {
+            return Err(StartingScenarioError::MissingFactions);
+        }
+        let mut faction_ids = BTreeSet::new();
+        let mut player_count = 0;
+        for faction in self.factions {
+            if !faction_ids.insert(faction.id) {
+                return Err(StartingScenarioError::DuplicateFaction(faction.id));
+            }
+            if faction.name.trim().is_empty() {
+                return Err(StartingScenarioError::EmptyFactionName(faction.id));
+            }
+            if faction.kind == FactionKind::Player {
+                player_count += 1;
+            }
+        }
+        if player_count != 1 {
+            return Err(StartingScenarioError::InvalidPlayerFactionCount(
+                player_count,
+            ));
+        }
+        let Some(player_faction) = self
+            .factions
+            .iter()
+            .find(|faction| faction.id == self.player_faction_id)
+        else {
+            return Err(StartingScenarioError::UnknownPlayerFaction(
+                self.player_faction_id,
+            ));
+        };
+        if player_faction.kind != FactionKind::Player {
+            return Err(StartingScenarioError::PlayerFactionKindMismatch(
+                self.player_faction_id,
+            ));
+        }
+        if !player_faction.active {
+            return Err(StartingScenarioError::InactivePlayerFaction(
+                self.player_faction_id,
+            ));
+        }
+        if self.home_colony.owner != Owner::Faction(self.player_faction_id) {
+            return Err(StartingScenarioError::HomeColonyNotPlayerOwned);
         }
         if self.home_colony.name.trim().is_empty() {
             return Err(StartingScenarioError::EmptyColonyName);
@@ -192,7 +242,14 @@ impl Default for StartingScenario {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StartingScenarioError {
-    EmptyFactionName,
+    MissingFactions,
+    DuplicateFaction(FactionId),
+    EmptyFactionName(FactionId),
+    InvalidPlayerFactionCount(usize),
+    UnknownPlayerFaction(FactionId),
+    PlayerFactionKindMismatch(FactionId),
+    InactivePlayerFaction(FactionId),
+    HomeColonyNotPlayerOwned,
     EmptyColonyName,
     InvalidResourceProfile,
     InitialEnergyDeficit,

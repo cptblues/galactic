@@ -559,8 +559,8 @@ fn update_research_summary(
         return;
     }
     let state = simulation.simulation().state();
-    let labs = research_lab_level_total(state);
-    let output = research_output_points_per_second(state);
+    let labs = research_lab_level_total(state, state.player_faction);
+    let output = research_output_points_per_second(state, state.player_faction);
     let completed = state.research.completed_count();
 
     for (role, mut text) in &mut texts {
@@ -638,7 +638,7 @@ fn update_research_detail(
         return;
     }
     let state = simulation.simulation().state();
-    let quote = research_quote(state, ui.selected);
+    let quote = research_quote(state, state.player_faction, ui.selected);
     let available = quote.is_ok();
     let detail = research_detail_text(state, ui.selected, quote);
     let button_label = match quote {
@@ -701,7 +701,8 @@ fn update_research_queue(
 
 fn queue_selected_research(simulation: &mut SimulationResource, ui: &mut ResearchUiState) {
     let technology = ui.selected;
-    match research_quote(simulation.simulation().state(), technology) {
+    let state = simulation.simulation().state();
+    match research_quote(state, state.player_faction, technology) {
         Ok(_) => {
             apply_simulation_command(simulation, GameCommand::QueueResearch { technology });
         }
@@ -727,7 +728,7 @@ fn technology_status_label(state: &galactic_sim::GameState, technology: Technolo
         };
     }
 
-    match research_quote(state, technology) {
+    match research_quote(state, state.player_faction, technology) {
         Ok(_) => "DISPONIBLE".to_string(),
         Err(error) => research_error_text(error),
     }
@@ -818,7 +819,7 @@ fn research_detail_text(
 
 fn research_queue_text(state: &galactic_sim::GameState) -> String {
     if state.research.is_queue_empty() {
-        let has_output = research_output_milli_points_per_tick(state) > 0;
+        let has_output = research_output_milli_points_per_tick(state, state.player_faction) > 0;
         let hint = if !has_output {
             "Construis un Laboratoire pour produire des points de recherche."
         } else {
@@ -831,7 +832,7 @@ fn research_queue_text(state: &galactic_sim::GameState) -> String {
         );
     }
 
-    let output = research_output_milli_points_per_tick(state);
+    let output = research_output_milli_points_per_tick(state, state.player_faction);
     let mut lines = Vec::new();
     for (index, project) in state.research.queue().enumerate() {
         let definition = technology_definition(project.technology);
@@ -871,6 +872,7 @@ fn research_queue_text(state: &galactic_sim::GameState) -> String {
 
 fn research_error_text(error: ResearchError) -> String {
     match error {
+        ResearchError::Access(_) => "Recherche non autorisée".to_string(),
         ResearchError::NoResearchCapacity => "Laboratoire requis".to_string(),
         ResearchError::AlreadyCompleted(technology) => {
             format!("{} déjà acquise", technology_definition(technology).name,)
@@ -935,7 +937,11 @@ mod tests {
         let text = research_detail_text(
             simulation.state(),
             TechnologyId::SPATIAL_DETECTION,
-            research_quote(simulation.state(), TechnologyId::SPATIAL_DETECTION),
+            research_quote(
+                simulation.state(),
+                simulation.state().player_faction,
+                TechnologyId::SPATIAL_DETECTION,
+            ),
         );
 
         assert!(text.contains("Laboratoire requis"));

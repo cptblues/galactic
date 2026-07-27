@@ -2333,8 +2333,8 @@ fn update_colony_management_detail(
     };
 
     let kind = management.selected_building;
-    let quote =
-        galactic_sim::building_upgrade_quote(simulation.simulation().state(), colony.id, kind);
+    let state = simulation.simulation().state();
+    let quote = galactic_sim::building_upgrade_quote(state, state.player_faction, colony.id, kind);
     let available = quote.is_ok();
     let detail = building_management_detail_text(colony, kind, quote);
     let upgrade_label = match quote {
@@ -2409,19 +2409,14 @@ fn sync_management_colony(management: &mut ColonyManagementState, simulation: &S
     let active_is_valid = management.active_colony_id.is_some_and(|colony_id| {
         state
             .colony(colony_id)
-            .is_some_and(|colony| colony.faction == state.player_faction)
+            .is_some_and(|colony| state.can_manage(state.player_faction, colony.owner))
     });
     if active_is_valid {
         return;
     }
 
-    management.active_colony_id = selected_player_colony_id(simulation).or_else(|| {
-        state
-            .colonies
-            .iter()
-            .find(|colony| colony.faction == state.player_faction)
-            .map(|colony| colony.id)
-    });
+    management.active_colony_id = selected_player_colony_id(simulation)
+        .or_else(|| state.player_colonies().next().map(|colony| colony.id));
 }
 
 fn selected_player_colony_id(simulation: &Simulation) -> Option<galactic_domain::ColonyId> {
@@ -2429,22 +2424,18 @@ fn selected_player_colony_id(simulation: &Simulation) -> Option<galactic_domain:
     let colony = match state.selected {
         SelectionTarget::Planet { planet_id, .. } => state.colony_on_planet(planet_id),
         SelectionTarget::System(system_id) => state
-            .colonies
-            .iter()
-            .find(|colony| colony.system_id == system_id && colony.faction == state.player_faction),
+            .player_colonies()
+            .find(|colony| colony.system_id == system_id),
         SelectionTarget::None => state.player_home_colony(),
     }?;
-    (colony.faction == state.player_faction).then_some(colony.id)
+    state
+        .can_manage(state.player_faction, colony.owner)
+        .then_some(colony.id)
 }
 
 fn player_colony_ids(simulation: &Simulation) -> Vec<galactic_domain::ColonyId> {
     let state = simulation.state();
-    state
-        .colonies
-        .iter()
-        .filter(|colony| colony.faction == state.player_faction)
-        .map(|colony| colony.id)
-        .collect()
+    state.player_colonies().map(|colony| colony.id).collect()
 }
 
 fn active_management_colony<'a>(
@@ -2453,7 +2444,10 @@ fn active_management_colony<'a>(
 ) -> Option<&'a galactic_sim::ColonyState> {
     let colony_id = management.active_colony_id?;
     let colony = simulation.state().colony(colony_id)?;
-    (colony.faction == simulation.state().player_faction).then_some(colony)
+    simulation
+        .state()
+        .can_manage(simulation.state().player_faction, colony.owner)
+        .then_some(colony)
 }
 
 fn cycle_management_colony(
@@ -2508,7 +2502,8 @@ fn queue_selected_management_upgrade(
         return;
     };
     let kind = management.selected_building;
-    match galactic_sim::building_upgrade_quote(simulation.simulation().state(), colony_id, kind) {
+    let state = simulation.simulation().state();
+    match galactic_sim::building_upgrade_quote(state, state.player_faction, colony_id, kind) {
         Ok(_) => {
             apply_simulation_command(
                 simulation,
@@ -2949,7 +2944,7 @@ fn construction_progress_ratio(colony: &galactic_sim::ColonyState) -> f32 {
 fn construction_error_text(error: galactic_sim::ConstructionError) -> String {
     match error {
         galactic_sim::ConstructionError::UnknownColony(_)
-        | galactic_sim::ConstructionError::NotPlayerOwned(_) => "Colonie indisponible".to_string(),
+        | galactic_sim::ConstructionError::Access(_) => "Colonie indisponible".to_string(),
         galactic_sim::ConstructionError::QueueFull { maximum } => {
             format!("File pleine ({maximum})")
         }
@@ -4477,6 +4472,7 @@ mod tests {
             .expect("home colony exists");
         let quote = galactic_sim::building_upgrade_quote(
             simulation.state(),
+            simulation.state().player_faction,
             colony.id,
             galactic_sim::BuildingKind::METAL_MINE,
         );
