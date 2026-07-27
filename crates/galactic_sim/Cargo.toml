@@ -5,3 +5,5 @@ edition.workspace = true
 
 [dependencies]
 galactic_domain = { path = "../galactic_domain" }
+ron.workspace = true
+serde.workspace = true

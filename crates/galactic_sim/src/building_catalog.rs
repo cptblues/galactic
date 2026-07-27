@@ -1,32 +1,181 @@
-// MVP-013: validated building definitions loaded from a simple data asset.
+// MVP-016-B: configurable building identifiers and validated catalog data.
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::OnceLock;
+use std::fmt;
 
 use galactic_domain::{EnergyGrid, ResourceCost, ResourceStock};
+use serde::Deserialize;
 
-use crate::{BuildingKind, BuildingLevels};
+use crate::{STRATEGIC_TICKS_PER_SECOND, default_ruleset};
 
-const EMBEDDED_CATALOG: &str = include_str!("../../../assets/data/buildings.catalog");
+pub const MAX_RULESET_BUILDINGS: usize = 64;
 
-static DEFAULT_CATALOG: OnceLock<BuildingCatalog> = OnceLock::new();
+#[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BuildingKind(&'static str);
 
-pub fn default_building_catalog() -> &'static BuildingCatalog {
-    DEFAULT_CATALOG.get_or_init(|| {
-        BuildingCatalog::parse(EMBEDDED_CATALOG)
-            .expect("the embedded MVP building catalog must be valid")
-    })
+impl BuildingKind {
+    pub const METAL_MINE: Self = Self("metal_mine");
+    pub const CRYSTAL_EXTRACTOR: Self = Self("crystal_extractor");
+    pub const FUEL_REFINERY: Self = Self("fuel_refinery");
+    pub const POWER_PLANT: Self = Self("power_plant");
+    pub const WAREHOUSE: Self = Self("warehouse");
+    pub const CONSTRUCTION_CENTER: Self = Self("construction_center");
+    pub const RESEARCH_LAB: Self = Self("research_lab");
+    pub const SHIPYARD: Self = Self("shipyard");
+
+    pub const fn from_static(key: &'static str) -> Self {
+        Self(key)
+    }
+
+    pub const fn key(self) -> &'static str {
+        self.0
+    }
+
+    fn from_config(key: String) -> Result<Self, BuildingCatalogError> {
+        validate_identifier(&key).map_err(|()| BuildingCatalogError::InvalidIdentifier)?;
+        Ok(Self(Box::leak(key.into_boxed_str())))
+    }
+}
+
+impl fmt::Debug for BuildingKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("BuildingKind")
+            .field(&self.0)
+            .finish()
+    }
+}
+
+impl fmt::Display for BuildingKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct BuildingLevel {
+    kind: BuildingKind,
+    level: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BuildingLevels {
+    entries: [BuildingLevel; MAX_RULESET_BUILDINGS],
+    len: u8,
+}
+
+impl BuildingLevels {
+    pub const EMPTY: Self = Self {
+        entries: [BuildingLevel {
+            kind: BuildingKind::from_static(""),
+            level: 0,
+        }; MAX_RULESET_BUILDINGS],
+        len: 0,
+    };
+
+    pub fn level(self, kind: BuildingKind) -> u8 {
+        self.entries[..usize::from(self.len)]
+            .iter()
+            .find(|entry| entry.kind == kind)
+            .map_or(0, |entry| entry.level)
+    }
+
+    pub fn set_level(&mut self, kind: BuildingKind, level: u8) {
+        if let Some(entry) = self.entries[..usize::from(self.len)]
+            .iter_mut()
+            .find(|entry| entry.kind == kind)
+        {
+            entry.level = level;
+            return;
+        }
+        if level == 0 {
+            return;
+        }
+
+        let index = usize::from(self.len);
+        assert!(
+            index < MAX_RULESET_BUILDINGS,
+            "building level capacity must match the validated ruleset",
+        );
+        self.entries[index] = BuildingLevel { kind, level };
+        self.len += 1;
+    }
+
+    pub fn iter(self) -> impl Iterator<Item = (BuildingKind, u8)> {
+        self.entries
+            .into_iter()
+            .take(usize::from(self.len))
+            .map(|entry| (entry.kind, entry.level))
+    }
+
+    pub fn total_levels(self) -> u32 {
+        self.iter().map(|(_, level)| u32::from(level)).sum()
+    }
+}
+
+impl Default for BuildingLevels {
+    fn default() -> Self {
+        Self::EMPTY
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub enum BuildingEffect {
-    MetalProduction { milli_per_tick_per_level: u64 },
-    CrystalProduction { milli_per_tick_per_level: u64 },
-    FuelProduction { milli_per_tick_per_level: u64 },
-    EnergyProduction { capacity_per_level: u64 },
-    Storage { per_level: ResourceStock },
-    ConstructionSpeed { permille_per_level: u64 },
-    ResearchPoints { milli_per_tick_per_level: u64 },
-    ShipyardPoints { milli_per_tick_per_level: u64 },
+    MetalProduction {
+        milli_per_tick_per_level: u64,
+    },
+    CrystalProduction {
+        milli_per_tick_per_level: u64,
+    },
+    FuelProduction {
+        milli_per_tick_per_level: u64,
+    },
+    EnergyProduction {
+        capacity_per_level: u64,
+    },
+    Storage {
+        metal_per_level: u64,
+        crystal_per_level: u64,
+        fuel_per_level: u64,
+    },
+    ConstructionSpeed {
+        permille_per_level: u64,
+    },
+    ResearchPoints {
+        milli_per_tick_per_level: u64,
+    },
+    ShipyardPoints {
+        milli_per_tick_per_level: u64,
+    },
+}
+
+impl BuildingEffect {
+    pub const fn storage_per_level(self) -> Option<ResourceStock> {
+        match self {
+            Self::Storage {
+                metal_per_level,
+                crystal_per_level,
+                fuel_per_level,
+            } => Some(ResourceStock::new(
+                metal_per_level,
+                crystal_per_level,
+                fuel_per_level,
+            )),
+            _ => None,
+        }
+    }
+
+    pub const fn structural_key(self) -> &'static str {
+        match self {
+            Self::MetalProduction { .. } => "metal_production",
+            Self::CrystalProduction { .. } => "crystal_production",
+            Self::FuelProduction { .. } => "fuel_production",
+            Self::EnergyProduction { .. } => "energy_production",
+            Self::Storage { .. } => "storage",
+            Self::ConstructionSpeed { .. } => "construction_speed",
+            Self::ResearchPoints { .. } => "research_points",
+            Self::ShipyardPoints { .. } => "shipyard_points",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,7 +187,8 @@ pub struct BuildingPrerequisite {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildingDefinition {
     pub kind: BuildingKind,
-    pub name: String,
+    pub name: &'static str,
+    pub description: &'static str,
     pub max_level: u8,
     pub base_cost: ResourceCost,
     pub cost_growth_per_mille: u16,
@@ -84,62 +234,77 @@ impl BuildingDefinition {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildingCatalog {
     version: u32,
-    fingerprint: u64,
     base_storage: ResourceStock,
     definitions: BTreeMap<BuildingKind, BuildingDefinition>,
 }
 
 impl BuildingCatalog {
-    pub fn parse(source: &str) -> Result<Self, BuildingCatalogError> {
-        let mut version = None;
-        let mut base_storage = None;
-        let mut definitions = BTreeMap::new();
+    pub(crate) fn from_config(
+        config: BuildingCatalogConfig,
+        base_storage: ResourceStock,
+    ) -> Result<Self, BuildingCatalogError> {
+        if config.version != 1 {
+            return Err(BuildingCatalogError::UnsupportedVersion(config.version));
+        }
+        if config.buildings.is_empty() || config.buildings.len() > MAX_RULESET_BUILDINGS {
+            return Err(BuildingCatalogError::InvalidBuildingCount {
+                found: config.buildings.len(),
+                maximum: MAX_RULESET_BUILDINGS,
+            });
+        }
 
-        for (index, raw_line) in source.lines().enumerate() {
-            let line_number = index + 1;
-            let line = raw_line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-
-            if let Some(value) = line.strip_prefix("version=") {
-                if version.is_some() {
-                    return Err(BuildingCatalogError::DuplicateHeader { line: line_number });
-                }
-                version = Some(
-                    value
-                        .parse()
-                        .map_err(|_| BuildingCatalogError::InvalidNumber { line: line_number })?,
-                );
-                continue;
-            }
-
-            if let Some(value) = line.strip_prefix("base_storage=") {
-                if base_storage.is_some() {
-                    return Err(BuildingCatalogError::DuplicateHeader { line: line_number });
-                }
-                base_storage = Some(parse_stock(value, line_number)?);
-                continue;
-            }
-
-            let Some(value) = line.strip_prefix("building=") else {
-                return Err(BuildingCatalogError::InvalidLine { line: line_number });
-            };
-            let definition = parse_definition(value, line_number)?;
-            if definitions.insert(definition.kind, definition).is_some() {
-                return Err(BuildingCatalogError::DuplicateBuilding { line: line_number });
+        let mut ids = BTreeMap::new();
+        for building in &config.buildings {
+            let kind = BuildingKind::from_config(building.id.clone())?;
+            if ids.insert(building.id.clone(), kind).is_some() {
+                return Err(BuildingCatalogError::DuplicateBuilding(kind));
             }
         }
 
-        let version = version.ok_or(BuildingCatalogError::MissingVersion)?;
-        if version != 1 {
-            return Err(BuildingCatalogError::UnsupportedVersion(version));
+        let mut definitions = BTreeMap::new();
+        for building in config.buildings {
+            let kind = ids[&building.id];
+            let prerequisites = building
+                .prerequisites
+                .into_iter()
+                .map(|prerequisite| {
+                    let Some(&prerequisite_kind) = ids.get(&prerequisite.id) else {
+                        return Err(BuildingCatalogError::MissingPrerequisite {
+                            kind,
+                            prerequisite: leak_identifier(prerequisite.id)?,
+                        });
+                    };
+                    Ok(BuildingPrerequisite {
+                        kind: prerequisite_kind,
+                        level: prerequisite.level,
+                    })
+                })
+                .collect::<Result<Vec<_>, BuildingCatalogError>>()?;
+            let definition = BuildingDefinition {
+                kind,
+                name: leak_non_empty(building.name, BuildingCatalogError::EmptyName(kind))?,
+                description: leak_non_empty(
+                    building.description,
+                    BuildingCatalogError::EmptyDescription(kind),
+                )?,
+                max_level: building.max_level,
+                base_cost: building.base_cost.into_cost(),
+                cost_growth_per_mille: building.cost_growth_per_mille,
+                base_duration_ticks: building
+                    .base_duration_seconds
+                    .checked_mul(u64::from(STRATEGIC_TICKS_PER_SECOND))
+                    .ok_or(BuildingCatalogError::InvalidDefinition(kind))?,
+                duration_growth_per_mille: building.duration_growth_per_mille,
+                energy_consumption_per_level: building.energy_consumption_per_level,
+                effect: building.effect,
+                prerequisites,
+            };
+            definitions.insert(kind, definition);
         }
 
         let catalog = Self {
-            version,
-            fingerprint: fnv1a64(source.as_bytes()),
-            base_storage: base_storage.ok_or(BuildingCatalogError::MissingBaseStorage)?,
+            version: config.version,
+            base_storage,
             definitions,
         };
         catalog.validate()?;
@@ -148,10 +313,6 @@ impl BuildingCatalog {
 
     pub const fn version(&self) -> u32 {
         self.version
-    }
-
-    pub const fn fingerprint(&self) -> u64 {
-        self.fingerprint
     }
 
     pub const fn base_storage(&self) -> ResourceStock {
@@ -165,13 +326,21 @@ impl BuildingCatalog {
     pub fn definition(&self, kind: BuildingKind) -> &BuildingDefinition {
         self.definitions
             .get(&kind)
-            .expect("validated catalog contains every building")
+            .expect("validated building identifier must exist in the active ruleset")
+    }
+
+    pub fn kind_by_key(&self, key: &str) -> Option<BuildingKind> {
+        self.definitions
+            .keys()
+            .copied()
+            .find(|kind| kind.key() == key)
     }
 
     pub fn validate_levels(&self, levels: BuildingLevels) -> Result<(), BuildingCatalogError> {
-        for kind in BuildingKind::ALL {
-            let current = levels.level(kind);
-            let definition = self.definition(kind);
+        for (kind, current) in levels.iter() {
+            let Some(definition) = self.definitions.get(&kind) else {
+                return Err(BuildingCatalogError::UnknownBuilding(kind));
+            };
             if current > definition.max_level {
                 return Err(BuildingCatalogError::LevelExceedsMaximum {
                     kind,
@@ -201,12 +370,11 @@ impl BuildingCatalog {
         let mut production = 0_u64;
         let mut consumption = 0_u64;
 
-        for kind in BuildingKind::ALL {
-            let level = u64::from(levels.level(kind));
+        for definition in self.definitions.values() {
+            let level = u64::from(levels.level(definition.kind));
             if level == 0 {
                 continue;
             }
-            let definition = self.definition(kind);
             consumption = consumption.saturating_add(
                 definition
                     .energy_consumption_per_level
@@ -220,22 +388,46 @@ impl BuildingCatalog {
         EnergyGrid::new(production, consumption)
     }
 
-    fn validate(&self) -> Result<(), BuildingCatalogError> {
-        for kind in BuildingKind::ALL {
-            if !self.definitions.contains_key(&kind) {
-                return Err(BuildingCatalogError::MissingBuilding(kind));
-            }
-        }
-        if self.definitions.len() != BuildingKind::ALL.len() {
-            return Err(BuildingCatalogError::UnexpectedBuildingCount {
-                found: self.definitions.len(),
-            });
-        }
-
+    pub fn storage_capacity_for_levels(&self, levels: BuildingLevels) -> ResourceStock {
+        let mut capacity = self.base_storage;
         for definition in self.definitions.values() {
-            if definition.name.trim().is_empty() {
-                return Err(BuildingCatalogError::EmptyName(definition.kind));
+            let level = u64::from(levels.level(definition.kind));
+            if level == 0 {
+                continue;
             }
+            if let Some(per_level) = definition.effect.storage_per_level() {
+                capacity = ResourceStock::new(
+                    capacity
+                        .metal
+                        .saturating_add(per_level.metal.saturating_mul(level)),
+                    capacity
+                        .crystal
+                        .saturating_add(per_level.crystal.saturating_mul(level)),
+                    capacity
+                        .fuel
+                        .saturating_add(per_level.fuel.saturating_mul(level)),
+                );
+            }
+        }
+        capacity
+    }
+
+    pub(crate) fn append_structure(&self, output: &mut String) {
+        for definition in self.definitions.values() {
+            output.push_str(definition.kind.key());
+            output.push(':');
+            output.push_str(definition.effect.structural_key());
+            output.push('[');
+            for prerequisite in &definition.prerequisites {
+                output.push_str(prerequisite.kind.key());
+                output.push(',');
+            }
+            output.push_str("];");
+        }
+    }
+
+    fn validate(&self) -> Result<(), BuildingCatalogError> {
+        for definition in self.definitions.values() {
             if definition.max_level == 0
                 || definition.base_duration_ticks == 0
                 || definition.cost_growth_per_mille < 1_000
@@ -255,12 +447,7 @@ impl BuildingCatalog {
                         prerequisite: prerequisite.kind,
                     });
                 }
-                let Some(required) = self.definitions.get(&prerequisite.kind) else {
-                    return Err(BuildingCatalogError::MissingPrerequisite {
-                        kind: definition.kind,
-                        prerequisite: prerequisite.kind,
-                    });
-                };
+                let required = self.definition(prerequisite.kind);
                 if prerequisite.level == 0 || prerequisite.level > required.max_level {
                     return Err(BuildingCatalogError::InvalidPrerequisiteLevel {
                         kind: definition.kind,
@@ -271,12 +458,9 @@ impl BuildingCatalog {
             }
         }
 
-        for kind in BuildingKind::ALL {
-            let mut visiting = BTreeSet::new();
-            let mut visited = BTreeSet::new();
-            self.visit(kind, &mut visiting, &mut visited)?;
+        for kind in self.definitions.keys().copied() {
+            self.visit(kind, &mut BTreeSet::new(), &mut BTreeSet::new())?;
         }
-
         Ok(())
     }
 
@@ -292,51 +476,31 @@ impl BuildingCatalog {
         if !visiting.insert(kind) {
             return Err(BuildingCatalogError::PrerequisiteCycle(kind));
         }
-
         for prerequisite in &self.definition(kind).prerequisites {
             self.visit(prerequisite.kind, visiting, visited)?;
         }
-
         visiting.remove(&kind);
         visited.insert(kind);
         Ok(())
     }
 }
 
+pub fn default_building_catalog() -> &'static BuildingCatalog {
+    default_ruleset().buildings()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuildingCatalogError {
-    InvalidLine {
-        line: usize,
-    },
-    InvalidNumber {
-        line: usize,
-    },
-    UnknownBuilding {
-        line: usize,
-    },
-    UnknownEffect {
-        line: usize,
-    },
-    InvalidEffect {
-        line: usize,
-    },
-    InvalidPrerequisite {
-        line: usize,
-    },
-    DuplicateHeader {
-        line: usize,
-    },
-    DuplicateBuilding {
-        line: usize,
-    },
-    MissingVersion,
+    InvalidIdentifier,
     UnsupportedVersion(u32),
-    MissingBaseStorage,
-    MissingBuilding(BuildingKind),
-    UnexpectedBuildingCount {
+    InvalidBuildingCount {
         found: usize,
+        maximum: usize,
     },
+    DuplicateBuilding(BuildingKind),
+    UnknownBuilding(BuildingKind),
     EmptyName(BuildingKind),
+    EmptyDescription(BuildingKind),
     InvalidDefinition(BuildingKind),
     SelfPrerequisite(BuildingKind),
     DuplicatePrerequisite {
@@ -371,148 +535,48 @@ pub enum BuildingCatalogError {
     },
 }
 
-impl BuildingKind {
-    pub const fn key(self) -> &'static str {
-        match self {
-            Self::MetalMine => "metal_mine",
-            Self::CrystalExtractor => "crystal_extractor",
-            Self::FuelRefinery => "fuel_refinery",
-            Self::PowerPlant => "power_plant",
-            Self::Warehouse => "warehouse",
-            Self::ConstructionCenter => "construction_center",
-            Self::ResearchLab => "research_lab",
-            Self::Shipyard => "shipyard",
-        }
-    }
-
-    fn parse(value: &str) -> Option<Self> {
-        match value {
-            "metal_mine" => Some(Self::MetalMine),
-            "crystal_extractor" => Some(Self::CrystalExtractor),
-            "fuel_refinery" => Some(Self::FuelRefinery),
-            "power_plant" => Some(Self::PowerPlant),
-            "warehouse" => Some(Self::Warehouse),
-            "construction_center" => Some(Self::ConstructionCenter),
-            "research_lab" => Some(Self::ResearchLab),
-            "shipyard" => Some(Self::Shipyard),
-            _ => None,
-        }
-    }
+#[derive(Debug, Deserialize)]
+pub(crate) struct BuildingCatalogConfig {
+    version: u32,
+    buildings: Vec<BuildingDefinitionConfig>,
 }
 
-fn parse_definition(value: &str, line: usize) -> Result<BuildingDefinition, BuildingCatalogError> {
-    let fields = value.split('|').collect::<Vec<_>>();
-    if fields.len() != 10 {
-        return Err(BuildingCatalogError::InvalidLine { line });
+#[derive(Debug, Deserialize)]
+struct BuildingDefinitionConfig {
+    id: String,
+    name: String,
+    description: String,
+    max_level: u8,
+    base_cost: ResourceValuesConfig,
+    cost_growth_per_mille: u16,
+    base_duration_seconds: u64,
+    duration_growth_per_mille: u16,
+    energy_consumption_per_level: u64,
+    effect: BuildingEffect,
+    prerequisites: Vec<BuildingPrerequisiteConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BuildingPrerequisiteConfig {
+    id: String,
+    level: u8,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub(crate) struct ResourceValuesConfig {
+    pub(crate) metal: u64,
+    pub(crate) crystal: u64,
+    pub(crate) fuel: u64,
+}
+
+impl ResourceValuesConfig {
+    pub(crate) const fn into_stock(self) -> ResourceStock {
+        ResourceStock::new(self.metal, self.crystal, self.fuel)
     }
 
-    let kind =
-        BuildingKind::parse(fields[0]).ok_or(BuildingCatalogError::UnknownBuilding { line })?;
-    let max_level = parse_number(fields[2], line)?;
-    let base_cost = parse_cost(fields[3], line)?;
-    let cost_growth_per_mille = parse_number(fields[4], line)?;
-    let base_duration_ticks = parse_number(fields[5], line)?;
-    let duration_growth_per_mille = parse_number(fields[6], line)?;
-    let energy_consumption_per_level = parse_number(fields[7], line)?;
-    let effect = parse_effect(fields[8], line)?;
-    let prerequisites = parse_prerequisites(fields[9], line)?;
-
-    Ok(BuildingDefinition {
-        kind,
-        name: fields[1].trim().to_string(),
-        max_level,
-        base_cost,
-        cost_growth_per_mille,
-        base_duration_ticks,
-        duration_growth_per_mille,
-        energy_consumption_per_level,
-        effect,
-        prerequisites,
-    })
-}
-
-fn parse_number<T>(value: &str, line: usize) -> Result<T, BuildingCatalogError>
-where
-    T: std::str::FromStr,
-{
-    value
-        .trim()
-        .parse()
-        .map_err(|_| BuildingCatalogError::InvalidNumber { line })
-}
-
-fn parse_cost(value: &str, line: usize) -> Result<ResourceCost, BuildingCatalogError> {
-    let stock = parse_stock(value, line)?;
-    Ok(ResourceCost::new(stock.metal, stock.crystal, stock.fuel))
-}
-
-fn parse_stock(value: &str, line: usize) -> Result<ResourceStock, BuildingCatalogError> {
-    let values = value.split(',').collect::<Vec<_>>();
-    if values.len() != 3 {
-        return Err(BuildingCatalogError::InvalidNumber { line });
+    const fn into_cost(self) -> ResourceCost {
+        ResourceCost::new(self.metal, self.crystal, self.fuel)
     }
-    Ok(ResourceStock::new(
-        parse_number(values[0], line)?,
-        parse_number(values[1], line)?,
-        parse_number(values[2], line)?,
-    ))
-}
-
-fn parse_effect(value: &str, line: usize) -> Result<BuildingEffect, BuildingCatalogError> {
-    let Some((kind, amount)) = value.split_once(':') else {
-        return Err(BuildingCatalogError::InvalidEffect { line });
-    };
-
-    match kind {
-        "metal_production" => Ok(BuildingEffect::MetalProduction {
-            milli_per_tick_per_level: parse_number(amount, line)?,
-        }),
-        "crystal_production" => Ok(BuildingEffect::CrystalProduction {
-            milli_per_tick_per_level: parse_number(amount, line)?,
-        }),
-        "fuel_production" => Ok(BuildingEffect::FuelProduction {
-            milli_per_tick_per_level: parse_number(amount, line)?,
-        }),
-        "energy_production" => Ok(BuildingEffect::EnergyProduction {
-            capacity_per_level: parse_number(amount, line)?,
-        }),
-        "storage" => Ok(BuildingEffect::Storage {
-            per_level: parse_stock(amount, line)?,
-        }),
-        "construction_speed" => Ok(BuildingEffect::ConstructionSpeed {
-            permille_per_level: parse_number(amount, line)?,
-        }),
-        "research_points" => Ok(BuildingEffect::ResearchPoints {
-            milli_per_tick_per_level: parse_number(amount, line)?,
-        }),
-        "shipyard_points" => Ok(BuildingEffect::ShipyardPoints {
-            milli_per_tick_per_level: parse_number(amount, line)?,
-        }),
-        _ => Err(BuildingCatalogError::UnknownEffect { line }),
-    }
-}
-
-fn parse_prerequisites(
-    value: &str,
-    line: usize,
-) -> Result<Vec<BuildingPrerequisite>, BuildingCatalogError> {
-    if value == "-" {
-        return Ok(Vec::new());
-    }
-
-    value
-        .split(',')
-        .map(|item| {
-            let Some((kind, level)) = item.split_once(':') else {
-                return Err(BuildingCatalogError::InvalidPrerequisite { line });
-            };
-            Ok(BuildingPrerequisite {
-                kind: BuildingKind::parse(kind)
-                    .ok_or(BuildingCatalogError::UnknownBuilding { line })?,
-                level: parse_number(level, line)?,
-            })
-        })
-        .collect()
 }
 
 fn scale_progression(base: u64, growth_per_mille: u16, steps: u8) -> u64 {
@@ -525,13 +589,33 @@ fn scale_progression(base: u64, growth_per_mille: u16, steps: u8) -> u64 {
     value.min(u128::from(u64::MAX)) as u64
 }
 
-fn fnv1a64(bytes: &[u8]) -> u64 {
-    let mut hash = 0xcbf29ce484222325_u64;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
+fn validate_identifier(value: &str) -> Result<(), ()> {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return Err(());
+    };
+    if !first.is_ascii_lowercase() {
+        return Err(());
     }
-    hash
+    if chars.all(|character| {
+        character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_'
+    }) {
+        Ok(())
+    } else {
+        Err(())
+    }
+}
+
+fn leak_identifier(value: String) -> Result<BuildingKind, BuildingCatalogError> {
+    BuildingKind::from_config(value)
+}
+
+fn leak_non_empty<T>(value: String, error: T) -> Result<&'static str, T> {
+    if value.trim().is_empty() {
+        Err(error)
+    } else {
+        Ok(Box::leak(value.into_boxed_str()))
+    }
 }
 
 #[cfg(test)]
@@ -539,51 +623,51 @@ mod tests {
     use super::*;
 
     #[test]
-    fn embedded_catalog_has_exact_mvp_scope() {
+    fn default_catalog_is_loaded_from_the_ruleset() {
         let catalog = default_building_catalog();
-
         assert_eq!(catalog.version(), 1);
-        assert_eq!(catalog.definitions().count(), BuildingKind::ALL.len());
-        for kind in BuildingKind::ALL {
-            assert_eq!(catalog.definition(kind).kind, kind);
-        }
-    }
-
-    #[test]
-    fn costs_and_durations_scale_without_simulation_changes() {
-        let definition = default_building_catalog().definition(BuildingKind::MetalMine);
-
+        assert_eq!(catalog.definitions().count(), 8);
         assert_eq!(
-            definition.cost_for_level(1).expect("level 1 exists"),
-            ResourceCost::new(120, 60, 20)
-        );
-        assert!(definition.cost_for_level(2).expect("level 2 exists").metal > 120);
-        assert!(
-            definition.duration_for_level(2).expect("level 2 exists")
-                > definition.base_duration_ticks
+            catalog.definition(BuildingKind::METAL_MINE).name,
+            "Mine de métal",
         );
     }
 
     #[test]
-    fn invalid_prerequisite_is_rejected_at_load() {
-        let invalid = EMBEDDED_CATALOG.replace(
-            "construction_center:2,metal_mine:2,crystal_extractor:2",
-            "shipyard:1",
-        );
-
-        assert!(matches!(
-            BuildingCatalog::parse(&invalid),
-            Err(BuildingCatalogError::SelfPrerequisite(
-                BuildingKind::Shipyard
-            ))
-        ));
+    fn default_starting_levels_are_valid() {
+        let levels = crate::StartingScenario::mvp().home_colony.buildings;
+        assert_eq!(catalog_result(levels), Ok(()));
     }
 
     #[test]
-    fn starting_levels_match_catalog_prerequisites() {
-        assert_eq!(
-            default_building_catalog().validate_levels(BuildingLevels::MVP_START),
-            Ok(())
-        );
+    fn a_new_building_with_a_known_effect_is_data_only() {
+        let source = r#"(
+            version: 1,
+            buildings: [(
+                id: "propaganda_office",
+                name: "Bureau de propagande",
+                description: "Produit une science parfaitement objective.",
+                max_level: 3,
+                base_cost: (metal: 10, crystal: 20, fuel: 0),
+                cost_growth_per_mille: 1200,
+                base_duration_seconds: 5,
+                duration_growth_per_mille: 1100,
+                energy_consumption_per_level: 2,
+                effect: ResearchPoints(milli_per_tick_per_level: 10),
+                prerequisites: [],
+            )],
+        )"#;
+        let config = ron::de::from_str(source).expect("test building RON is valid");
+        let catalog = BuildingCatalog::from_config(config, ResourceStock::new(10, 10, 10))
+            .expect("known effects accept new identifiers");
+
+        let kind = catalog
+            .kind_by_key("propaganda_office")
+            .expect("configured building exists");
+        assert_eq!(catalog.definition(kind).max_level, 3);
+    }
+
+    fn catalog_result(levels: BuildingLevels) -> Result<(), BuildingCatalogError> {
+        default_building_catalog().validate_levels(levels)
     }
 }

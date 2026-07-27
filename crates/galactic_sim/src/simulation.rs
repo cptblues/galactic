@@ -1,4 +1,4 @@
-// MVP-016: production, construction and research pipeline
+// MVP-016-B: ruleset-driven production, construction and research pipeline.
 use std::collections::HashSet;
 use std::time::Duration;
 
@@ -363,7 +363,7 @@ fn validate_state(
                 error,
             });
         }
-        if u64::from(colony.production_pending_ticks) >= crate::PRODUCTION_REFRESH_TICKS {
+        if u64::from(colony.production_pending_ticks) >= crate::production_refresh_ticks() {
             return Err(SimulationBuildError::InvalidProductionWindow {
                 colony_id: colony.id,
                 pending_ticks: colony.production_pending_ticks,
@@ -581,7 +581,7 @@ mod tests {
                 event,
                 GameEvent::ProductionRefreshed(report)
                     if report.ticks.ticks()
-                        == crate::PRODUCTION_REFRESH_TICKS
+                        == crate::production_refresh_ticks()
             )
         }));
     }
@@ -619,7 +619,7 @@ mod tests {
                     .state_mut()
                     .colony_mut(colony_id)
                     .expect("home colony exists");
-                colony.buildings.set_level(BuildingKind::ResearchLab, 1);
+                colony.buildings.set_level(BuildingKind::RESEARCH_LAB, 1);
                 colony.energy = default_building_catalog().energy_grid_for_levels(colony.buildings);
                 colony
                     .resources
@@ -627,13 +627,13 @@ mod tests {
                     .expect("test funding fits capacity");
             }
 
-            for technology in TechnologyId::ALL {
+            for technology in crate::technology_catalog().ids() {
                 let events = simulation.apply_command(GameCommand::QueueResearch { technology });
                 assert!(matches!(events.as_slice(), [GameEvent::ResearchQueued(_)]));
             }
             let events = simulation.apply_command(GameCommand::QueueBuildingUpgrade {
                 colony_id,
-                kind: BuildingKind::ResearchLab,
+                kind: BuildingKind::RESEARCH_LAB,
             });
             assert!(matches!(
                 events.as_slice(),
@@ -659,11 +659,11 @@ mod tests {
             .colonies
             .first_mut()
             .expect("home colony exists");
-        colony.buildings.set_level(BuildingKind::ResearchLab, 1);
+        colony.buildings.set_level(BuildingKind::RESEARCH_LAB, 1);
         colony.energy = default_building_catalog().energy_grid_for_levels(colony.buildings);
 
         simulation.apply_command(GameCommand::QueueResearch {
-            technology: TechnologyId::SpatialDetection,
+            technology: TechnologyId::SPATIAL_DETECTION,
         });
         let events = simulation.advance(Duration::from_secs(60));
 
@@ -672,7 +672,7 @@ mod tests {
                 event,
                 GameEvent::ResearchCompleted(completed)
                     if completed.technology
-                        == TechnologyId::SpatialDetection
+                        == TechnologyId::SPATIAL_DETECTION
             )
         }));
     }

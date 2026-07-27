@@ -1,10 +1,10 @@
 // MVP-016: dedicated research screen kept outside the main client module.
 use bevy::prelude::*;
 use galactic_sim::{
-    GameCommand, GameEvent, MAX_RESEARCH_QUEUE, ResearchError, ResearchQuote,
-    STRATEGIC_TICKS_PER_SECOND, StrategicDuration, TechnologyId, research_lab_level_total,
+    GameCommand, GameEvent, ResearchError, ResearchQuote, STRATEGIC_TICKS_PER_SECOND,
+    StrategicDuration, TechnologyId, max_research_queue, research_lab_level_total,
     research_output_milli_points_per_tick, research_output_points_per_second,
-    research_progress_ratio, research_quote, technology_definition,
+    research_progress_ratio, research_quote, technology_catalog, technology_definition,
 };
 
 use super::{
@@ -60,7 +60,10 @@ impl Default for ResearchUiState {
     fn default() -> Self {
         Self {
             open: false,
-            selected: TechnologyId::SpatialDetection,
+            selected: technology_catalog()
+                .ids()
+                .next()
+                .expect("validated ruleset contains at least one technology"),
             feedback: String::new(),
         }
     }
@@ -298,7 +301,7 @@ fn spawn_technology_list(row: &mut ChildSpawnerCommands) {
             ui_text_font(12.0),
             TextColor(Color::srgb(0.76, 0.82, 1.0)),
         ));
-        for technology in TechnologyId::ALL {
+        for technology in technology_catalog().ids() {
             spawn_technology_button(list, technology);
         }
     });
@@ -562,7 +565,7 @@ fn update_research_summary(
                 text.0 = format!(
                     "RECHERCHE — {} / {} technologie(s)",
                     completed,
-                    TechnologyId::ALL.len(),
+                    technology_catalog().ids().count(),
                 );
             }
             ResearchTextRole::Summary => {
@@ -571,7 +574,7 @@ fn update_research_summary(
                     labs,
                     output,
                     state.research.queue_len(),
-                    MAX_RESEARCH_QUEUE,
+                    max_research_queue(),
                 );
             }
             ResearchTextRole::Feedback => {
@@ -819,7 +822,8 @@ fn research_queue_text(state: &galactic_sim::GameState) -> String {
         };
         return format!(
             "File vide\n\n{}\n\n{} emplacement(s) disponible(s).",
-            hint, MAX_RESEARCH_QUEUE,
+            hint,
+            max_research_queue(),
         );
     }
 
@@ -856,7 +860,7 @@ fn research_queue_text(state: &galactic_sim::GameState) -> String {
     lines.push(format!(
         "\n\n{} / {} emplacement(s) utilisé(s)",
         state.research.queue_len(),
-        MAX_RESEARCH_QUEUE,
+        max_research_queue(),
     ));
     lines.join("\n")
 }
@@ -915,7 +919,7 @@ mod tests {
             .colonies
             .first_mut()
             .expect("home colony exists");
-        colony.buildings.set_level(BuildingKind::ResearchLab, 1);
+        colony.buildings.set_level(BuildingKind::RESEARCH_LAB, 1);
         colony.energy = default_building_catalog().energy_grid_for_levels(colony.buildings);
         simulation
     }
@@ -926,8 +930,8 @@ mod tests {
 
         let text = research_detail_text(
             simulation.state(),
-            TechnologyId::SpatialDetection,
-            research_quote(simulation.state(), TechnologyId::SpatialDetection),
+            TechnologyId::SPATIAL_DETECTION,
+            research_quote(simulation.state(), TechnologyId::SPATIAL_DETECTION),
         );
 
         assert!(text.contains("Laboratoire requis"));
@@ -938,10 +942,10 @@ mod tests {
     fn queue_text_distinguishes_active_and_waiting() {
         let mut simulation = simulation_with_lab();
         simulation.apply_command(GameCommand::QueueResearch {
-            technology: TechnologyId::SpatialDetection,
+            technology: TechnologyId::SPATIAL_DETECTION,
         });
         simulation.apply_command(GameCommand::QueueResearch {
-            technology: TechnologyId::Propulsion,
+            technology: TechnologyId::PROPULSION,
         });
 
         let text = research_queue_text(simulation.state());

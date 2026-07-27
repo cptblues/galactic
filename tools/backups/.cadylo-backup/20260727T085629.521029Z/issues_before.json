@@ -1,0 +1,32 @@
+{
+  "created_at": "2026-07-27T08:56:31.065090+00:00",
+  "issues": {
+    "ENG-25": {
+      "data": {
+        "assignee_id": "7a932ede-540e-48ea-9df8-33c4a523302a",
+        "completed_at": null,
+        "created_at": "2026-07-23T12:16:40.046105+00:00",
+        "creator_id": "7a932ede-540e-48ea-9df8-33c4a523302a",
+        "description": "## Objectif\n\nIntroduire une file de fabrication générique au chantier spatial, alimentée par\ndes définitions de contenu configurables et réutilisable par les futurs\nvaisseaux, sondes, transports, défenses et modules de soutien.\n\n## Périmètre\n\n- Identifiants `CraftableId` stables, sans enum Rust par objet fabriqué.\n- Catalogue de craft chargé depuis le ruleset.\n- Coûts, durées, prérequis, capacités et textes définis par les données.\n- Réservation des ressources et validation des prérequis à la mise en file.\n- File séquentielle avec progression uniquement sur les ticks stratégiques.\n- Commandes et événements métier génériques.\n- Sauvegarde, restauration et validation de la version du catalogue.\n- Interface minimale du chantier et retours d'erreur explicites.\n\n## Hors périmètre\n\n- Composition des flottes.\n- Déplacement et missions.\n- Résolution des combats.\n\n## Critères d'acceptation\n\n- Un craftable utilisant un comportement déjà pris en charge peut être ajouté\n  ou équilibré sans modifier le code Rust.\n- Deux exécutions identiques produisent le même résultat de simulation.\n- La file et sa progression survivent à une sauvegarde/reprise.",
+        "due_date": null,
+        "estimate": 8,
+        "id": "3c9eef55-e259-4020-87a5-72516b6a195c",
+        "key": "ENG-25",
+        "number": 25,
+        "priority": 1,
+        "project_id": "87ac2cb1-4382-43d5-9257-c047cb62443a",
+        "start_date": null,
+        "status": "backlog",
+        "team": {
+          "id": "cf2a89be-4ad7-4bcd-8a9f-f6d5300703ea",
+          "key": "ENG",
+          "name": "Engineering"
+        },
+        "title": "MVP-017 — Ajouter une file générique de craft au chantier spatial",
+        "updated_at": "2026-07-27T08:37:34.78675+00:00",
+        "url": "https://cadylo.app/galactic/issue/ENG-25"
+      }
+    }
+  },
+  "read_failures": []
+}

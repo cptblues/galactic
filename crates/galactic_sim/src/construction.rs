@@ -7,10 +7,12 @@ use galactic_domain::{
 
 use crate::{
     BuildingCatalogError, BuildingEffect, BuildingKind, BuildingLevels, ColonyState, GameState,
-    PlanetResourceProfile, StrategicDuration, default_building_catalog,
+    PlanetResourceProfile, StrategicDuration, default_building_catalog, default_ruleset,
 };
 
-pub const MAX_CONSTRUCTION_QUEUE: usize = 5;
+pub fn max_construction_queue() -> usize {
+    default_ruleset().economy().construction_queue_limit
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConstructionOrder {
@@ -166,10 +168,9 @@ pub fn building_upgrade_quote(
     if colony.faction != state.player_faction {
         return Err(ConstructionError::NotPlayerOwned(colony_id));
     }
-    if colony.construction_queue.len() >= MAX_CONSTRUCTION_QUEUE {
-        return Err(ConstructionError::QueueFull {
-            maximum: MAX_CONSTRUCTION_QUEUE,
-        });
+    let maximum = max_construction_queue();
+    if colony.construction_queue.len() >= maximum {
+        return Err(ConstructionError::QueueFull { maximum });
     }
 
     let catalog = default_building_catalog();
@@ -291,10 +292,11 @@ pub fn advance_colony_construction(
 }
 
 pub fn validate_construction_queue(colony: &ColonyState) -> Result<(), ConstructionQueueError> {
-    if colony.construction_queue.len() > MAX_CONSTRUCTION_QUEUE {
+    let maximum = max_construction_queue();
+    if colony.construction_queue.len() > maximum {
         return Err(ConstructionQueueError::TooManyOrders {
             found: colony.construction_queue.len(),
-            maximum: MAX_CONSTRUCTION_QUEUE,
+            maximum,
         });
     }
 
@@ -395,14 +397,16 @@ pub fn projected_building_levels(colony: &ColonyState) -> BuildingLevels {
 
 fn adjusted_construction_duration(base_ticks: u64, levels: BuildingLevels) -> u64 {
     let catalog = default_building_catalog();
-    let definition = catalog.definition(BuildingKind::ConstructionCenter);
-    let bonus_per_level = match definition.effect {
-        BuildingEffect::ConstructionSpeed { permille_per_level } => permille_per_level,
-        _ => 0,
-    };
-    let speed_per_mille = 1_000_u64.saturating_add(
-        bonus_per_level.saturating_mul(u64::from(levels.level(BuildingKind::ConstructionCenter))),
-    );
+    let bonus = catalog
+        .definitions()
+        .filter_map(|definition| match definition.effect {
+            BuildingEffect::ConstructionSpeed { permille_per_level } => {
+                Some(permille_per_level.saturating_mul(u64::from(levels.level(definition.kind))))
+            }
+            _ => None,
+        })
+        .fold(0_u64, u64::saturating_add);
+    let speed_per_mille = 1_000_u64.saturating_add(bonus);
     base_ticks
         .saturating_mul(1_000)
         .div_ceil(speed_per_mille)
@@ -440,7 +444,7 @@ mod tests {
             .available();
 
         let queued =
-            enqueue_building_upgrade(simulation.state_mut(), colony_id, BuildingKind::MetalMine)
+            enqueue_building_upgrade(simulation.state_mut(), colony_id, BuildingKind::METAL_MINE)
                 .expect("upgrade is affordable");
 
         let colony = simulation.state().colony(colony_id).expect("colony exists");
@@ -463,7 +467,7 @@ mod tests {
             .expect("home colony exists")
             .id;
         let queued =
-            enqueue_building_upgrade(simulation.state_mut(), colony_id, BuildingKind::MetalMine)
+            enqueue_building_upgrade(simulation.state_mut(), colony_id, BuildingKind::METAL_MINE)
                 .expect("upgrade is affordable");
 
         let duration = Duration::from_nanos(
@@ -475,7 +479,7 @@ mod tests {
         simulation.advance(duration);
 
         let colony = simulation.state().colony(colony_id).expect("colony exists");
-        assert_eq!(colony.buildings.level(BuildingKind::MetalMine), 2);
+        assert_eq!(colony.buildings.level(BuildingKind::METAL_MINE), 2);
         assert!(colony.construction_queue.is_empty());
         assert!(colony.resources.reservations().is_empty());
     }
@@ -489,7 +493,7 @@ mod tests {
             .expect("home colony exists")
             .id;
         let queued =
-            enqueue_building_upgrade(simulation.state_mut(), colony_id, BuildingKind::MetalMine)
+            enqueue_building_upgrade(simulation.state_mut(), colony_id, BuildingKind::METAL_MINE)
                 .expect("upgrade is affordable");
 
         let mut batched = simulation
@@ -525,7 +529,7 @@ mod tests {
             .expect("home colony exists");
 
         assert!(matches!(
-            building_upgrade_quote(simulation.state(), colony.id, BuildingKind::Shipyard,),
+            building_upgrade_quote(simulation.state(), colony.id, BuildingKind::SHIPYARD,),
             Err(ConstructionError::Catalog(
                 BuildingCatalogError::UnsatisfiedPrerequisite { .. }
             ))
@@ -552,20 +556,20 @@ mod tests {
         enqueue_building_upgrade(
             simulation.state_mut(),
             colony_id,
-            BuildingKind::ConstructionCenter,
+            BuildingKind::CONSTRUCTION_CENTER,
         )
         .expect("center level 2 can be queued");
-        enqueue_building_upgrade(simulation.state_mut(), colony_id, BuildingKind::MetalMine)
+        enqueue_building_upgrade(simulation.state_mut(), colony_id, BuildingKind::METAL_MINE)
             .expect("metal level 2 can be queued");
         enqueue_building_upgrade(
             simulation.state_mut(),
             colony_id,
-            BuildingKind::CrystalExtractor,
+            BuildingKind::CRYSTAL_EXTRACTOR,
         )
         .expect("crystal level 2 can be queued");
 
         assert!(
-            building_upgrade_quote(simulation.state(), colony_id, BuildingKind::Shipyard,).is_ok()
+            building_upgrade_quote(simulation.state(), colony_id, BuildingKind::SHIPYARD,).is_ok()
         );
     }
 }

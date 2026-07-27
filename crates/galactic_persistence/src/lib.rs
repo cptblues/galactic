@@ -1,25 +1,25 @@
-// MVP-016: persist construction and global research.
+// MVP-016-B: persist construction, research and active ruleset identity.
 use galactic_domain::{
     ColonyId, EnergyGrid, FactionId, PlanetId, ResourceLedger, ResourceLedgerError,
     ResourceReservation, ResourceStock, SystemId, UniverseConfig, UniverseId, generate_universe,
 };
 use galactic_sim::{
     BuildingLevels, ColonyState, ConstructionQueue, FactionKind, FactionState, GameState,
-    PRODUCTION_REFRESH_TICKS, PlanetKnowledge, PlanetResourceProfile, ProductionRemainder,
-    ProductionRemainderError, RESEARCH_CATALOG_FINGERPRINT, RESEARCH_CATALOG_VERSION,
+    PlanetKnowledge, PlanetResourceProfile, ProductionRemainder, ProductionRemainderError,
     ResearchState, SelectionTarget, Simulation, SimulationBuildError, StrategicClock,
-    StrategicClockError, StrategicTick, SystemKnowledge, TimeSpeed, default_building_catalog,
+    StrategicClockError, StrategicTick, SystemKnowledge, TimeSpeed, default_ruleset,
+    production_refresh_ticks,
 };
 
-pub const SAVE_VERSION: u32 = 10;
+pub const SAVE_VERSION: u32 = 11;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SaveGame {
     pub version: u32,
-    pub catalog_version: u32,
-    pub catalog_fingerprint: u64,
-    pub research_catalog_version: u32,
-    pub research_catalog_fingerprint: u64,
+    pub ruleset_id: String,
+    pub ruleset_schema_version: u32,
+    pub ruleset_content_version: u32,
+    pub ruleset_structure_fingerprint: u64,
     pub universe: UniverseReference,
     pub state: MutableGameSave,
 }
@@ -85,19 +85,12 @@ pub struct ColonySave {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SaveError {
     UnsupportedVersion(u32),
-    CatalogVersionMismatch {
+    RulesetIdMismatch,
+    RulesetSchemaVersionMismatch {
         expected: u32,
         found: u32,
     },
-    CatalogFingerprintMismatch {
-        expected: u64,
-        found: u64,
-    },
-    ResearchCatalogVersionMismatch {
-        expected: u32,
-        found: u32,
-    },
-    ResearchCatalogFingerprintMismatch {
+    RulesetStructureMismatch {
         expected: u64,
         found: u64,
     },
@@ -132,14 +125,14 @@ pub enum SaveError {
 pub fn snapshot_from_simulation(simulation: &Simulation) -> SaveGame {
     let universe = simulation.universe();
     let state = simulation.state();
-    let catalog = default_building_catalog();
+    let ruleset = default_ruleset();
 
     SaveGame {
         version: SAVE_VERSION,
-        catalog_version: catalog.version(),
-        catalog_fingerprint: catalog.fingerprint(),
-        research_catalog_version: RESEARCH_CATALOG_VERSION,
-        research_catalog_fingerprint: RESEARCH_CATALOG_FINGERPRINT,
+        ruleset_id: ruleset.id().to_string(),
+        ruleset_schema_version: ruleset.schema_version(),
+        ruleset_content_version: ruleset.content_version(),
+        ruleset_structure_fingerprint: ruleset.structure_fingerprint(),
         universe: UniverseReference {
             id: universe.id,
             seed: universe.seed,
@@ -201,30 +194,20 @@ pub fn restore_from_snapshot(save: &SaveGame) -> Result<Simulation, SaveError> {
         return Err(SaveError::UnsupportedVersion(save.version));
     }
 
-    let catalog = default_building_catalog();
-    if save.catalog_version != catalog.version() {
-        return Err(SaveError::CatalogVersionMismatch {
-            expected: catalog.version(),
-            found: save.catalog_version,
+    let ruleset = default_ruleset();
+    if save.ruleset_id != ruleset.id() {
+        return Err(SaveError::RulesetIdMismatch);
+    }
+    if save.ruleset_schema_version != ruleset.schema_version() {
+        return Err(SaveError::RulesetSchemaVersionMismatch {
+            expected: ruleset.schema_version(),
+            found: save.ruleset_schema_version,
         });
     }
-    if save.catalog_fingerprint != catalog.fingerprint() {
-        return Err(SaveError::CatalogFingerprintMismatch {
-            expected: catalog.fingerprint(),
-            found: save.catalog_fingerprint,
-        });
-    }
-
-    if save.research_catalog_version != RESEARCH_CATALOG_VERSION {
-        return Err(SaveError::ResearchCatalogVersionMismatch {
-            expected: RESEARCH_CATALOG_VERSION,
-            found: save.research_catalog_version,
-        });
-    }
-    if save.research_catalog_fingerprint != RESEARCH_CATALOG_FINGERPRINT {
-        return Err(SaveError::ResearchCatalogFingerprintMismatch {
-            expected: RESEARCH_CATALOG_FINGERPRINT,
-            found: save.research_catalog_fingerprint,
+    if save.ruleset_structure_fingerprint != ruleset.structure_fingerprint() {
+        return Err(SaveError::RulesetStructureMismatch {
+            expected: ruleset.structure_fingerprint(),
+            found: save.ruleset_structure_fingerprint,
         });
     }
 
@@ -282,7 +265,7 @@ pub fn restore_from_snapshot(save: &SaveGame) -> Result<Simulation, SaveError> {
                 colony_id: colony.id,
                 error,
             })?;
-            if u64::from(colony.production_pending_ticks) >= PRODUCTION_REFRESH_TICKS {
+            if u64::from(colony.production_pending_ticks) >= production_refresh_ticks() {
                 return Err(SaveError::InvalidPendingProductionTicks {
                     colony_id: colony.id,
                     found: colony.production_pending_ticks,
@@ -335,7 +318,9 @@ mod tests {
     use std::time::Duration;
 
     use galactic_domain::UniverseConfig;
-    use galactic_sim::{BuildingKind, GAME_STATE_VERSION, GameCommand, TechnologyId};
+    use galactic_sim::{
+        BuildingKind, GAME_STATE_VERSION, GameCommand, TechnologyId, default_building_catalog,
+    };
 
     use super::*;
 
@@ -349,7 +334,7 @@ mod tests {
             .id;
         simulation.apply_command(GameCommand::QueueBuildingUpgrade {
             colony_id,
-            kind: BuildingKind::MetalMine,
+            kind: BuildingKind::METAL_MINE,
         });
         simulation.advance(Duration::from_secs(2));
 
@@ -376,11 +361,11 @@ mod tests {
             .colonies
             .first_mut()
             .expect("home colony exists");
-        colony.buildings.set_level(BuildingKind::ResearchLab, 1);
+        colony.buildings.set_level(BuildingKind::RESEARCH_LAB, 1);
         colony.energy = default_building_catalog().energy_grid_for_levels(colony.buildings);
 
         simulation.apply_command(GameCommand::QueueResearch {
-            technology: TechnologyId::SpatialDetection,
+            technology: TechnologyId::SPATIAL_DETECTION,
         });
         simulation.advance(Duration::from_secs(12));
 
@@ -395,16 +380,16 @@ mod tests {
     fn catalog_changes_are_detected() {
         let simulation = Simulation::new(UniverseConfig::mvp());
         let mut save = snapshot_from_simulation(&simulation);
-        save.catalog_fingerprint ^= 1;
+        save.ruleset_structure_fingerprint ^= 1;
 
         assert!(matches!(
             restore_from_snapshot(&save),
-            Err(SaveError::CatalogFingerprintMismatch { .. })
+            Err(SaveError::RulesetStructureMismatch { .. })
         ));
     }
 
     #[test]
-    fn state_and_save_versions_match_mvp_016() {
+    fn state_and_save_versions_match_mvp_016_b() {
         let simulation = Simulation::new(UniverseConfig::mvp());
         let save = snapshot_from_simulation(&simulation);
 

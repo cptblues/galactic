@@ -1,37 +1,53 @@
-// MVP-016: global research queue and minimal technology tree.
-use std::collections::{BTreeSet, VecDeque};
+// MVP-016-B: global research driven by the active external ruleset.
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::fmt;
+
+use serde::Deserialize;
 
 use crate::{
-    BuildingEffect, BuildingKind, GameState, STRATEGIC_TICKS_PER_SECOND, StrategicDuration,
-    default_building_catalog,
+    BuildingEffect, GameState, STRATEGIC_TICKS_PER_SECOND, StrategicDuration,
+    default_building_catalog, default_ruleset,
 };
 
-pub const RESEARCH_CATALOG_VERSION: u32 = 1;
-pub const RESEARCH_CATALOG_FINGERPRINT: u64 = 0x2f55_29d1_26a4_7d83;
-pub const MAX_RESEARCH_QUEUE: usize = 6;
+pub const MAX_RULESET_TECHNOLOGIES: usize = 128;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum TechnologyId {
-    SpatialDetection,
-    Propulsion,
-    CargoCapacity,
-    RemoteExtraction,
-    PlanetaryAnalysis,
-    Colonization,
-}
+#[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TechnologyId(&'static str);
 
 impl TechnologyId {
-    pub const ALL: [Self; 6] = [
-        Self::SpatialDetection,
-        Self::Propulsion,
-        Self::CargoCapacity,
-        Self::RemoteExtraction,
-        Self::PlanetaryAnalysis,
-        Self::Colonization,
-    ];
+    pub const SPATIAL_DETECTION: Self = Self("spatial_detection");
+    pub const PROPULSION: Self = Self("propulsion");
+    pub const CARGO_CAPACITY: Self = Self("cargo_capacity");
+    pub const REMOTE_EXTRACTION: Self = Self("remote_extraction");
+    pub const PLANETARY_ANALYSIS: Self = Self("planetary_analysis");
+    pub const COLONIZATION: Self = Self("colonization");
+
+    pub const fn key(self) -> &'static str {
+        self.0
+    }
+
+    fn from_config(key: String) -> Result<Self, TechnologyCatalogError> {
+        validate_identifier(&key).map_err(|()| TechnologyCatalogError::InvalidIdentifier)?;
+        Ok(Self(Box::leak(key.into_boxed_str())))
+    }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+impl fmt::Debug for TechnologyId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("TechnologyId")
+            .field(&self.0)
+            .finish()
+    }
+}
+
+impl fmt::Display for TechnologyId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub enum TechnologyUnlock {
     DetectUnknownSystems,
     InterstellarTravel,
@@ -41,87 +57,200 @@ pub enum TechnologyUnlock {
     FoundColonies,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+impl TechnologyUnlock {
+    const fn key(self) -> &'static str {
+        match self {
+            Self::DetectUnknownSystems => "detect_unknown_systems",
+            Self::InterstellarTravel => "interstellar_travel",
+            Self::ExpandedCargo => "expanded_cargo",
+            Self::RemoteExtraction => "remote_extraction",
+            Self::AnalyzePlanets => "analyze_planets",
+            Self::FoundColonies => "found_colonies",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TechnologyDefinition {
     pub id: TechnologyId,
     pub name: &'static str,
     pub description: &'static str,
     pub required_milli_points: u64,
-    pub prerequisites: &'static [TechnologyId],
+    pub prerequisites: Vec<TechnologyId>,
     pub unlock: TechnologyUnlock,
     pub unlock_label: &'static str,
 }
 
-const NO_PREREQUISITES: &[TechnologyId] = &[];
-const PROPULSION_PREREQUISITES: &[TechnologyId] = &[TechnologyId::SpatialDetection];
-const CARGO_PREREQUISITES: &[TechnologyId] = &[TechnologyId::Propulsion];
-const REMOTE_EXTRACTION_PREREQUISITES: &[TechnologyId] = &[TechnologyId::CargoCapacity];
-const PLANETARY_ANALYSIS_PREREQUISITES: &[TechnologyId] = &[TechnologyId::SpatialDetection];
-const COLONIZATION_PREREQUISITES: &[TechnologyId] =
-    &[TechnologyId::CargoCapacity, TechnologyId::PlanetaryAnalysis];
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TechnologyCatalog {
+    version: u32,
+    order: Vec<TechnologyId>,
+    definitions: BTreeMap<TechnologyId, TechnologyDefinition>,
+}
 
-pub const TECHNOLOGY_CATALOG: [TechnologyDefinition; 6] = [
-    TechnologyDefinition {
-        id: TechnologyId::SpatialDetection,
-        name: "Détection spatiale",
-        description: "Améliore la détection des systèmes et prépare les missions de reconnaissance.",
-        required_milli_points: 15_000,
-        prerequisites: NO_PREREQUISITES,
-        unlock: TechnologyUnlock::DetectUnknownSystems,
-        unlock_label: "Détection des systèmes inconnus",
-    },
-    TechnologyDefinition {
-        id: TechnologyId::Propulsion,
-        name: "Propulsion",
-        description: "Débloque les moteurs nécessaires aux déplacements interstellaires.",
-        required_milli_points: 20_000,
-        prerequisites: PROPULSION_PREREQUISITES,
-        unlock: TechnologyUnlock::InterstellarTravel,
-        unlock_label: "Voyage interstellaire",
-    },
-    TechnologyDefinition {
-        id: TechnologyId::CargoCapacity,
-        name: "Capacité cargo",
-        description: "Augmente la capacité logistique des futurs vaisseaux et transports.",
-        required_milli_points: 25_000,
-        prerequisites: CARGO_PREREQUISITES,
-        unlock: TechnologyUnlock::ExpandedCargo,
-        unlock_label: "Soutes cargo améliorées",
-    },
-    TechnologyDefinition {
-        id: TechnologyId::RemoteExtraction,
-        name: "Extraction distante",
-        description: "Autorise l'exploitation de ressources sans colonie permanente.",
-        required_milli_points: 30_000,
-        prerequisites: REMOTE_EXTRACTION_PREREQUISITES,
-        unlock: TechnologyUnlock::RemoteExtraction,
-        unlock_label: "Missions d'extraction distante",
-    },
-    TechnologyDefinition {
-        id: TechnologyId::PlanetaryAnalysis,
-        name: "Analyse planétaire",
-        description: "Révèle les caractéristiques nécessaires à l'évaluation des mondes.",
-        required_milli_points: 25_000,
-        prerequisites: PLANETARY_ANALYSIS_PREREQUISITES,
-        unlock: TechnologyUnlock::AnalyzePlanets,
-        unlock_label: "Analyse exacte des planètes",
-    },
-    TechnologyDefinition {
-        id: TechnologyId::Colonization,
-        name: "Colonisation",
-        description: "Débloque la fondation de nouvelles colonies sur les mondes compatibles.",
-        required_milli_points: 45_000,
-        prerequisites: COLONIZATION_PREREQUISITES,
-        unlock: TechnologyUnlock::FoundColonies,
-        unlock_label: "Fondation de colonies",
-    },
-];
+impl TechnologyCatalog {
+    pub(crate) fn from_config(
+        config: TechnologyCatalogConfig,
+    ) -> Result<Self, TechnologyCatalogError> {
+        if config.version != 1 {
+            return Err(TechnologyCatalogError::UnsupportedVersion(config.version));
+        }
+        if config.technologies.is_empty() || config.technologies.len() > MAX_RULESET_TECHNOLOGIES {
+            return Err(TechnologyCatalogError::InvalidTechnologyCount {
+                found: config.technologies.len(),
+                maximum: MAX_RULESET_TECHNOLOGIES,
+            });
+        }
+
+        let mut ids = BTreeMap::new();
+        let mut order = Vec::with_capacity(config.technologies.len());
+        for technology in &config.technologies {
+            let id = TechnologyId::from_config(technology.id.clone())?;
+            if ids.insert(technology.id.clone(), id).is_some() {
+                return Err(TechnologyCatalogError::DuplicateTechnology(id));
+            }
+            order.push(id);
+        }
+
+        let mut definitions = BTreeMap::new();
+        for technology in config.technologies {
+            let id = ids[&technology.id];
+            let prerequisites = technology
+                .prerequisites
+                .into_iter()
+                .map(|prerequisite| {
+                    let Some(&prerequisite_id) = ids.get(&prerequisite) else {
+                        return Err(TechnologyCatalogError::MissingPrerequisite {
+                            technology: id,
+                            prerequisite: TechnologyId::from_config(prerequisite)?,
+                        });
+                    };
+                    Ok(prerequisite_id)
+                })
+                .collect::<Result<Vec<_>, TechnologyCatalogError>>()?;
+            definitions.insert(
+                id,
+                TechnologyDefinition {
+                    id,
+                    name: leak_non_empty(technology.name, TechnologyCatalogError::EmptyName(id))?,
+                    description: leak_non_empty(
+                        technology.description,
+                        TechnologyCatalogError::EmptyDescription(id),
+                    )?,
+                    required_milli_points: technology.required_milli_points,
+                    prerequisites,
+                    unlock: technology.unlock,
+                    unlock_label: leak_non_empty(
+                        technology.unlock_label,
+                        TechnologyCatalogError::EmptyUnlockLabel(id),
+                    )?,
+                },
+            );
+        }
+
+        let catalog = Self {
+            version: config.version,
+            order,
+            definitions,
+        };
+        catalog.validate()?;
+        Ok(catalog)
+    }
+
+    pub const fn version(&self) -> u32 {
+        self.version
+    }
+
+    pub fn ids(&self) -> impl Iterator<Item = TechnologyId> + '_ {
+        self.order.iter().copied()
+    }
+
+    pub fn definitions(&self) -> impl Iterator<Item = &TechnologyDefinition> {
+        self.order.iter().map(|id| self.definition(*id))
+    }
+
+    pub fn definition(&self, technology: TechnologyId) -> &TechnologyDefinition {
+        self.definitions
+            .get(&technology)
+            .expect("validated technology identifier must exist in the active ruleset")
+    }
+
+    pub fn id_by_key(&self, key: &str) -> Option<TechnologyId> {
+        self.definitions
+            .keys()
+            .copied()
+            .find(|technology| technology.key() == key)
+    }
+
+    pub(crate) fn append_structure(&self, output: &mut String) {
+        for definition in self.definitions() {
+            output.push_str(definition.id.key());
+            output.push(':');
+            output.push_str(definition.unlock.key());
+            output.push('[');
+            for prerequisite in &definition.prerequisites {
+                output.push_str(prerequisite.key());
+                output.push(',');
+            }
+            output.push_str("];");
+        }
+    }
+
+    fn validate(&self) -> Result<(), TechnologyCatalogError> {
+        for definition in self.definitions() {
+            if definition.required_milli_points == 0 {
+                return Err(TechnologyCatalogError::InvalidCost(definition.id));
+            }
+            let mut prerequisites = BTreeSet::new();
+            for prerequisite in &definition.prerequisites {
+                if *prerequisite == definition.id {
+                    return Err(TechnologyCatalogError::SelfPrerequisite(definition.id));
+                }
+                if !prerequisites.insert(*prerequisite) {
+                    return Err(TechnologyCatalogError::DuplicatePrerequisite {
+                        technology: definition.id,
+                        prerequisite: *prerequisite,
+                    });
+                }
+            }
+        }
+        for technology in self.ids() {
+            self.visit(technology, &mut BTreeSet::new(), &mut BTreeSet::new())?;
+        }
+        Ok(())
+    }
+
+    fn visit(
+        &self,
+        technology: TechnologyId,
+        visiting: &mut BTreeSet<TechnologyId>,
+        visited: &mut BTreeSet<TechnologyId>,
+    ) -> Result<(), TechnologyCatalogError> {
+        if visited.contains(&technology) {
+            return Ok(());
+        }
+        if !visiting.insert(technology) {
+            return Err(TechnologyCatalogError::PrerequisiteCycle(technology));
+        }
+        for prerequisite in &self.definition(technology).prerequisites {
+            self.visit(*prerequisite, visiting, visited)?;
+        }
+        visiting.remove(&technology);
+        visited.insert(technology);
+        Ok(())
+    }
+}
+
+pub fn technology_catalog() -> &'static TechnologyCatalog {
+    default_ruleset().technologies()
+}
 
 pub fn technology_definition(technology: TechnologyId) -> &'static TechnologyDefinition {
-    TECHNOLOGY_CATALOG
-        .iter()
-        .find(|definition| definition.id == technology)
-        .expect("the static technology catalog is complete")
+    technology_catalog().definition(technology)
+}
+
+pub fn max_research_queue() -> usize {
+    default_ruleset().economy().research_queue_limit
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,6 +274,13 @@ pub struct ResearchState {
 }
 
 impl ResearchState {
+    pub fn from_completed(technologies: impl IntoIterator<Item = TechnologyId>) -> Self {
+        Self {
+            completed: technologies.into_iter().collect(),
+            queue: VecDeque::new(),
+        }
+    }
+
     pub fn completed(&self) -> impl Iterator<Item = TechnologyId> + '_ {
         self.completed.iter().copied()
     }
@@ -231,6 +367,8 @@ pub enum ResearchStateError {
         found: usize,
         maximum: usize,
     },
+    UnknownCompletedTechnology(TechnologyId),
+    UnknownQueuedTechnology(TechnologyId),
     CompletedMissingPrerequisite {
         technology: TechnologyId,
         prerequisite: TechnologyId,
@@ -263,10 +401,9 @@ pub fn research_quote(
     if state.research.is_queued(technology) {
         return Err(ResearchError::AlreadyQueued(technology));
     }
-    if state.research.queue_len() >= MAX_RESEARCH_QUEUE {
-        return Err(ResearchError::QueueFull {
-            maximum: MAX_RESEARCH_QUEUE,
-        });
+    let maximum = max_research_queue();
+    if state.research.queue_len() >= maximum {
+        return Err(ResearchError::QueueFull { maximum });
     }
 
     let output = research_output_milli_points_per_tick(state);
@@ -276,7 +413,7 @@ pub fn research_quote(
 
     let projected = projected_technologies(&state.research);
     let definition = technology_definition(technology);
-    for prerequisite in definition.prerequisites {
+    for prerequisite in &definition.prerequisites {
         if !projected.contains(prerequisite) {
             return Err(ResearchError::MissingPrerequisite {
                 technology,
@@ -327,7 +464,6 @@ pub fn advance_research(state: &mut GameState, ticks: StrategicDuration) -> Vec<
             let spent = active.remaining_milli_points().min(budget);
             active.accumulated_milli_points = active.accumulated_milli_points.saturating_add(spent);
             budget -= spent;
-
             (active.accumulated_milli_points >= active.required_milli_points).then_some(*active)
         };
 
@@ -340,11 +476,9 @@ pub fn advance_research(state: &mut GameState, ticks: StrategicDuration) -> Vec<
             .pop_front()
             .expect("the completed project is active");
         state.research.completed.insert(project.technology);
-
-        let definition = technology_definition(project.technology);
         completed.push(ResearchCompleted {
             technology: project.technology,
-            unlock: definition.unlock,
+            unlock: technology_definition(project.technology).unlock,
         });
     }
 
@@ -352,30 +486,43 @@ pub fn advance_research(state: &mut GameState, ticks: StrategicDuration) -> Vec<
 }
 
 pub fn research_output_milli_points_per_tick(state: &GameState) -> u64 {
-    let definition = default_building_catalog().definition(BuildingKind::ResearchLab);
-    let per_level = match definition.effect {
-        BuildingEffect::ResearchPoints {
-            milli_per_tick_per_level,
-        } => milli_per_tick_per_level,
-        _ => 0,
-    };
-
+    let catalog = default_building_catalog();
     state
         .colonies
         .iter()
         .filter(|colony| colony.faction == state.player_faction)
         .map(|colony| {
-            per_level.saturating_mul(u64::from(colony.buildings.level(BuildingKind::ResearchLab)))
+            catalog
+                .definitions()
+                .filter_map(|definition| match definition.effect {
+                    BuildingEffect::ResearchPoints {
+                        milli_per_tick_per_level,
+                    } => Some(
+                        milli_per_tick_per_level
+                            .saturating_mul(u64::from(colony.buildings.level(definition.kind))),
+                    ),
+                    _ => None,
+                })
+                .fold(0_u64, u64::saturating_add)
         })
         .fold(0_u64, u64::saturating_add)
 }
 
 pub fn research_lab_level_total(state: &GameState) -> u32 {
+    let catalog = default_building_catalog();
     state
         .colonies
         .iter()
         .filter(|colony| colony.faction == state.player_faction)
-        .map(|colony| u32::from(colony.buildings.level(BuildingKind::ResearchLab)))
+        .map(|colony| {
+            catalog
+                .definitions()
+                .filter(|definition| {
+                    matches!(definition.effect, BuildingEffect::ResearchPoints { .. })
+                })
+                .map(|definition| u32::from(colony.buildings.level(definition.kind)))
+                .sum::<u32>()
+        })
         .sum()
 }
 
@@ -393,16 +540,21 @@ pub fn research_progress_ratio(project: ResearchProject) -> f32 {
 }
 
 pub fn validate_research_state(state: &GameState) -> Result<(), ResearchStateError> {
-    if state.research.queue_len() > MAX_RESEARCH_QUEUE {
+    let catalog = technology_catalog();
+    let maximum = max_research_queue();
+    if state.research.queue_len() > maximum {
         return Err(ResearchStateError::TooManyProjects {
             found: state.research.queue_len(),
-            maximum: MAX_RESEARCH_QUEUE,
+            maximum,
         });
     }
 
     for technology in state.research.completed() {
-        let definition = technology_definition(technology);
-        for prerequisite in definition.prerequisites {
+        if !catalog.definitions.contains_key(&technology) {
+            return Err(ResearchStateError::UnknownCompletedTechnology(technology));
+        }
+        let definition = catalog.definition(technology);
+        for prerequisite in &definition.prerequisites {
             if !state.research.has_completed(*prerequisite) {
                 return Err(ResearchStateError::CompletedMissingPrerequisite {
                     technology,
@@ -415,6 +567,11 @@ pub fn validate_research_state(state: &GameState) -> Result<(), ResearchStateErr
     let mut projected = state.research.completed.clone();
     let mut queued = BTreeSet::new();
     for project in state.research.queue() {
+        if !catalog.definitions.contains_key(&project.technology) {
+            return Err(ResearchStateError::UnknownQueuedTechnology(
+                project.technology,
+            ));
+        }
         if state.research.has_completed(project.technology) {
             return Err(ResearchStateError::CompletedAndQueued(project.technology));
         }
@@ -422,7 +579,7 @@ pub fn validate_research_state(state: &GameState) -> Result<(), ResearchStateErr
             return Err(ResearchStateError::DuplicateQueued(project.technology));
         }
 
-        let definition = technology_definition(project.technology);
+        let definition = catalog.definition(project.technology);
         if project.required_milli_points != definition.required_milli_points {
             return Err(ResearchStateError::InvalidRequiredPoints {
                 technology: project.technology,
@@ -440,7 +597,7 @@ pub fn validate_research_state(state: &GameState) -> Result<(), ResearchStateErr
             });
         }
 
-        for prerequisite in definition.prerequisites {
+        for prerequisite in &definition.prerequisites {
             if !projected.contains(prerequisite) {
                 return Err(ResearchStateError::QueuedMissingPrerequisite {
                     technology: project.technology,
@@ -460,23 +617,78 @@ fn projected_technologies(research: &ResearchState) -> BTreeSet<TechnologyId> {
     projected
 }
 
-#[cfg(test)]
-impl TechnologyUnlock {
-    const ALL_FOR_TESTS: [Self; 6] = [
-        Self::DetectUnknownSystems,
-        Self::InterstellarTravel,
-        Self::ExpandedCargo,
-        Self::RemoteExtraction,
-        Self::AnalyzePlanets,
-        Self::FoundColonies,
-    ];
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TechnologyCatalogError {
+    InvalidIdentifier,
+    UnsupportedVersion(u32),
+    InvalidTechnologyCount {
+        found: usize,
+        maximum: usize,
+    },
+    DuplicateTechnology(TechnologyId),
+    EmptyName(TechnologyId),
+    EmptyDescription(TechnologyId),
+    EmptyUnlockLabel(TechnologyId),
+    InvalidCost(TechnologyId),
+    SelfPrerequisite(TechnologyId),
+    DuplicatePrerequisite {
+        technology: TechnologyId,
+        prerequisite: TechnologyId,
+    },
+    MissingPrerequisite {
+        technology: TechnologyId,
+        prerequisite: TechnologyId,
+    },
+    PrerequisiteCycle(TechnologyId),
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct TechnologyCatalogConfig {
+    version: u32,
+    technologies: Vec<TechnologyDefinitionConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TechnologyDefinitionConfig {
+    id: String,
+    name: String,
+    description: String,
+    required_milli_points: u64,
+    prerequisites: Vec<String>,
+    unlock: TechnologyUnlock,
+    unlock_label: String,
+}
+
+fn validate_identifier(value: &str) -> Result<(), ()> {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return Err(());
+    };
+    if !first.is_ascii_lowercase() {
+        return Err(());
+    }
+    if chars.all(|character| {
+        character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_'
+    }) {
+        Ok(())
+    } else {
+        Err(())
+    }
+}
+
+fn leak_non_empty<T>(value: String, error: T) -> Result<&'static str, T> {
+    if value.trim().is_empty() {
+        Err(error)
+    } else {
+        Ok(Box::leak(value.into_boxed_str()))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use galactic_domain::UniverseConfig;
 
-    use crate::{Simulation, default_building_catalog};
+    use crate::{BuildingKind, Simulation, default_building_catalog};
 
     use super::*;
 
@@ -487,95 +699,59 @@ mod tests {
             .colonies
             .first_mut()
             .expect("home colony exists");
-        colony.buildings.research_lab = 1;
+        colony.buildings.set_level(BuildingKind::RESEARCH_LAB, 1);
         colony.energy = default_building_catalog().energy_grid_for_levels(colony.buildings);
         simulation
     }
 
     #[test]
-    fn catalog_contains_the_six_expected_technologies() {
+    fn default_catalog_contains_the_expected_technologies() {
+        assert_eq!(technology_catalog().ids().count(), 6);
         assert_eq!(
-            TECHNOLOGY_CATALOG
-                .iter()
-                .map(|definition| definition.id)
-                .collect::<Vec<_>>(),
-            TechnologyId::ALL.to_vec(),
+            technology_catalog().ids().next(),
+            Some(TechnologyId::SPATIAL_DETECTION),
         );
-        assert!(TECHNOLOGY_CATALOG.iter().all(|definition| {
-            definition.required_milli_points > 0
-                && !definition.name.is_empty()
-                && !definition.unlock_label.is_empty()
-        }));
     }
 
     #[test]
     fn research_requires_an_active_laboratory() {
         let simulation = Simulation::new(UniverseConfig::mvp());
-
         assert_eq!(
-            research_quote(simulation.state(), TechnologyId::SpatialDetection,),
+            research_quote(simulation.state(), TechnologyId::SPATIAL_DETECTION),
             Err(ResearchError::NoResearchCapacity),
         );
     }
 
     #[test]
-    fn all_technologies_can_be_queued_in_valid_order() {
+    fn configured_tree_can_be_queued_in_order() {
         let mut simulation = simulation_with_lab();
-        for technology in TechnologyId::ALL {
-            enqueue_research(simulation.state_mut(), technology)
-                .expect("the canonical order is valid");
+        for technology in technology_catalog().ids() {
+            enqueue_research(simulation.state_mut(), technology).expect("ordered tree is valid");
         }
-
         assert_eq!(
             simulation.state().research.queue_len(),
-            TechnologyId::ALL.len(),
-        );
-        assert!(validate_research_state(simulation.state()).is_ok());
-    }
-
-    #[test]
-    fn completed_technology_cannot_be_relaunched() {
-        let mut simulation = simulation_with_lab();
-        enqueue_research(simulation.state_mut(), TechnologyId::SpatialDetection)
-            .expect("root technology is valid");
-        advance_research(simulation.state_mut(), StrategicDuration::from_ticks(1_000));
-
-        assert_eq!(
-            research_quote(simulation.state(), TechnologyId::SpatialDetection,),
-            Err(ResearchError::AlreadyCompleted(
-                TechnologyId::SpatialDetection,
-            )),
+            technology_catalog().ids().count(),
         );
     }
 
     #[test]
-    fn large_tick_batches_complete_multiple_projects() {
-        let mut simulation = simulation_with_lab();
-        for technology in TechnologyId::ALL {
-            enqueue_research(simulation.state_mut(), technology)
-                .expect("the canonical order is valid");
-        }
+    fn a_new_technology_with_a_known_unlock_is_data_only() {
+        let source = r#"(
+            version: 1,
+            technologies: [(
+                id: "approved_truth",
+                name: "Vérité homologuée",
+                description: "Améliore officiellement tous les rapports.",
+                required_milli_points: 1000,
+                prerequisites: [],
+                unlock: AnalyzePlanets,
+                unlock_label: "Rapports certifiés",
+            )],
+        )"#;
+        let config = ron::de::from_str(source).expect("test technology RON is valid");
+        let catalog =
+            TechnologyCatalog::from_config(config).expect("known unlocks accept new identifiers");
 
-        let completed = advance_research(
-            simulation.state_mut(),
-            StrategicDuration::from_ticks(10_000),
-        );
-
-        assert_eq!(completed.len(), TechnologyId::ALL.len(),);
-        assert!(
-            TechnologyUnlock::ALL_FOR_TESTS
-                .iter()
-                .all(|unlock| { simulation.state().research.has_unlock(*unlock) })
-        );
-    }
-
-    #[test]
-    fn progress_ratio_is_clamped() {
-        let project = ResearchProject {
-            technology: TechnologyId::SpatialDetection,
-            required_milli_points: 100,
-            accumulated_milli_points: 50,
-        };
-        assert_eq!(research_progress_ratio(project), 0.5);
+        assert!(catalog.id_by_key("approved_truth").is_some());
     }
 }

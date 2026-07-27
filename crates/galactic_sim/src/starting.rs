@@ -1,7 +1,7 @@
 // MVP-011: configurable starting economy and knowledge
 use galactic_domain::{ColonyId, EnergyGrid, FactionId, PlanetId, ResourceStock, SystemId};
 
-use crate::{KnowledgeLevel, UniverseRepository};
+use crate::{BuildingLevels, KnowledgeLevel, TechnologyId, UniverseRepository, default_ruleset};
 
 pub const MVP_HOME_SYSTEM_ID: SystemId = SystemId::from_index(0);
 pub const MVP_HOME_PLANET_ID: PlanetId = PlanetId::from_system_index(MVP_HOME_SYSTEM_ID, 0);
@@ -18,100 +18,6 @@ pub const MVP_INITIAL_PLANET_KNOWLEDGE: [InitialPlanetKnowledge; 1] = [InitialPl
     planet_id: MVP_HOME_PLANET_ID,
     level: KnowledgeLevel::Colonized,
 }];
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum BuildingKind {
-    MetalMine,
-    CrystalExtractor,
-    FuelRefinery,
-    PowerPlant,
-    Warehouse,
-    ConstructionCenter,
-    ResearchLab,
-    Shipyard,
-}
-
-impl BuildingKind {
-    pub const ALL: [Self; 8] = [
-        Self::MetalMine,
-        Self::CrystalExtractor,
-        Self::FuelRefinery,
-        Self::PowerPlant,
-        Self::Warehouse,
-        Self::ConstructionCenter,
-        Self::ResearchLab,
-        Self::Shipyard,
-    ];
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct BuildingLevels {
-    pub metal_mine: u8,
-    pub crystal_extractor: u8,
-    pub fuel_refinery: u8,
-    pub power_plant: u8,
-    pub warehouse: u8,
-    pub construction_center: u8,
-    pub research_lab: u8,
-    pub shipyard: u8,
-}
-
-impl BuildingLevels {
-    pub const EMPTY: Self = Self {
-        metal_mine: 0,
-        crystal_extractor: 0,
-        fuel_refinery: 0,
-        power_plant: 0,
-        warehouse: 0,
-        construction_center: 0,
-        research_lab: 0,
-        shipyard: 0,
-    };
-
-    pub const MVP_START: Self = Self {
-        metal_mine: 1,
-        crystal_extractor: 1,
-        fuel_refinery: 1,
-        power_plant: 1,
-        warehouse: 1,
-        construction_center: 1,
-        research_lab: 0,
-        shipyard: 0,
-    };
-
-    pub const fn level(self, kind: BuildingKind) -> u8 {
-        match kind {
-            BuildingKind::MetalMine => self.metal_mine,
-            BuildingKind::CrystalExtractor => self.crystal_extractor,
-            BuildingKind::FuelRefinery => self.fuel_refinery,
-            BuildingKind::PowerPlant => self.power_plant,
-            BuildingKind::Warehouse => self.warehouse,
-            BuildingKind::ConstructionCenter => self.construction_center,
-            BuildingKind::ResearchLab => self.research_lab,
-            BuildingKind::Shipyard => self.shipyard,
-        }
-    }
-
-    pub fn set_level(&mut self, kind: BuildingKind, level: u8) {
-        match kind {
-            BuildingKind::MetalMine => self.metal_mine = level,
-            BuildingKind::CrystalExtractor => self.crystal_extractor = level,
-            BuildingKind::FuelRefinery => self.fuel_refinery = level,
-            BuildingKind::PowerPlant => self.power_plant = level,
-            BuildingKind::Warehouse => self.warehouse = level,
-            BuildingKind::ConstructionCenter => self.construction_center = level,
-            BuildingKind::ResearchLab => self.research_lab = level,
-            BuildingKind::Shipyard => self.shipyard = level,
-        }
-    }
-
-    pub fn total_levels(self) -> u32 {
-        BuildingKind::ALL
-            .into_iter()
-            .map(|kind| u32::from(self.level(kind)))
-            .sum()
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlanetResourceProfile {
@@ -175,30 +81,13 @@ pub struct StartingScenario {
     pub home_colony: StartingColonyConfig,
     pub initial_system_knowledge: &'static [InitialSystemKnowledge],
     pub initial_planet_knowledge: &'static [InitialPlanetKnowledge],
+    pub initial_technologies: &'static [TechnologyId],
     pub minimum_home_habitability: u8,
 }
 
 impl StartingScenario {
-    pub const fn mvp() -> Self {
-        Self {
-            player_faction: StartingFactionConfig {
-                id: MVP_PLAYER_FACTION_ID,
-                name: "Aster Expedition",
-            },
-            home_colony: StartingColonyConfig {
-                id: MVP_HOME_COLONY_ID,
-                name: "Aster Prime Colony",
-                system_id: MVP_HOME_SYSTEM_ID,
-                planet_id: MVP_HOME_PLANET_ID,
-                initial_stock: ResourceStock::new(600, 300, 220),
-                initial_energy: EnergyGrid::new(80, 30),
-                buildings: BuildingLevels::MVP_START,
-                resource_profile: PlanetResourceProfile::BALANCED,
-            },
-            initial_system_knowledge: &MVP_INITIAL_SYSTEM_KNOWLEDGE,
-            initial_planet_knowledge: &MVP_INITIAL_PLANET_KNOWLEDGE,
-            minimum_home_habitability: MVP_MIN_HOME_HABITABILITY,
-        }
+    pub fn mvp() -> Self {
+        default_ruleset().starting_scenario()
     }
 
     pub fn validate(self, universe: &UniverseRepository) -> Result<(), StartingScenarioError> {
@@ -348,7 +237,10 @@ mod tests {
         let fingerprint = universe.definition().generation_fingerprint;
         let mut scenario = StartingScenario::mvp();
         scenario.home_colony.initial_stock = ResourceStock::new(999, 888, 777);
-        scenario.home_colony.buildings.research_lab = 1;
+        scenario
+            .home_colony
+            .buildings
+            .set_level(crate::BuildingKind::RESEARCH_LAB, 1);
         scenario.home_colony.initial_energy = crate::default_building_catalog()
             .energy_grid_for_levels(scenario.home_colony.buildings);
 

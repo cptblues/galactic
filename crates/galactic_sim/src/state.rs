@@ -10,8 +10,8 @@ use crate::{
 
 /// Version of the mutable in-memory state contract.
 ///
-/// Version 9 adds the global research state.
-pub const GAME_STATE_VERSION: u32 = 9;
+/// Version 10 stores data-driven building and technology identifiers.
+pub const GAME_STATE_VERSION: u32 = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemVisibility {
@@ -83,7 +83,7 @@ impl GameState {
                 buildings: home.buildings,
                 resource_profile: home.resource_profile,
             }],
-            research: ResearchState::default(),
+            research: ResearchState::from_completed(scenario.initial_technologies.iter().copied()),
             system_knowledge: Vec::new(),
             planet_knowledge: Vec::new(),
             selected: SelectionTarget::Planet {

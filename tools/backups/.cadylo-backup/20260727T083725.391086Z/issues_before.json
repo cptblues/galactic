@@ -1,0 +1,318 @@
+{
+  "created_at": "2026-07-27T08:37:34.191128+00:00",
+  "issues": {
+    "ENG-25": {
+      "data": {
+        "assignee_id": "7a932ede-540e-48ea-9df8-33c4a523302a",
+        "completed_at": null,
+        "created_at": "2026-07-23T12:16:40.046105+00:00",
+        "creator_id": "7a932ede-540e-48ea-9df8-33c4a523302a",
+        "description": "## Objectif\nConstruire les sondes et vaisseaux à partir des bâtiments, technologies et ressources du joueur.\n\n## Contenu\n- Créer un catalogue de crafts avec coûts, durée, prérequis et résultat.\n- Créer une file de chantier spatial par colonie.\n- Supporter Sonde légère, Cargo léger et Vaisseau-colonie.\n- Prévoir des catégories Défense et Militaire sans contenu actif obligatoire.\n- Afficher la progression et le stock d'unités disponibles.\n\n## Critères d'acceptation\n- [ ] Chaque craft vérifie bâtiments, technologies et ressources.\n- [ ] Le résultat est ajouté à l'inventaire ou à une flotte disponible.\n- [ ] La file est compatible pause, vitesses et sauvegarde.\n- [ ] Le système est générique et ne contient pas de logique spéciale par vaisseau.\n\n## Dépendances\n- MVP-014\n- MVP-016",
+        "due_date": null,
+        "estimate": 8,
+        "id": "3c9eef55-e259-4020-87a5-72516b6a195c",
+        "key": "ENG-25",
+        "number": 25,
+        "priority": 1,
+        "project_id": "87ac2cb1-4382-43d5-9257-c047cb62443a",
+        "start_date": null,
+        "status": "backlog",
+        "team": {
+          "id": "cf2a89be-4ad7-4bcd-8a9f-f6d5300703ea",
+          "key": "ENG",
+          "name": "Engineering"
+        },
+        "title": "MVP-017 — Ajouter une file générique de craft au chantier spatial",
+        "updated_at": "2026-07-23T12:16:40.046105+00:00",
+        "url": "https://cadylo.app/galactic/issue/ENG-25"
+      }
+    },
+    "ENG-26": {
+      "data": {
+        "assignee_id": "7a932ede-540e-48ea-9df8-33c4a523302a",
+        "completed_at": null,
+        "created_at": "2026-07-23T12:16:40.918899+00:00",
+        "creator_id": "7a932ede-540e-48ea-9df8-33c4a523302a",
+        "description": "## Objectif\nÉviter de coder le cœur du jeu comme si tous les objets appartenaient nécessairement au joueur humain.\n\n## Contenu\n- Créer `FactionId`, `FactionData` et `Owner`.\n- Attribuer un propriétaire aux colonies, flottes, stations et objets possédables.\n- Créer la faction joueur et des factions futures inactives.\n- Centraliser les contrôles d'autorisation par faction.\n- Prévoir Neutral, Player et FutureAi comme types initiaux.\n\n## Critères d'acceptation\n- [ ] Aucune logique métier ne suppose implicitement que le propriétaire est le joueur.\n- [ ] Les actions de gestion refusent un objet appartenant à une autre faction.\n- [ ] Les factions sont persistées.\n- [ ] L'ajout d'une faction inactive ne modifie pas la boucle joueur.\n\n## Dépendances\n- MVP-004",
+        "due_date": null,
+        "estimate": 5,
+        "id": "85632507-15af-434e-b237-09966a4b9f14",
+        "key": "ENG-26",
+        "number": 26,
+        "priority": 1,
+        "project_id": "87ac2cb1-4382-43d5-9257-c047cb62443a",
+        "start_date": null,
+        "status": "backlog",
+        "team": {
+          "id": "cf2a89be-4ad7-4bcd-8a9f-f6d5300703ea",
+          "key": "ENG",
+          "name": "Engineering"
+        },
+        "title": "MVP-018 — Généraliser la propriété avec les factions",
+        "updated_at": "2026-07-23T12:16:40.918899+00:00",
+        "url": "https://cadylo.app/galactic/issue/ENG-26"
+      }
+    },
+    "ENG-27": {
+      "data": {
+        "assignee_id": "7a932ede-540e-48ea-9df8-33c4a523302a",
+        "completed_at": null,
+        "created_at": "2026-07-23T12:16:41.704074+00:00",
+        "creator_id": "7a932ede-540e-48ea-9df8-33c4a523302a",
+        "description": "## Objectif\nPréparer l'arrivée future d'IA et de diplomatie sans les simuler dans le MVP.\n\n## Contenu\n- Créer une enveloppe `GameCommand` avec émetteur, tick et action.\n- Faire passer les actions du joueur importantes par cette couche.\n- Définir Unknown, Neutral, Friendly et Hostile.\n- Créer quelques factions seedées sans boucle d'action.\n- Prévoir les points d'extension pour une source de commandes IA.\n\n## Critères d'acceptation\n- [ ] La simulation ne dépend pas directement des widgets UI pour appliquer un ordre.\n- [ ] Une commande connaît toujours sa faction émettrice.\n- [ ] Les relations existent dans les données mais n'influencent pas encore le gameplay sauf autorisations explicites.\n- [ ] Aucune IA active n'est lancée dans le MVP.\n\n## Dépendances\n- MVP-018",
+        "due_date": null,
+        "estimate": 8,
+        "id": "fe165c46-f114-44a6-b7b3-0ab328f607b7",
+        "key": "ENG-27",
+        "number": 27,
+        "priority": 2,
+        "project_id": "87ac2cb1-4382-43d5-9257-c047cb62443a",
+        "start_date": null,
+        "status": "backlog",
+        "team": {
+          "id": "cf2a89be-4ad7-4bcd-8a9f-f6d5300703ea",
+          "key": "ENG",
+          "name": "Engineering"
+        },
+        "title": "MVP-019 — Introduire les commandes génériques et relations dormantes",
+        "updated_at": "2026-07-23T12:16:41.704074+00:00",
+        "url": "https://cadylo.app/galactic/issue/ENG-27"
+      }
+    },
+    "ENG-28": {
+      "data": {
+        "assignee_id": "7a932ede-540e-48ea-9df8-33c4a523302a",
+        "completed_at": null,
+        "created_at": "2026-07-23T12:16:42.523199+00:00",
+        "creator_id": "7a932ede-540e-48ea-9df8-33c4a523302a",
+        "description": "## Objectif\nCréer le modèle métier permettant de regrouper les vaisseaux et d'exécuter des missions.\n\n## Contenu\n- Définir les classes Sonde, Cargo et Colonie.\n- Définir vitesse, portée, capacité de chargement et consommation.\n- Créer une flotte avec propriétaire, localisation, composition et cargaison.\n- Gérer les vaisseaux disponibles au sol et affectés à une mission.\n- Prévoir l'ajout futur de vaisseaux militaires.\n\n## Critères d'acceptation\n- [ ] Une flotte peut être créée depuis les vaisseaux disponibles.\n- [ ] La capacité cargo totale est calculée correctement.\n- [ ] Un vaisseau ne peut pas appartenir à deux flottes.\n- [ ] Tous les objets possédés utilisent un `FactionId`.\n\n## Dépendances\n- MVP-017\n- MVP-018",
+        "due_date": null,
+        "estimate": 8,
+        "id": "a2f7b770-894f-4bb0-bcbd-82a6e114f45c",
+        "key": "ENG-28",
+        "number": 28,
+        "priority": 1,
+        "project_id": "87ac2cb1-4382-43d5-9257-c047cb62443a",
+        "start_date": null,
+        "status": "backlog",
+        "team": {
+          "id": "cf2a89be-4ad7-4bcd-8a9f-f6d5300703ea",
+          "key": "ENG",
+          "name": "Engineering"
+        },
+        "title": "MVP-020 — Définir les flottes, vaisseaux et capacités",
+        "updated_at": "2026-07-23T12:16:42.523199+00:00",
+        "url": "https://cadylo.app/galactic/issue/ENG-28"
+      }
+    },
+    "ENG-29": {
+      "data": {
+        "assignee_id": "7a932ede-540e-48ea-9df8-33c4a523302a",
+        "completed_at": null,
+        "created_at": "2026-07-23T12:16:43.297851+00:00",
+        "creator_id": "7a932ede-540e-48ea-9df8-33c4a523302a",
+        "description": "## Objectif\nCréer un moteur commun pour toutes les missions spatiales du MVP.\n\n## Contenu\n- Définir Préparation, Transit aller, Sur place, Transit retour, Terminée et Échec.\n- Calculer un chemin sur les routes accessibles.\n- Calculer durée et coût de trajet.\n- Appliquer les transitions selon le temps stratégique.\n- Émettre des événements et rapports de mission.\n\n## Critères d'acceptation\n- [ ] Une mission suit toutes les étapes prévues sans dépendre du framerate.\n- [ ] Une route invalide ou une portée insuffisante bloque le départ.\n- [ ] La progression est sérialisable.\n- [ ] Le moteur peut exécuter Probe, Transport, Harvest et Colonize.\n\n## Dépendances\n- MVP-005\n- MVP-006\n- MVP-020",
+        "due_date": null,
+        "estimate": 8,
+        "id": "afd73df8-a1c1-4e4c-9a0b-198a170fa557",
+        "key": "ENG-29",
+        "number": 29,
+        "priority": 1,
+        "project_id": "87ac2cb1-4382-43d5-9257-c047cb62443a",
+        "start_date": null,
+        "status": "backlog",
+        "team": {
+          "id": "cf2a89be-4ad7-4bcd-8a9f-f6d5300703ea",
+          "key": "ENG",
+          "name": "Engineering"
+        },
+        "title": "MVP-021 — Implémenter le moteur de trajet et la machine d'état des missions",
+        "updated_at": "2026-07-23T12:16:43.297851+00:00",
+        "url": "https://cadylo.app/galactic/issue/ENG-29"
+      }
+    },
+    "ENG-30": {
+      "data": {
+        "assignee_id": "7a932ede-540e-48ea-9df8-33c4a523302a",
+        "completed_at": null,
+        "created_at": "2026-07-23T12:16:44.234587+00:00",
+        "creator_id": "7a932ede-540e-48ea-9df8-33c4a523302a",
+        "description": "## Objectif\nPermettre au joueur de dépenser des ressources et du temps pour révéler un système accessible.\n\n## Contenu\n- Définir le modèle de sonde légère.\n- Créer une mission `Probe` avec origine, destination, route, durée et résultat.\n- Vérifier portée, route découverte et disponibilité de la sonde.\n- Afficher la mission en transit.\n- Appliquer le niveau de connaissance Sondé à l'arrivée.\n\n## Critères d'acceptation\n- [ ] Une sonde peut être construite puis envoyée vers un système détecté.\n- [ ] Une destination non accessible est refusée avec un message clair.\n- [ ] La mission progresse selon le temps stratégique.\n- [ ] L'arrivée révèle les informations prévues sans recharger la partie.\n\n## Dépendances\n- MVP-005\n- MVP-009\n- MVP-017\n- MVP-021",
+        "due_date": null,
+        "estimate": 8,
+        "id": "5439859c-538c-4d8b-8172-db0f07ca6cee",
+        "key": "ENG-30",
+        "number": 30,
+        "priority": 1,
+        "project_id": "87ac2cb1-4382-43d5-9257-c047cb62443a",
+        "start_date": null,
+        "status": "backlog",
+        "team": {
+          "id": "cf2a89be-4ad7-4bcd-8a9f-f6d5300703ea",
+          "key": "ENG",
+          "name": "Engineering"
+        },
+        "title": "MVP-022 — Ajouter la sonde et la mission de reconnaissance",
+        "updated_at": "2026-07-23T12:16:44.234587+00:00",
+        "url": "https://cadylo.app/galactic/issue/ENG-30"
+      }
+    },
+    "ENG-32": {
+      "data": {
+        "assignee_id": "7a932ede-540e-48ea-9df8-33c4a523302a",
+        "completed_at": null,
+        "created_at": "2026-07-23T12:16:45.947825+00:00",
+        "creator_id": "7a932ede-540e-48ea-9df8-33c4a523302a",
+        "description": "## Objectif\nDonner un usage au cargo avant la colonisation et créer un choix entre exploitation temporaire et implantation permanente.\n\n## Contenu\n- Générer des sites exploitables sur planètes, lunes ou ceintures analysées.\n- Définir capacité et ressource restante du site.\n- Créer la mission `Harvest`.\n- Limiter la collecte par durée, capacité cargo et stock du site.\n- Ramener la cargaison à la colonie d'origine.\n\n## Critères d'acceptation\n- [ ] Un site non découvert ou non analysé ne peut pas être exploité.\n- [ ] Les ressources du site diminuent sans devenir négatives.\n- [ ] Le cargo revient avec une quantité conforme à sa capacité.\n- [ ] Un site épuisé est clairement signalé.\n\n## Dépendances\n- MVP-009\n- MVP-021",
+        "due_date": null,
+        "estimate": 8,
+        "id": "243090c7-9612-4f9a-a2ed-8bd8bf2d7c09",
+        "key": "ENG-32",
+        "number": 32,
+        "priority": 1,
+        "project_id": "87ac2cb1-4382-43d5-9257-c047cb62443a",
+        "start_date": null,
+        "status": "backlog",
+        "team": {
+          "id": "cf2a89be-4ad7-4bcd-8a9f-f6d5300703ea",
+          "key": "ENG",
+          "name": "Engineering"
+        },
+        "title": "MVP-024 — Ajouter les sites d'extraction et missions de récolte distante",
+        "updated_at": "2026-07-23T12:16:45.947825+00:00",
+        "url": "https://cadylo.app/galactic/issue/ENG-32"
+      }
+    },
+    "ENG-33": {
+      "data": {
+        "assignee_id": "7a932ede-540e-48ea-9df8-33c4a523302a",
+        "completed_at": null,
+        "created_at": "2026-07-23T12:16:46.683112+00:00",
+        "creator_id": "7a932ede-540e-48ea-9df8-33c4a523302a",
+        "description": "## Objectif\nRendre la colonisation conditionnelle à la connaissance, l'habitabilité et la progression technologique.\n\n## Contenu\n- Définir une valeur d'habitabilité et des seuils MVP.\n- Exiger le niveau Analysé avant colonisation.\n- Prendre en compte technologies, route, coût et limite de colonies.\n- Afficher les raisons précises de non-colonisabilité.\n- Identifier deux ou trois cibles intéressantes dans la seed MVP.\n\n## Critères d'acceptation\n- [ ] Une planète non analysée ne peut pas être colonisée.\n- [ ] Une planète inhabitable est refusée avec une raison claire.\n- [ ] Les cibles de la seed offrent des compromis différents.\n- [ ] La règle est testée avec plusieurs combinaisons.\n\n## Dépendances\n- MVP-009\n- MVP-016",
+        "due_date": null,
+        "estimate": 5,
+        "id": "9b07294b-7bcf-4cb1-ad9b-da06c9aa2c19",
+        "key": "ENG-33",
+        "number": 33,
+        "priority": 1,
+        "project_id": "87ac2cb1-4382-43d5-9257-c047cb62443a",
+        "start_date": null,
+        "status": "backlog",
+        "team": {
+          "id": "cf2a89be-4ad7-4bcd-8a9f-f6d5300703ea",
+          "key": "ENG",
+          "name": "Engineering"
+        },
+        "title": "MVP-025 — Définir analyse planétaire et règles de colonisabilité",
+        "updated_at": "2026-07-23T12:16:46.683112+00:00",
+        "url": "https://cadylo.app/galactic/issue/ENG-33"
+      }
+    },
+    "ENG-34": {
+      "data": {
+        "assignee_id": "7a932ede-540e-48ea-9df8-33c4a523302a",
+        "completed_at": null,
+        "created_at": "2026-07-23T12:16:47.42565+00:00",
+        "creator_id": "7a932ede-540e-48ea-9df8-33c4a523302a",
+        "description": "## Objectif\nPermettre au joueur d'investir fortement pour créer une nouvelle implantation.\n\n## Contenu\n- Définir le craft du vaisseau-colonie.\n- Définir la cargaison minimale de fondation.\n- Créer la mission `Colonize` sur le moteur commun.\n- Revalider la cible au départ et à l'arrivée.\n- Consommer le vaisseau ou le convertir selon une règle documentée.\n\n## Critères d'acceptation\n- [ ] Le lancement exige technologie, cible analysée, ressources et route accessibles.\n- [ ] La mission ne peut pas cibler une planète déjà colonisée.\n- [ ] L'arrivée crée une demande de nouvelle colonie exactement une fois.\n- [ ] Un échec contrôlé ne duplique pas les ressources ni le vaisseau.\n\n## Dépendances\n- MVP-017\n- MVP-021\n- MVP-025",
+        "due_date": null,
+        "estimate": 8,
+        "id": "23d4cd72-53c2-42bd-9438-2439a956fa42",
+        "key": "ENG-34",
+        "number": 34,
+        "priority": 1,
+        "project_id": "87ac2cb1-4382-43d5-9257-c047cb62443a",
+        "start_date": null,
+        "status": "backlog",
+        "team": {
+          "id": "cf2a89be-4ad7-4bcd-8a9f-f6d5300703ea",
+          "key": "ENG",
+          "name": "Engineering"
+        },
+        "title": "MVP-026 — Implémenter le vaisseau-colonie et la mission de colonisation",
+        "updated_at": "2026-07-23T12:16:47.42565+00:00",
+        "url": "https://cadylo.app/galactic/issue/ENG-34"
+      }
+    },
+    "ENG-35": {
+      "data": {
+        "assignee_id": "7a932ede-540e-48ea-9df8-33c4a523302a",
+        "completed_at": null,
+        "created_at": "2026-07-23T12:16:48.177747+00:00",
+        "creator_id": "7a932ede-540e-48ea-9df8-33c4a523302a",
+        "description": "## Objectif\nCréer l'état économique minimal d'une planète nouvellement colonisée.\n\n## Contenu\n- Créer la colonie et lui attribuer la faction joueur.\n- Ajouter un centre colonial ou niveau de développement initial.\n- Transférer la cargaison de fondation dans ses stocks.\n- Définir production initiale, énergie et capacité de stockage.\n- Passer la planète au niveau de connaissance Colonisé.\n\n## Critères d'acceptation\n- [ ] La nouvelle colonie apparaît dans les vues et l'interface.\n- [ ] Elle peut construire ses premiers bâtiments.\n- [ ] Ses ressources sont indépendantes des autres colonies.\n- [ ] La création est sauvegardable et reproductible après chargement.\n\n## Dépendances\n- MVP-026",
+        "due_date": null,
+        "estimate": 8,
+        "id": "381baf9f-12da-4b6a-ab09-1d436c869538",
+        "key": "ENG-35",
+        "number": 35,
+        "priority": 1,
+        "project_id": "87ac2cb1-4382-43d5-9257-c047cb62443a",
+        "start_date": null,
+        "status": "backlog",
+        "team": {
+          "id": "cf2a89be-4ad7-4bcd-8a9f-f6d5300703ea",
+          "key": "ENG",
+          "name": "Engineering"
+        },
+        "title": "MVP-027 — Initialiser une nouvelle colonie jouable",
+        "updated_at": "2026-07-23T12:16:48.177747+00:00",
+        "url": "https://cadylo.app/galactic/issue/ENG-35"
+      }
+    },
+    "ENG-36": {
+      "data": {
+        "assignee_id": "7a932ede-540e-48ea-9df8-33c4a523302a",
+        "completed_at": null,
+        "created_at": "2026-07-23T12:16:49.021256+00:00",
+        "creator_id": "7a932ede-540e-48ea-9df8-33c4a523302a",
+        "description": "## Objectif\nPermettre au joueur de comprendre et gérer deux ou trois colonies sans microgestion excessive.\n\n## Contenu\n- Créer un sélecteur global de colonies.\n- Afficher stocks, production, files et alertes par colonie.\n- Ajouter un aperçu agrégé de l'empire.\n- Conserver une colonie active dans les écrans de gestion.\n- Limiter temporairement le nombre de colonies du MVP.\n\n## Critères d'acceptation\n- [ ] Le joueur peut passer d'une colonie à l'autre en peu d'actions.\n- [ ] Les ordres sont appliqués à la colonie explicitement sélectionnée.\n- [ ] L'aperçu agrégé ne confond pas stocks locaux et totaux.\n- [ ] Deux colonies peuvent construire et produire simultanément.\n\n## Dépendances\n- MVP-015\n- MVP-027",
+        "due_date": null,
+        "estimate": 8,
+        "id": "c3474d9c-ba2e-4340-866f-e3a52cf8cc82",
+        "key": "ENG-36",
+        "number": 36,
+        "priority": 1,
+        "project_id": "87ac2cb1-4382-43d5-9257-c047cb62443a",
+        "start_date": null,
+        "status": "backlog",
+        "team": {
+          "id": "cf2a89be-4ad7-4bcd-8a9f-f6d5300703ea",
+          "key": "ENG",
+          "name": "Engineering"
+        },
+        "title": "MVP-028 — Ajouter la gestion multi-colonies",
+        "updated_at": "2026-07-23T12:16:49.021256+00:00",
+        "url": "https://cadylo.app/galactic/issue/ENG-36"
+      }
+    },
+    "ENG-37": {
+      "data": {
+        "assignee_id": "7a932ede-540e-48ea-9df8-33c4a523302a",
+        "completed_at": null,
+        "created_at": "2026-07-23T12:16:49.758331+00:00",
+        "creator_id": "7a932ede-540e-48ea-9df8-33c4a523302a",
+        "description": "## Objectif\nPermettre de déplacer des ressources entre deux colonies du joueur.\n\n## Contenu\n- Créer la mission `Transport`.\n- Sélectionner origine, destination, flotte et cargaison.\n- Réserver la cargaison au départ.\n- Créditer la destination à l'arrivée en respectant le stockage.\n- Définir le traitement d'un surplus non stockable.\n\n## Critères d'acceptation\n- [ ] Le joueur peut envoyer une cargaison valide entre deux colonies.\n- [ ] Les ressources ne sont jamais dupliquées.\n- [ ] La capacité cargo est respectée.\n- [ ] Le rapport d'arrivée indique les quantités livrées.\n\n## Dépendances\n- MVP-021\n- MVP-028",
+        "due_date": null,
+        "estimate": 5,
+        "id": "e6510580-8880-427e-bff1-3fa04c4a7910",
+        "key": "ENG-37",
+        "number": 37,
+        "priority": 1,
+        "project_id": "87ac2cb1-4382-43d5-9257-c047cb62443a",
+        "start_date": null,
+        "status": "backlog",
+        "team": {
+          "id": "cf2a89be-4ad7-4bcd-8a9f-f6d5300703ea",
+          "key": "ENG",
+          "name": "Engineering"
+        },
+        "title": "MVP-029 — Ajouter les missions de transport entre colonies",
+        "updated_at": "2026-07-23T12:16:49.758331+00:00",
+        "url": "https://cadylo.app/galactic/issue/ENG-37"
+      }
+    }
+  },
+  "read_failures": []
+}

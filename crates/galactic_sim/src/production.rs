@@ -1,18 +1,20 @@
-// MVP-013: catalog-driven production with a five-second refresh cadence.
+// MVP-016-B: ruleset-driven production with a configurable refresh cadence.
 use galactic_domain::{ColonyId, ResourceStock};
 
 use crate::{
-    BuildingEffect, BuildingKind, BuildingLevels, ColonyState, PlanetResourceProfile,
-    STRATEGIC_TICKS_PER_SECOND, StrategicDuration, default_building_catalog,
+    BuildingEffect, BuildingLevels, ColonyState, PlanetResourceProfile, STRATEGIC_TICKS_PER_SECOND,
+    StrategicDuration, default_building_catalog, default_ruleset,
 };
 
 /// Fixed-point scale used for sub-unit production.
 pub const PRODUCTION_SCALE: u64 = 1_000;
 
-/// Stocks are credited every five strategic seconds, not every tick.
-pub const PRODUCTION_REFRESH_SECONDS: u64 = 5;
-pub const PRODUCTION_REFRESH_TICKS: u64 =
-    PRODUCTION_REFRESH_SECONDS * STRATEGIC_TICKS_PER_SECOND as u64;
+pub fn production_refresh_ticks() -> u64 {
+    default_ruleset()
+        .economy()
+        .production_refresh_seconds
+        .saturating_mul(u64::from(STRATEGIC_TICKS_PER_SECOND))
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ProductionRemainder {
@@ -106,30 +108,32 @@ impl ProductionRate {
         let catalog = default_building_catalog();
         let mut rate = Self::ZERO;
 
-        for kind in BuildingKind::ALL {
-            let level = buildings.level(kind);
+        for definition in catalog.definitions() {
+            let level = buildings.level(definition.kind);
             if level == 0 {
                 continue;
             }
-            let effect = catalog.definition(kind).effect;
-            match effect {
+            match definition.effect {
                 BuildingEffect::MetalProduction {
                     milli_per_tick_per_level,
                 } => {
-                    rate.metal_milli_per_tick =
-                        modified_rate(milli_per_tick_per_level, level, profile.metal);
+                    rate.metal_milli_per_tick = rate.metal_milli_per_tick.saturating_add(
+                        modified_rate(milli_per_tick_per_level, level, profile.metal),
+                    );
                 }
                 BuildingEffect::CrystalProduction {
                     milli_per_tick_per_level,
                 } => {
-                    rate.crystal_milli_per_tick =
-                        modified_rate(milli_per_tick_per_level, level, profile.crystal);
+                    rate.crystal_milli_per_tick = rate.crystal_milli_per_tick.saturating_add(
+                        modified_rate(milli_per_tick_per_level, level, profile.crystal),
+                    );
                 }
                 BuildingEffect::FuelProduction {
                     milli_per_tick_per_level,
                 } => {
-                    rate.fuel_milli_per_tick =
-                        modified_rate(milli_per_tick_per_level, level, profile.fuel);
+                    rate.fuel_milli_per_tick = rate.fuel_milli_per_tick.saturating_add(
+                        modified_rate(milli_per_tick_per_level, level, profile.fuel),
+                    );
                 }
                 _ => {}
             }
@@ -197,30 +201,7 @@ pub struct ColonyProductionReport {
 }
 
 pub fn storage_capacity(buildings: BuildingLevels) -> ResourceStock {
-    let catalog = default_building_catalog();
-    let mut capacity = catalog.base_storage();
-
-    for kind in BuildingKind::ALL {
-        let level = u64::from(buildings.level(kind));
-        if level == 0 {
-            continue;
-        }
-        if let BuildingEffect::Storage { per_level } = catalog.definition(kind).effect {
-            capacity = ResourceStock::new(
-                capacity
-                    .metal
-                    .saturating_add(per_level.metal.saturating_mul(level)),
-                capacity
-                    .crystal
-                    .saturating_add(per_level.crystal.saturating_mul(level)),
-                capacity
-                    .fuel
-                    .saturating_add(per_level.fuel.saturating_mul(level)),
-            );
-        }
-    }
-
-    capacity
+    default_building_catalog().storage_capacity_for_levels(buildings)
 }
 
 pub fn colony_production_snapshot(colony: &ColonyState) -> ColonyProductionSnapshot {
@@ -238,10 +219,11 @@ pub fn colony_production_snapshot(colony: &ColonyState) -> ColonyProductionSnaps
     let stock = colony.resources.stock();
     let remainder = colony.production_remainder;
     let pending_ticks = colony.production_pending_ticks;
+    let refresh_ticks = production_refresh_ticks() as u16;
     let ticks_until_refresh = if pending_ticks == 0 {
-        PRODUCTION_REFRESH_TICKS as u16
+        refresh_ticks
     } else {
-        PRODUCTION_REFRESH_TICKS as u16 - pending_ticks
+        refresh_ticks - pending_ticks
     };
 
     ColonyProductionSnapshot {
@@ -277,7 +259,7 @@ pub fn colony_production_snapshot(colony: &ColonyState) -> ColonyProductionSnaps
     }
 }
 
-/// Adds strategic ticks to the five-second production window.
+/// Adds strategic ticks to the configured production window.
 ///
 /// Returns a report only when one or more complete windows are credited.
 pub fn queue_colony_production(
@@ -285,8 +267,9 @@ pub fn queue_colony_production(
     ticks: StrategicDuration,
 ) -> Option<ColonyProductionReport> {
     let total = u64::from(colony.production_pending_ticks).saturating_add(ticks.ticks());
-    let processed_ticks = total / PRODUCTION_REFRESH_TICKS * PRODUCTION_REFRESH_TICKS;
-    colony.production_pending_ticks = (total % PRODUCTION_REFRESH_TICKS) as u16;
+    let refresh_ticks = production_refresh_ticks();
+    let processed_ticks = total / refresh_ticks * refresh_ticks;
+    colony.production_pending_ticks = (total % refresh_ticks) as u16;
 
     if processed_ticks == 0 {
         return None;

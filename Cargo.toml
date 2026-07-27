@@ -29,6 +29,8 @@ bevy = { version = "0.19", default-features = false, features = [
 ] }
 rand = "0.9"
 rand_chacha = "0.9"
+ron = "0.10"
+serde = { version = "1", features = ["derive"] }
 
 [dependencies]
 galactic_client = { path = "crates/galactic_client" }

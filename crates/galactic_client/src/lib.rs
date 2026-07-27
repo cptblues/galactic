@@ -347,7 +347,11 @@ impl Default for ColonyManagementState {
         Self {
             open: false,
             active_colony_id: None,
-            selected_building: galactic_sim::BuildingKind::MetalMine,
+            selected_building: galactic_sim::default_building_catalog()
+                .definitions()
+                .next()
+                .expect("validated ruleset contains at least one building")
+                .kind,
             feedback: String::new(),
         }
     }
@@ -1372,8 +1376,8 @@ fn spawn_management_building_list(row: &mut ChildSpawnerCommands) {
             ui_text_font(12.0),
             TextColor(Color::srgb(0.72, 0.88, 0.92)),
         ));
-        for kind in galactic_sim::BuildingKind::ALL {
-            spawn_management_building_button(list, kind);
+        for definition in galactic_sim::default_building_catalog().definitions() {
+            spawn_management_building_button(list, definition.kind);
         }
     });
 }
@@ -2721,6 +2725,7 @@ fn building_management_detail_text(
 
     let mut lines = vec![
         definition.name.to_uppercase(),
+        definition.description.to_string(),
         format!(
             "Niveau actif : {}  •  après la file : {}  •  maximum : {}",
             actual_level, projected_level, definition.max_level,
@@ -2801,54 +2806,49 @@ fn building_effect_label(
     preview.energy = galactic_sim::default_building_catalog().energy_grid_for_levels(levels);
     let production = galactic_sim::colony_production_snapshot(&preview);
 
-    match kind {
-        galactic_sim::BuildingKind::MetalMine => {
+    match galactic_sim::default_building_catalog()
+        .definition(kind)
+        .effect
+    {
+        galactic_sim::BuildingEffect::MetalProduction { .. } => {
             format!(
                 "+{:.2} métal/s",
                 production.effective_rate.metal_per_second(),
             )
         }
-        galactic_sim::BuildingKind::CrystalExtractor => {
+        galactic_sim::BuildingEffect::CrystalProduction { .. } => {
             format!(
                 "+{:.2} cristal/s",
                 production.effective_rate.crystal_per_second(),
             )
         }
-        galactic_sim::BuildingKind::FuelRefinery => {
+        galactic_sim::BuildingEffect::FuelProduction { .. } => {
             format!(
                 "+{:.2} carburant/s",
                 production.effective_rate.fuel_per_second(),
             )
         }
-        galactic_sim::BuildingKind::PowerPlant => {
+        galactic_sim::BuildingEffect::EnergyProduction { .. } => {
             format!(
                 "{} énergie effective",
                 production.effective_energy_production,
             )
         }
-        galactic_sim::BuildingKind::Warehouse => {
+        galactic_sim::BuildingEffect::Storage { .. } => {
             format!(
                 "capacité {}/{}/{}",
                 production.capacity.metal, production.capacity.crystal, production.capacity.fuel,
             )
         }
-        galactic_sim::BuildingKind::ConstructionCenter => {
+        galactic_sim::BuildingEffect::ConstructionSpeed { permille_per_level } => {
             let level = u64::from(levels.level(kind));
-            let bonus = match galactic_sim::default_building_catalog()
-                .definition(kind)
-                .effect
-            {
-                galactic_sim::BuildingEffect::ConstructionSpeed { permille_per_level } => {
-                    permille_per_level.saturating_mul(level) / 10
-                }
-                _ => 0,
-            };
+            let bonus = permille_per_level.saturating_mul(level) / 10;
             format!("vitesse de construction +{bonus}%")
         }
-        galactic_sim::BuildingKind::ResearchLab => {
+        galactic_sim::BuildingEffect::ResearchPoints { .. } => {
             future_points_effect_label(kind, levels.level(kind), "recherche")
         }
-        galactic_sim::BuildingKind::Shipyard => {
+        galactic_sim::BuildingEffect::ShipyardPoints { .. } => {
             future_points_effect_label(kind, levels.level(kind), "chantier")
         }
     }
@@ -2878,7 +2878,7 @@ fn construction_queue_detail_label(colony: &galactic_sim::ColonyState) -> String
             "File vide
 
 {} emplacement(s) disponible(s).",
-            galactic_sim::MAX_CONSTRUCTION_QUEUE,
+            galactic_sim::max_construction_queue(),
         );
     }
 
@@ -2918,7 +2918,7 @@ coût réservé {}",
 
 {} / {} emplacement(s) utilisé(s)",
         colony.construction_queue.len(),
-        galactic_sim::MAX_CONSTRUCTION_QUEUE,
+        galactic_sim::max_construction_queue(),
     ));
     lines.join(
         "
@@ -3735,12 +3735,7 @@ Carburant : {}
 Énergie : {}
 
 INFRASTRUCTURE
-Mines : {}/{}/{}
-Centrale : {}
-Entrepôt : {}
-Construction : {}
-Laboratoire : {}
-Chantier : {}",
+{}",
             faction.name,
             planet.habitability,
             colony_economy_text(colony),
@@ -3748,14 +3743,7 @@ Chantier : {}",
             colony.resource_profile.crystal,
             colony.resource_profile.fuel,
             colony.resource_profile.energy,
-            colony.buildings.metal_mine,
-            colony.buildings.crystal_extractor,
-            colony.buildings.fuel_refinery,
-            colony.buildings.power_plant,
-            colony.buildings.warehouse,
-            colony.buildings.construction_center,
-            colony.buildings.research_lab,
-            colony.buildings.shipyard,
+            colony_buildings_text(colony),
         ),
         hint: "Colonie active : ressources et énergie sont exactes.".to_string(),
     }
@@ -3800,6 +3788,20 @@ Gestion complète : touche C",
         production.energy_consumption,
         construction,
     )
+}
+
+fn colony_buildings_text(colony: &galactic_sim::ColonyState) -> String {
+    galactic_sim::default_building_catalog()
+        .definitions()
+        .map(|definition| {
+            format!(
+                "{} : {}",
+                definition.name,
+                colony.buildings.level(definition.kind),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn format_saturation_time(saturation: galactic_sim::SaturationTime) -> String {
@@ -4013,25 +4015,13 @@ Carburant : {}
 Énergie : {}
 
 INFRASTRUCTURE
-Mines : {}/{}/{}
-Centrale : {}
-Entrepôt : {}
-Construction : {}
-Laboratoire : {}
-Chantier : {}",
+{}",
             colony_economy_text(colony),
             colony.resource_profile.metal,
             colony.resource_profile.crystal,
             colony.resource_profile.fuel,
             colony.resource_profile.energy,
-            colony.buildings.metal_mine,
-            colony.buildings.crystal_extractor,
-            colony.buildings.fuel_refinery,
-            colony.buildings.power_plant,
-            colony.buildings.warehouse,
-            colony.buildings.construction_center,
-            colony.buildings.research_lab,
-            colony.buildings.shipyard,
+            colony_buildings_text(colony),
         ));
     }
 
@@ -4466,11 +4456,11 @@ mod tests {
         let quote = galactic_sim::building_upgrade_quote(
             simulation.state(),
             colony.id,
-            galactic_sim::BuildingKind::MetalMine,
+            galactic_sim::BuildingKind::METAL_MINE,
         );
 
         let text =
-            building_management_detail_text(colony, galactic_sim::BuildingKind::MetalMine, quote);
+            building_management_detail_text(colony, galactic_sim::BuildingKind::METAL_MINE, quote);
 
         assert!(text.contains("MINE DE MÉTAL"));
         assert!(text.contains("Niveau actif"));
@@ -4495,7 +4485,7 @@ mod tests {
 
         simulation.apply_command(GameCommand::QueueBuildingUpgrade {
             colony_id,
-            kind: galactic_sim::BuildingKind::MetalMine,
+            kind: galactic_sim::BuildingKind::METAL_MINE,
         });
         let ratio = construction_progress_ratio(
             simulation.state().colony(colony_id).expect("colony exists"),

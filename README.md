@@ -36,6 +36,14 @@ peuvent etre recreees depuis l'etat metier sans conserver d'`Entity`.
 
 Documentation courte: `docs/mvp_architecture.md`.
 
+## Ruleset
+
+Le contenu économique actif est chargé depuis `assets/rulesets/default/` au
+démarrage. Les coûts, durées, textes, bâtiments, technologies, limites de files
+et données de départ peuvent être modifiés sans recompiler le jeu.
+
+Guide de configuration : `docs/ruleset.md`.
+
 ## Controles Actuels
 
 | Action | Controle |

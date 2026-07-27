@@ -1,0 +1,486 @@
+// MVP-016-B: external, versioned and validated gameplay ruleset.
+use std::collections::BTreeSet;
+use std::env;
+use std::fmt;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+use galactic_domain::{ColonyId, FactionId, PlanetId, SystemId};
+use serde::Deserialize;
+use serde::de::DeserializeOwned;
+
+use crate::{
+    BuildingCatalog, BuildingCatalogConfig, BuildingCatalogError, BuildingLevels,
+    InitialPlanetKnowledge, InitialSystemKnowledge, KnowledgeLevel, PlanetResourceProfile,
+    ResourceValuesConfig, StartingColonyConfig, StartingFactionConfig, StartingScenario,
+    TechnologyCatalog, TechnologyCatalogConfig, TechnologyCatalogError,
+};
+
+pub const RULESET_SCHEMA_VERSION: u32 = 1;
+pub const RULESET_DIRECTORY_ENV: &str = "GALACTIC_RULESET_DIR";
+pub const DEFAULT_RULESET_DIRECTORY: &str = "assets/rulesets/default";
+
+static DEFAULT_RULESET: OnceLock<Ruleset> = OnceLock::new();
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EconomyRules {
+    pub construction_queue_limit: usize,
+    pub research_queue_limit: usize,
+    pub production_refresh_seconds: u64,
+}
+
+#[derive(Debug)]
+pub struct Ruleset {
+    id: String,
+    schema_version: u32,
+    content_version: u32,
+    structure_fingerprint: u64,
+    economy: EconomyRules,
+    buildings: BuildingCatalog,
+    technologies: TechnologyCatalog,
+    starting_scenario: StartingScenario,
+}
+
+impl Ruleset {
+    pub fn load_from_dir(directory: &Path) -> Result<Self, RulesetLoadError> {
+        let manifest: ManifestConfig = read_ron(directory, "manifest.ron")?;
+        if manifest.schema_version != RULESET_SCHEMA_VERSION {
+            return Err(RulesetLoadError::UnsupportedSchemaVersion {
+                expected: RULESET_SCHEMA_VERSION,
+                found: manifest.schema_version,
+            });
+        }
+        validate_identifier(&manifest.id)
+            .map_err(|()| RulesetLoadError::InvalidRulesetId(manifest.id.clone()))?;
+        if manifest.content_version == 0 {
+            return Err(RulesetLoadError::InvalidContentVersion);
+        }
+
+        let economy_config: EconomyConfig = read_ron(directory, "economy.ron")?;
+        let economy = economy_config.compile()?;
+        let building_config: BuildingCatalogConfig = read_ron(directory, "buildings.ron")?;
+        let buildings =
+            BuildingCatalog::from_config(building_config, economy_config.base_storage.into_stock())
+                .map_err(RulesetLoadError::Buildings)?;
+        let technology_config: TechnologyCatalogConfig = read_ron(directory, "technologies.ron")?;
+        let technologies = TechnologyCatalog::from_config(technology_config)
+            .map_err(RulesetLoadError::Technologies)?;
+        let starting_config: StartingScenarioConfig = read_ron(directory, "starting_scenario.ron")?;
+        let starting_scenario = starting_config.compile(&buildings, &technologies)?;
+
+        let mut structure = format!(
+            "ruleset:{};schema:{};",
+            manifest.id, manifest.schema_version,
+        );
+        buildings.append_structure(&mut structure);
+        technologies.append_structure(&mut structure);
+
+        Ok(Self {
+            id: manifest.id,
+            schema_version: manifest.schema_version,
+            content_version: manifest.content_version,
+            structure_fingerprint: fnv1a64(structure.as_bytes()),
+            economy,
+            buildings,
+            technologies,
+            starting_scenario,
+        })
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub const fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+
+    pub const fn content_version(&self) -> u32 {
+        self.content_version
+    }
+
+    pub const fn structure_fingerprint(&self) -> u64 {
+        self.structure_fingerprint
+    }
+
+    pub const fn economy(&self) -> EconomyRules {
+        self.economy
+    }
+
+    pub const fn buildings(&self) -> &BuildingCatalog {
+        &self.buildings
+    }
+
+    pub const fn technologies(&self) -> &TechnologyCatalog {
+        &self.technologies
+    }
+
+    pub const fn starting_scenario(&self) -> StartingScenario {
+        self.starting_scenario
+    }
+}
+
+pub fn default_ruleset() -> &'static Ruleset {
+    DEFAULT_RULESET.get_or_init(|| {
+        let directory = default_ruleset_directory();
+        Ruleset::load_from_dir(&directory).unwrap_or_else(|error| {
+            panic!(
+                "failed to load Galactic ruleset from {}: {error}",
+                directory.display(),
+            )
+        })
+    })
+}
+
+pub fn default_ruleset_directory() -> PathBuf {
+    if let Some(configured) = env::var_os(RULESET_DIRECTORY_ENV) {
+        return PathBuf::from(configured);
+    }
+
+    if let Ok(current) = env::current_dir() {
+        for ancestor in current.ancestors() {
+            let candidate = ancestor.join(DEFAULT_RULESET_DIRECTORY);
+            if candidate.is_dir() {
+                return candidate;
+            }
+        }
+    }
+    if let Ok(executable) = env::current_exe() {
+        for ancestor in executable.ancestors().skip(1) {
+            let candidate = ancestor.join(DEFAULT_RULESET_DIRECTORY);
+            if candidate.is_dir() {
+                return candidate;
+            }
+        }
+    }
+
+    PathBuf::from(DEFAULT_RULESET_DIRECTORY)
+}
+
+#[derive(Debug)]
+pub enum RulesetLoadError {
+    Read {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    Parse {
+        path: PathBuf,
+        message: String,
+    },
+    InvalidRulesetId(String),
+    UnsupportedSchemaVersion {
+        expected: u32,
+        found: u32,
+    },
+    InvalidContentVersion,
+    InvalidEconomy(&'static str),
+    Buildings(BuildingCatalogError),
+    Technologies(TechnologyCatalogError),
+    StartingScenario(&'static str),
+}
+
+impl fmt::Display for RulesetLoadError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Read { path, source } => {
+                write!(formatter, "cannot read {}: {source}", path.display())
+            }
+            Self::Parse { path, message } => {
+                write!(formatter, "invalid RON in {}: {message}", path.display())
+            }
+            Self::InvalidRulesetId(id) => write!(formatter, "invalid ruleset id `{id}`"),
+            Self::UnsupportedSchemaVersion { expected, found } => write!(
+                formatter,
+                "ruleset schema version {found} is unsupported (expected {expected})",
+            ),
+            Self::InvalidContentVersion => {
+                formatter.write_str("ruleset content_version must be greater than zero")
+            }
+            Self::InvalidEconomy(message) => write!(formatter, "invalid economy: {message}"),
+            Self::Buildings(error) => write!(formatter, "invalid buildings catalog: {error:?}"),
+            Self::Technologies(error) => {
+                write!(formatter, "invalid technologies catalog: {error:?}")
+            }
+            Self::StartingScenario(message) => {
+                write!(formatter, "invalid starting scenario: {message}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for RulesetLoadError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Read { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ManifestConfig {
+    id: String,
+    schema_version: u32,
+    content_version: u32,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+struct EconomyConfig {
+    base_storage: ResourceValuesConfig,
+    construction_queue_limit: usize,
+    research_queue_limit: usize,
+    production_refresh_seconds: u64,
+}
+
+impl EconomyConfig {
+    fn compile(self) -> Result<EconomyRules, RulesetLoadError> {
+        if self.base_storage.metal == 0
+            || self.base_storage.crystal == 0
+            || self.base_storage.fuel == 0
+        {
+            return Err(RulesetLoadError::InvalidEconomy(
+                "base storage values must be greater than zero",
+            ));
+        }
+        if self.construction_queue_limit == 0 {
+            return Err(RulesetLoadError::InvalidEconomy(
+                "construction_queue_limit must be greater than zero",
+            ));
+        }
+        if self.research_queue_limit == 0 {
+            return Err(RulesetLoadError::InvalidEconomy(
+                "research_queue_limit must be greater than zero",
+            ));
+        }
+        if self.production_refresh_seconds == 0
+            || self.production_refresh_seconds > u64::from(u16::MAX) / 10
+        {
+            return Err(RulesetLoadError::InvalidEconomy(
+                "production_refresh_seconds is outside the supported range",
+            ));
+        }
+        Ok(EconomyRules {
+            construction_queue_limit: self.construction_queue_limit,
+            research_queue_limit: self.research_queue_limit,
+            production_refresh_seconds: self.production_refresh_seconds,
+        })
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct StartingScenarioConfig {
+    faction_id: u64,
+    faction_name: String,
+    colony_id: u64,
+    colony_name: String,
+    home_system_index: u32,
+    home_planet_index: u32,
+    initial_stock: ResourceValuesConfig,
+    buildings: Vec<StartingBuildingConfig>,
+    initial_technologies: Vec<String>,
+    resource_profile: ResourceProfileConfig,
+    minimum_home_habitability: u8,
+}
+
+impl StartingScenarioConfig {
+    fn compile(
+        self,
+        catalog: &BuildingCatalog,
+        technologies: &TechnologyCatalog,
+    ) -> Result<StartingScenario, RulesetLoadError> {
+        let faction_name = leak_non_empty(self.faction_name, "faction_name must not be empty")?;
+        let colony_name = leak_non_empty(self.colony_name, "colony_name must not be empty")?;
+        let system_id = SystemId::from_index(self.home_system_index);
+        let planet_id = PlanetId::from_system_index(system_id, self.home_planet_index);
+        let mut buildings = BuildingLevels::EMPTY;
+        let mut configured_buildings = BTreeSet::new();
+        for configured in self.buildings {
+            if !configured_buildings.insert(configured.id.clone()) {
+                return Err(RulesetLoadError::StartingScenario(
+                    "a starting building is duplicated",
+                ));
+            }
+            let Some(kind) = catalog.kind_by_key(&configured.id) else {
+                return Err(RulesetLoadError::StartingScenario(
+                    "a starting building does not exist in buildings.ron",
+                ));
+            };
+            buildings.set_level(kind, configured.level);
+        }
+        catalog
+            .validate_levels(buildings)
+            .map_err(RulesetLoadError::Buildings)?;
+
+        let resource_profile = PlanetResourceProfile::new(
+            self.resource_profile.metal,
+            self.resource_profile.crystal,
+            self.resource_profile.fuel,
+            self.resource_profile.energy,
+        );
+        if !resource_profile.is_viable() {
+            return Err(RulesetLoadError::StartingScenario(
+                "resource profile values must be greater than zero",
+            ));
+        }
+
+        let initial_system_knowledge = Box::leak(
+            vec![InitialSystemKnowledge {
+                system_id,
+                level: KnowledgeLevel::Colonized,
+            }]
+            .into_boxed_slice(),
+        );
+        let initial_planet_knowledge = Box::leak(
+            vec![InitialPlanetKnowledge {
+                planet_id,
+                level: KnowledgeLevel::Colonized,
+            }]
+            .into_boxed_slice(),
+        );
+        let mut completed = Vec::new();
+        for key in self.initial_technologies {
+            let Some(technology) = technologies.id_by_key(&key) else {
+                return Err(RulesetLoadError::StartingScenario(
+                    "an initial technology does not exist in technologies.ron",
+                ));
+            };
+            if completed.contains(&technology) {
+                return Err(RulesetLoadError::StartingScenario(
+                    "an initial technology is duplicated",
+                ));
+            }
+            if technologies
+                .definition(technology)
+                .prerequisites
+                .iter()
+                .any(|prerequisite| !completed.contains(prerequisite))
+            {
+                return Err(RulesetLoadError::StartingScenario(
+                    "initial technologies are not ordered after their prerequisites",
+                ));
+            }
+            completed.push(technology);
+        }
+        let initial_technologies = Box::leak(completed.into_boxed_slice());
+
+        let initial_stock = self.initial_stock.into_stock();
+        if !initial_stock.is_within(catalog.storage_capacity_for_levels(buildings)) {
+            return Err(RulesetLoadError::StartingScenario(
+                "initial stock exceeds configured storage capacity",
+            ));
+        }
+
+        Ok(StartingScenario {
+            player_faction: StartingFactionConfig {
+                id: FactionId::new(self.faction_id),
+                name: faction_name,
+            },
+            home_colony: StartingColonyConfig {
+                id: ColonyId::new(self.colony_id),
+                name: colony_name,
+                system_id,
+                planet_id,
+                initial_stock,
+                initial_energy: catalog.energy_grid_for_levels(buildings),
+                buildings,
+                resource_profile,
+            },
+            initial_system_knowledge,
+            initial_planet_knowledge,
+            initial_technologies,
+            minimum_home_habitability: self.minimum_home_habitability,
+        })
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct StartingBuildingConfig {
+    id: String,
+    level: u8,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResourceProfileConfig {
+    metal: u16,
+    crystal: u16,
+    fuel: u16,
+    energy: u16,
+}
+
+fn read_ron<T: DeserializeOwned>(
+    directory: &Path,
+    filename: &'static str,
+) -> Result<T, RulesetLoadError> {
+    let path = directory.join(filename);
+    let source = fs::read_to_string(&path).map_err(|source| RulesetLoadError::Read {
+        path: path.clone(),
+        source,
+    })?;
+    ron::de::from_str(&source).map_err(|error| RulesetLoadError::Parse {
+        path,
+        message: error.to_string(),
+    })
+}
+
+fn validate_identifier(value: &str) -> Result<(), ()> {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return Err(());
+    };
+    if !first.is_ascii_lowercase() {
+        return Err(());
+    }
+    if chars.all(|character| {
+        character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_'
+    }) {
+        Ok(())
+    } else {
+        Err(())
+    }
+}
+
+fn leak_non_empty(value: String, message: &'static str) -> Result<&'static str, RulesetLoadError> {
+    if value.trim().is_empty() {
+        Err(RulesetLoadError::StartingScenario(message))
+    } else {
+        Ok(Box::leak(value.into_boxed_str()))
+    }
+}
+
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_ruleset_is_external_and_valid() {
+        let ruleset = default_ruleset();
+        assert_eq!(ruleset.id(), "default");
+        assert_eq!(ruleset.schema_version(), RULESET_SCHEMA_VERSION);
+        assert_ne!(ruleset.structure_fingerprint(), 0);
+        assert_eq!(ruleset.buildings().definitions().count(), 8);
+        assert_eq!(ruleset.technologies().definitions().count(), 6);
+    }
+
+    #[test]
+    fn text_is_not_part_of_the_structure_fingerprint() {
+        let mut first = String::from("ruleset:default;schema:1;");
+        default_ruleset().buildings().append_structure(&mut first);
+        default_ruleset()
+            .technologies()
+            .append_structure(&mut first);
+        assert_eq!(
+            default_ruleset().structure_fingerprint(),
+            fnv1a64(first.as_bytes()),
+        );
+    }
+}
