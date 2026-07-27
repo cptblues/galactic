@@ -2,7 +2,7 @@
 use bevy::prelude::*;
 use galactic_domain::ColonyId;
 use galactic_sim::{
-    CraftError, CraftQuote, CraftableId, GameCommand, GameEvent, StrategicDuration,
+    CraftError, CraftQuote, CraftableId, GameAction, GameEventKind, StrategicDuration,
     craft_progress_ratio, craft_quote, craftable_catalog, craftable_definition, max_craft_queue,
     shipyard_output_milli_per_tick, shipyard_output_points_per_second, technology_definition,
 };
@@ -515,12 +515,12 @@ fn handle_craft_buttons(
 
 fn capture_craft_feedback(simulation: Res<SimulationResource>, mut ui: ResMut<CraftUiState>) {
     for event in &simulation.pending_events {
-        match *event {
-            GameEvent::CraftQueued(queued) if Some(queued.colony_id) == ui.active_colony_id => {
+        match event.kind {
+            GameEventKind::CraftQueued(queued) if Some(queued.colony_id) == ui.active_colony_id => {
                 let definition = craftable_definition(queued.order.craftable);
                 ui.feedback = format!("{} ajouté à la file.", definition.name);
             }
-            GameEvent::CraftCompleted(completed)
+            GameEventKind::CraftCompleted(completed)
                 if Some(completed.colony_id) == ui.active_colony_id =>
             {
                 let definition = craftable_definition(completed.craftable);
@@ -529,7 +529,7 @@ fn capture_craft_feedback(simulation: Res<SimulationResource>, mut ui: ResMut<Cr
                     definition.name, completed.inventory_quantity,
                 );
             }
-            GameEvent::CraftRejected(rejected)
+            GameEventKind::CraftRejected(rejected)
                 if Some(rejected.colony_id) == ui.active_colony_id =>
             {
                 ui.feedback = format!("Fabrication refusée : {}", craft_error_text(rejected.error));
@@ -724,7 +724,7 @@ fn queue_selected_craft(simulation: &mut SimulationResource, ui: &mut CraftUiSta
     match craft_quote(state, state.player_faction, colony_id, ui.selected) {
         Ok(_) => apply_simulation_command(
             simulation,
-            GameCommand::QueueCraft {
+            GameAction::QueueCraft {
                 colony_id,
                 craftable: ui.selected,
             },

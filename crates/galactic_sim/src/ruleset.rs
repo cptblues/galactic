@@ -12,13 +12,14 @@ use serde::de::DeserializeOwned;
 
 use crate::{
     BuildingCatalog, BuildingCatalogConfig, BuildingCatalogError, BuildingLevels,
-    CraftCatalogError, CraftableCatalog, CraftableCatalogConfig, FactionKind,
-    InitialPlanetKnowledge, InitialSystemKnowledge, KnowledgeLevel, PlanetResourceProfile,
-    ResourceValuesConfig, StartingColonyConfig, StartingFactionConfig, StartingScenario,
-    TechnologyCatalog, TechnologyCatalogConfig, TechnologyCatalogError,
+    CraftCatalogError, CraftableCatalog, CraftableCatalogConfig, DiplomacyState,
+    DiplomaticRelation, FactionKind, FactionRelation, InitialPlanetKnowledge,
+    InitialSystemKnowledge, KnowledgeLevel, PlanetResourceProfile, ResourceValuesConfig,
+    StartingColonyConfig, StartingFactionConfig, StartingScenario, TechnologyCatalog,
+    TechnologyCatalogConfig, TechnologyCatalogError,
 };
 
-pub const RULESET_SCHEMA_VERSION: u32 = 3;
+pub const RULESET_SCHEMA_VERSION: u32 = 4;
 pub const RULESET_DIRECTORY_ENV: &str = "GALACTIC_RULESET_DIR";
 pub const DEFAULT_RULESET_DIRECTORY: &str = "assets/rulesets/default";
 
@@ -63,7 +64,7 @@ impl Ruleset {
         let economy_config: EconomyConfig = read_ron(directory, "economy.ron")?;
         let economy = economy_config.compile()?;
         let faction_config: FactionCatalogConfig = read_ron(directory, "factions.ron")?;
-        let factions = faction_config.compile()?;
+        let faction_catalog = faction_config.compile()?;
         let building_config: BuildingCatalogConfig = read_ron(directory, "buildings.ron")?;
         let buildings =
             BuildingCatalog::from_config(building_config, economy_config.base_storage.into_stock())
@@ -75,13 +76,24 @@ impl Ruleset {
         let craftables = CraftableCatalog::from_config(craftable_config, &buildings, &technologies)
             .map_err(RulesetLoadError::Craftables)?;
         let starting_config: StartingScenarioConfig = read_ron(directory, "starting_scenario.ron")?;
-        let starting_scenario = starting_config.compile(&buildings, &technologies, factions)?;
+        let starting_scenario = starting_config.compile(
+            &buildings,
+            &technologies,
+            faction_catalog.factions,
+            faction_catalog.default_relation,
+            faction_catalog.relations,
+        )?;
 
         let mut structure = format!(
             "ruleset:{};schema:{};",
             manifest.id, manifest.schema_version,
         );
-        append_faction_structure(factions, &mut structure);
+        append_faction_structure(faction_catalog.factions, &mut structure);
+        append_diplomacy_structure(
+            faction_catalog.default_relation,
+            faction_catalog.relations,
+            &mut structure,
+        );
         buildings.append_structure(&mut structure);
         technologies.append_structure(&mut structure);
         craftables.append_structure(&mut structure);
@@ -260,14 +272,16 @@ struct EconomyConfig {
 #[derive(Debug, Deserialize)]
 struct FactionCatalogConfig {
     version: u32,
+    default_relation: DiplomaticRelationConfig,
     factions: Vec<FactionConfig>,
+    relations: Vec<FactionRelationConfig>,
 }
 
 impl FactionCatalogConfig {
-    fn compile(self) -> Result<&'static [StartingFactionConfig], RulesetLoadError> {
-        if self.version != 1 {
+    fn compile(self) -> Result<CompiledFactionCatalog, RulesetLoadError> {
+        if self.version != 2 {
             return Err(RulesetLoadError::InvalidFactions(
-                "factions.ron version must be 1",
+                "factions.ron version must be 2",
             ));
         }
         if self.factions.is_empty() {
@@ -297,8 +311,38 @@ impl FactionCatalogConfig {
             });
         }
         compiled.sort_by_key(|faction| faction.id);
-        Ok(Box::leak(compiled.into_boxed_slice()))
+        let factions = Box::leak(compiled.into_boxed_slice());
+        let default_relation = self.default_relation.into();
+        let mut relations = Vec::with_capacity(self.relations.len());
+        for configured in self.relations {
+            let first = FactionId::new(configured.first);
+            let second = FactionId::new(configured.second);
+            if !ids.contains(&configured.first) || !ids.contains(&configured.second) {
+                return Err(RulesetLoadError::InvalidFactions(
+                    "a relation references an unknown faction",
+                ));
+            }
+            let relation = FactionRelation::new(first, second, configured.relation.into())
+                .map_err(|_| RulesetLoadError::InvalidFactions("self-relations are implicit"))?;
+            relations.push(relation);
+        }
+        let diplomacy = DiplomacyState::new(default_relation, relations).map_err(|_| {
+            RulesetLoadError::InvalidFactions("relations must be unique and useful")
+        })?;
+        let relations = Box::leak(diplomacy.relations().to_vec().into_boxed_slice());
+        Ok(CompiledFactionCatalog {
+            factions,
+            default_relation,
+            relations,
+        })
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CompiledFactionCatalog {
+    factions: &'static [StartingFactionConfig],
+    default_relation: DiplomaticRelation,
+    relations: &'static [FactionRelation],
 }
 
 #[derive(Debug, Deserialize)]
@@ -314,6 +358,32 @@ enum FactionKindConfig {
     Player,
     Neutral,
     FutureAi,
+}
+
+#[derive(Debug, Deserialize)]
+struct FactionRelationConfig {
+    first: u64,
+    second: u64,
+    relation: DiplomaticRelationConfig,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+enum DiplomaticRelationConfig {
+    Unknown,
+    Neutral,
+    Hostile,
+    Allied,
+}
+
+impl From<DiplomaticRelationConfig> for DiplomaticRelation {
+    fn from(relation: DiplomaticRelationConfig) -> Self {
+        match relation {
+            DiplomaticRelationConfig::Unknown => Self::Unknown,
+            DiplomaticRelationConfig::Neutral => Self::Neutral,
+            DiplomaticRelationConfig::Hostile => Self::Hostile,
+            DiplomaticRelationConfig::Allied => Self::Allied,
+        }
+    }
 }
 
 impl From<FactionKindConfig> for FactionKind {
@@ -387,6 +457,8 @@ impl StartingScenarioConfig {
         catalog: &BuildingCatalog,
         technologies: &TechnologyCatalog,
         factions: &'static [StartingFactionConfig],
+        default_relation: DiplomaticRelation,
+        initial_relations: &'static [FactionRelation],
     ) -> Result<StartingScenario, RulesetLoadError> {
         let colony_name = leak_non_empty(self.colony_name, "colony_name must not be empty")?;
         let player_faction_id = FactionId::new(self.player_faction_id);
@@ -480,6 +552,8 @@ impl StartingScenarioConfig {
 
         Ok(StartingScenario {
             factions,
+            default_relation,
+            initial_relations,
             player_faction_id,
             home_colony: StartingColonyConfig {
                 id: ColonyId::new(self.colony_id),
@@ -516,6 +590,34 @@ fn append_faction_structure(factions: &[StartingFactionConfig], output: &mut Str
         } else {
             "inactive;"
         });
+    }
+}
+
+fn append_diplomacy_structure(
+    default_relation: DiplomaticRelation,
+    relations: &[FactionRelation],
+    output: &mut String,
+) {
+    output.push_str("default_relation:");
+    output.push_str(relation_key(default_relation));
+    output.push(';');
+    for relation in relations {
+        output.push_str("relation:");
+        output.push_str(&relation.first.raw().to_string());
+        output.push(':');
+        output.push_str(&relation.second.raw().to_string());
+        output.push(':');
+        output.push_str(relation_key(relation.relation));
+        output.push(';');
+    }
+}
+
+const fn relation_key(relation: DiplomaticRelation) -> &'static str {
+    match relation {
+        DiplomaticRelation::Unknown => "unknown",
+        DiplomaticRelation::Neutral => "neutral",
+        DiplomaticRelation::Hostile => "hostile",
+        DiplomaticRelation::Allied => "allied",
     }
 }
 
@@ -610,6 +712,11 @@ mod tests {
     fn text_is_not_part_of_the_structure_fingerprint() {
         let mut first = format!("ruleset:default;schema:{RULESET_SCHEMA_VERSION};");
         append_faction_structure(default_ruleset().factions(), &mut first);
+        append_diplomacy_structure(
+            default_ruleset().starting_scenario().default_relation,
+            default_ruleset().starting_scenario().initial_relations,
+            &mut first,
+        );
         default_ruleset().buildings().append_structure(&mut first);
         default_ruleset()
             .technologies()

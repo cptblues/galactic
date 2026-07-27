@@ -1,9 +1,10 @@
-use galactic_domain::{PlanetId, SystemId};
+use galactic_domain::{FactionId, PlanetId, SystemId};
 
 use crate::{
-    ColonyProductionReport, ConstructionCompleted, ConstructionQueued, ConstructionRejected,
-    CraftCompleted, CraftQueued, CraftRejected, KnowledgeChange, ResearchCompleted, ResearchQueued,
-    ResearchRejected, StrategicDuration, StrategicTick, TimeSpeed,
+    ColonyProductionReport, CommandRejection, ConstructionCompleted, ConstructionQueued,
+    ConstructionRejected, CraftCompleted, CraftQueued, CraftRejected, KnowledgeChange,
+    ResearchCompleted, ResearchQueued, ResearchRejected, StrategicDuration, StrategicTick,
+    TimeSpeed,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -17,8 +18,31 @@ pub enum SelectionTarget {
     },
 }
 
+/// Faction-addressed output from the deterministic simulation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GameEvent {
+pub struct GameEvent {
+    pub recipient: FactionId,
+    pub occurred_at: StrategicTick,
+    pub kind: GameEventKind,
+}
+
+impl GameEvent {
+    pub const fn new(
+        recipient: FactionId,
+        occurred_at: StrategicTick,
+        kind: GameEventKind,
+    ) -> Self {
+        Self {
+            recipient,
+            occurred_at,
+            kind,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GameEventKind {
+    CommandRejected(CommandRejection),
     SpeedChanged(TimeSpeed),
     SelectionChanged(SelectionTarget),
     KnowledgeChanged(KnowledgeChange),

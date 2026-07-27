@@ -1,5 +1,6 @@
 (
-    version: 1,
+    version: 2,
+    default_relation: Unknown,
     factions: [
         (
             id: 0,
@@ -18,6 +19,18 @@
             name: "Directoire dormant",
             kind: FutureAi,
             active: false,
+        ),
+    ],
+    relations: [
+        (
+            first: 0,
+            second: 1,
+            relation: Neutral,
+        ),
+        (
+            first: 0,
+            second: 2,
+            relation: Hostile,
         ),
     ],
 )

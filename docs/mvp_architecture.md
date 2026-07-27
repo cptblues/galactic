@@ -936,3 +936,28 @@ Versions après migration :
 - `GAME_STATE_VERSION = 12` ;
 - `SAVE_VERSION = 13` ;
 - `RULESET_SCHEMA_VERSION = 3`.
+
+
+## MVP-019 — Commandes génériques et relations dormantes
+
+Une action métier est désormais transportée par `GameCommand`, qui contient
+toujours la faction émettrice, le tick d'émission et un `GameAction`. La
+simulation refuse explicitement une faction inconnue ou inactive ainsi qu'une
+commande émise pour un autre tick. Le joueur, un replay et une future IA
+peuvent donc produire le même contrat d'entrée.
+
+Les sorties utilisent une enveloppe `GameEvent` avec faction destinataire,
+tick d'occurrence et `GameEventKind`. L'interface Bevy ne modifie toujours
+jamais directement les files ou les stocks.
+
+Les relations `Unknown`, `Neutral`, `Hostile` et `Allied` sont symétriques,
+triées et déterministes. Leur état initial vient de `factions.ron`, leur API
+est disponible pour les futures missions et le contrôle territorial, et leur
+état est sauvegardé. Elles ne changent encore ni les autorisations de gestion
+ni la boucle du joueur. Aucune source de commandes IA n'est exécutée.
+
+Versions après migration :
+
+- `GAME_STATE_VERSION = 13` ;
+- `SAVE_VERSION = 14` ;
+- `RULESET_SCHEMA_VERSION = 4`.

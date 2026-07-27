@@ -14,8 +14,8 @@ use galactic_domain::{
     PlanetId, PlanetKind, ResourceStock, StarClass, SystemId, UniverseConfig, WorldPosition,
 };
 use galactic_sim::{
-    GameCommand, GameEvent, KnowledgeLevel, KnowledgeTarget, MVP_HOME_SYSTEM_ID, SelectionTarget,
-    Simulation, SystemVisibility, TimeSpeed,
+    GameAction, GameEvent, GameEventKind, KnowledgeLevel, KnowledgeTarget, MVP_HOME_SYSTEM_ID,
+    SelectionTarget, Simulation, SystemVisibility, TimeSpeed,
 };
 
 pub fn run() {
@@ -1928,11 +1928,11 @@ fn update_ambiguity_panel(
 
 fn select_pick_target(simulation: &mut SimulationResource, target: PickTarget) {
     let command = match target {
-        PickTarget::System(system_id) => GameCommand::SelectSystem(system_id),
+        PickTarget::System(system_id) => GameAction::SelectSystem(system_id),
         PickTarget::Planet {
             system_id,
             planet_id,
-        } => GameCommand::SelectPlanet {
+        } => GameAction::SelectPlanet {
             system_id,
             planet_id,
         },
@@ -2147,8 +2147,8 @@ fn capture_colony_management_feedback(
     mut management: ResMut<ColonyManagementState>,
 ) {
     for event in &simulation.pending_events {
-        match *event {
-            GameEvent::ConstructionQueued(queued) => {
+        match event.kind {
+            GameEventKind::ConstructionQueued(queued) => {
                 let name = &galactic_sim::default_building_catalog()
                     .definition(queued.order.kind)
                     .name;
@@ -2157,13 +2157,13 @@ fn capture_colony_management_feedback(
                     name, queued.order.target_level,
                 );
             }
-            GameEvent::ConstructionCompleted(completed) => {
+            GameEventKind::ConstructionCompleted(completed) => {
                 let name = &galactic_sim::default_building_catalog()
                     .definition(completed.kind)
                     .name;
                 management.feedback = format!("{} niveau {} terminé.", name, completed.new_level,);
             }
-            GameEvent::ConstructionRejected(rejected) => {
+            GameEventKind::ConstructionRejected(rejected) => {
                 management.feedback = format!(
                     "Amélioration refusée : {}",
                     construction_error_text(rejected.error),
@@ -2486,7 +2486,7 @@ fn select_active_management_colony(
     let planet_id = colony.planet_id;
     apply_simulation_command(
         simulation,
-        GameCommand::SelectPlanet {
+        GameAction::SelectPlanet {
             system_id,
             planet_id,
         },
@@ -2507,7 +2507,7 @@ fn queue_selected_management_upgrade(
         Ok(_) => {
             apply_simulation_command(
                 simulation,
-                GameCommand::QueueBuildingUpgrade { colony_id, kind },
+                GameAction::QueueBuildingUpgrade { colony_id, kind },
             );
         }
         Err(error) => {
@@ -3062,9 +3062,9 @@ fn apply_ui_action(
     }
 
     match action {
-        UiAction::TogglePause => apply_simulation_command(simulation, GameCommand::TogglePause),
+        UiAction::TogglePause => apply_simulation_command(simulation, GameAction::TogglePause),
         UiAction::SetSpeed(speed) => {
-            apply_simulation_command(simulation, GameCommand::SetSpeed(speed));
+            apply_simulation_command(simulation, GameAction::SetSpeed(speed));
         }
         UiAction::CycleTarget => match navigation.mode {
             StrategicViewMode::Universe => {
@@ -3090,7 +3090,7 @@ fn apply_ui_action(
             rebuild.0 = true;
         }
         UiAction::AdvanceKnowledge => {
-            apply_simulation_command(simulation, GameCommand::DebugAdvanceSelectedKnowledge);
+            apply_simulation_command(simulation, GameAction::DebugAdvanceSelectedKnowledge);
         }
         UiAction::ToggleDebugGraph => {
             navigation.debug_full_graph = !navigation.debug_full_graph;
@@ -3102,8 +3102,8 @@ fn apply_ui_action(
     }
 }
 
-fn apply_simulation_command(simulation: &mut SimulationResource, command: GameCommand) {
-    let events = simulation.simulation.apply_command(command);
+fn apply_simulation_command(simulation: &mut SimulationResource, action: GameAction) {
+    let events = simulation.simulation.apply_player_action(action);
     simulation.pending_events.extend(events);
 }
 
@@ -3212,10 +3212,7 @@ fn cycle_visible_selection(simulation: &mut SimulationResource, debug_full_graph
         .unwrap_or(0);
     let next_system = systems[next_index].0;
 
-    let events = simulation
-        .simulation
-        .apply_command(GameCommand::SelectSystem(next_system));
-    simulation.pending_events.extend(events);
+    apply_simulation_command(simulation, GameAction::SelectSystem(next_system));
 }
 
 fn cycle_planet_selection(simulation: &mut SimulationResource, system_id: SystemId) {
@@ -3238,13 +3235,13 @@ fn cycle_planet_selection(simulation: &mut SimulationResource, system_id: System
         .unwrap_or(0);
     let planet_id = visible_planets[next_index];
 
-    let events = simulation
-        .simulation
-        .apply_command(GameCommand::SelectPlanet {
+    apply_simulation_command(
+        simulation,
+        GameAction::SelectPlanet {
             system_id,
             planet_id,
-        });
-    simulation.pending_events.extend(events);
+        },
+    );
 }
 
 fn visible_planet_ids(
@@ -3468,10 +3465,10 @@ fn collect_presentation_events(
     mut rebuild: ResMut<ViewRebuildRequest>,
 ) {
     for event in simulation.pending_events.drain(..) {
-        if matches!(event, GameEvent::ProductionRefreshed(_)) {
+        if matches!(event.kind, GameEventKind::ProductionRefreshed(_)) {
             continue;
         }
-        if matches!(event, GameEvent::KnowledgeChanged(_)) {
+        if matches!(event.kind, GameEventKind::KnowledgeChanged(_)) {
             rebuild.0 = true;
         }
         log.last_event = Some(event);
@@ -4183,12 +4180,13 @@ fn selection_label(selection: SelectionTarget) -> String {
 }
 
 fn event_label(event: GameEvent) -> String {
-    match event {
-        GameEvent::SpeedChanged(speed) => format!("speed {}", speed),
-        GameEvent::SelectionChanged(selection) => {
+    match event.kind {
+        GameEventKind::CommandRejected(error) => format!("commande refusée : {:?}", error),
+        GameEventKind::SpeedChanged(speed) => format!("speed {}", speed),
+        GameEventKind::SelectionChanged(selection) => {
             format!("selection {}", selection_label(selection))
         }
-        GameEvent::KnowledgeChanged(change) => {
+        GameEventKind::KnowledgeChanged(change) => {
             let target = match change.target {
                 KnowledgeTarget::System(id) => {
                     format!("system {}", id.index())
@@ -4199,43 +4197,43 @@ fn event_label(event: GameEvent) -> String {
             };
             format!("{} {} -> {}", target, change.previous, change.current)
         }
-        GameEvent::TicksAdvanced {
+        GameEventKind::TicksAdvanced {
             ticks,
             current_tick,
         } => format!("+{} ticks -> {}", ticks.ticks(), current_tick),
-        GameEvent::ProductionRefreshed(_) => "production actualisée".to_string(),
-        GameEvent::ConstructionQueued(queued) => format!(
+        GameEventKind::ProductionRefreshed(_) => "production actualisée".to_string(),
+        GameEventKind::ConstructionQueued(queued) => format!(
             "construction {:?} niveau {} ajoutée ({})",
             queued.order.kind, queued.order.target_level, queued.queue_length,
         ),
-        GameEvent::ConstructionCompleted(done) => format!(
+        GameEventKind::ConstructionCompleted(done) => format!(
             "construction {:?} niveau {} terminée",
             done.kind, done.new_level,
         ),
-        GameEvent::ConstructionRejected(rejected) => format!(
+        GameEventKind::ConstructionRejected(rejected) => format!(
             "construction {:?} refusée : {:?}",
             rejected.kind, rejected.error,
         ),
-        GameEvent::ResearchQueued(queued) => format!(
+        GameEventKind::ResearchQueued(queued) => format!(
             "recherche {:?} ajoutée ({})",
             queued.project.technology, queued.queue_length,
         ),
-        GameEvent::ResearchCompleted(completed) => {
+        GameEventKind::ResearchCompleted(completed) => {
             format!("recherche {:?} terminée", completed.technology,)
         }
-        GameEvent::ResearchRejected(rejected) => format!(
+        GameEventKind::ResearchRejected(rejected) => format!(
             "recherche {:?} refusée : {:?}",
             rejected.technology, rejected.error,
         ),
-        GameEvent::CraftQueued(queued) => format!(
+        GameEventKind::CraftQueued(queued) => format!(
             "craft {:?} ajouté ({})",
             queued.order.craftable, queued.queue_length,
         ),
-        GameEvent::CraftCompleted(completed) => format!(
+        GameEventKind::CraftCompleted(completed) => format!(
             "craft {:?} terminé (stock {})",
             completed.craftable, completed.inventory_quantity,
         ),
-        GameEvent::CraftRejected(rejected) => format!(
+        GameEventKind::CraftRejected(rejected) => format!(
             "craft {:?} refusé : {:?}",
             rejected.craftable, rejected.error,
         ),
@@ -4501,7 +4499,7 @@ mod tests {
             0.0,
         );
 
-        simulation.apply_command(GameCommand::QueueBuildingUpgrade {
+        simulation.apply_player_action(GameAction::QueueBuildingUpgrade {
             colony_id,
             kind: galactic_sim::BuildingKind::METAL_MINE,
         });
@@ -4574,14 +4572,14 @@ mod tests {
             .find(|entry| entry.level == KnowledgeLevel::Detected)
             .expect("the starting frontier contains a detected system")
             .system_id;
-        simulation.apply_command(GameCommand::SelectSystem(detected));
-        simulation.apply_command(GameCommand::DebugAdvanceSelectedKnowledge);
+        simulation.apply_player_action(GameAction::SelectSystem(detected));
+        simulation.apply_player_action(GameAction::DebugAdvanceSelectedKnowledge);
 
         let probed = system_inspector_content(&simulation, detected).render();
         assert!(probed.contains("SONDÉ"));
         assert!(probed.contains("Luminosité estimée"));
 
-        simulation.apply_command(GameCommand::DebugAdvanceSelectedKnowledge);
+        simulation.apply_player_action(GameAction::DebugAdvanceSelectedKnowledge);
         let analyzed = system_inspector_content(&simulation, detected).render();
         let system = simulation
             .universe()
@@ -4740,10 +4738,7 @@ mod tests {
             .into_iter()
             .next()
             .expect("home system has a frontier neighbor");
-        let events = simulation
-            .simulation
-            .apply_command(GameCommand::SelectSystem(neighbor));
-        simulation.pending_events.extend(events);
+        apply_simulation_command(&mut simulation, GameAction::SelectSystem(neighbor));
 
         assert!(!action_available(
             UiAction::EnterSystem,

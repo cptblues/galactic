@@ -8,7 +8,7 @@ Le ruleset est composé de sept fichiers RON :
 
 - `manifest.ron` : identifiant et versions ;
 - `economy.ron` : stockage de base, limites de files et cadence de production ;
-- `factions.ron` : factions, types et activation initiale ;
+- `factions.ron` : factions, types, activation et relations initiales ;
 - `buildings.ron` : bâtiments, coûts, durées, effets et prérequis ;
 - `technologies.ron` : arbre de recherche, coûts et déblocages ;
 - `craftables.ron` : objets fabricables, coûts, durées, prérequis et capacités ;
@@ -28,6 +28,12 @@ Les identifiants numériques de faction sont également stables. Une faction
 `Player` active représente le joueur. Les factions `Neutral` et `FutureAi`
 peuvent rester inactives : elles sont persistées et disponibles pour les
 prochains systèmes de relations et d'IA, sans exécuter de boucle d'action.
+
+`factions.ron` définit aussi une relation par défaut et des exceptions
+symétriques entre paires de factions. Les valeurs reconnues sont `Unknown`,
+`Neutral`, `Hostile` et `Allied`. Ces relations sont consultables et
+sauvegardées, mais n'accordent encore aucun droit de gestion et ne déclenchent
+aucune diplomatie active.
 
 Un nouveau bâtiment ou une nouvelle technologie peut être ajouté sans modifier
 Rust s'il utilise un effet ou un déblocage déjà pris en charge. Les effets de

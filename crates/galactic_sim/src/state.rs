@@ -1,19 +1,19 @@
-// MVP-018: faction-owned state with centralized management authorization.
+// MVP-019: faction-owned state, deterministic relations and authorization.
 use galactic_domain::{
     ColonyId, EnergyGrid, FactionId, Owned, Owner, PlanetId, ResourceLedger, Route, SystemId,
 };
 
 use crate::{
-    BuildingLevels, ConstructionQueue, CraftInventory, CraftQueue, KnowledgeChange,
-    KnowledgeCounts, KnowledgeLevel, KnowledgeTarget, PlanetKnowledge, PlanetResourceProfile,
-    ProductionRemainder, ResearchState, SelectionTarget, StartingScenario, StartingScenarioError,
-    StrategicClock, SystemKnowledge, UniverseRepository,
+    BuildingLevels, ConstructionQueue, CraftInventory, CraftQueue, DiplomacyError, DiplomacyState,
+    DiplomaticRelation, KnowledgeChange, KnowledgeCounts, KnowledgeLevel, KnowledgeTarget,
+    PlanetKnowledge, PlanetResourceProfile, ProductionRemainder, ResearchState, SelectionTarget,
+    StartingScenario, StartingScenarioError, StrategicClock, SystemKnowledge, UniverseRepository,
 };
 
 /// Version of the mutable in-memory state contract.
 ///
-/// Version 12 adds generic owners, configurable faction data and authorization.
-pub const GAME_STATE_VERSION: u32 = 12;
+/// Version 13 adds deterministic faction relations and generic command metadata.
+pub const GAME_STATE_VERSION: u32 = 13;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemVisibility {
@@ -49,6 +49,7 @@ pub enum AuthorizationError {
 pub struct GameState {
     pub version: u32,
     pub factions: Vec<FactionData>,
+    pub diplomacy: DiplomacyState,
     pub player_faction: FactionId,
     pub colonies: Vec<ColonyState>,
     pub research: ResearchState,
@@ -85,6 +86,11 @@ impl GameState {
                     active: faction.active,
                 })
                 .collect(),
+            diplomacy: DiplomacyState::new(
+                scenario.default_relation,
+                scenario.initial_relations.iter().copied(),
+            )
+            .expect("a validated starting scenario must have valid diplomacy"),
             player_faction,
             colonies: vec![ColonyState {
                 id: home.id,
@@ -128,6 +134,35 @@ impl GameState {
 
     pub fn player_faction_state(&self) -> Option<&FactionData> {
         self.faction(self.player_faction)
+    }
+
+    pub fn relation_between(
+        &self,
+        first: FactionId,
+        second: FactionId,
+    ) -> Result<DiplomaticRelation, DiplomacyError> {
+        if self.faction(first).is_none() {
+            return Err(DiplomacyError::UnknownFaction(first));
+        }
+        if self.faction(second).is_none() {
+            return Err(DiplomacyError::UnknownFaction(second));
+        }
+        Ok(self.diplomacy.relation_between(first, second))
+    }
+
+    pub fn set_relation(
+        &mut self,
+        first: FactionId,
+        second: FactionId,
+        relation: DiplomaticRelation,
+    ) -> Result<bool, DiplomacyError> {
+        if self.faction(first).is_none() {
+            return Err(DiplomacyError::UnknownFaction(first));
+        }
+        if self.faction(second).is_none() {
+            return Err(DiplomacyError::UnknownFaction(second));
+        }
+        self.diplomacy.set_relation(first, second, relation)
     }
 
     pub fn authorize_management(
@@ -514,6 +549,25 @@ mod tests {
             state.authorize_management(foreign, Owner::Faction(foreign)),
             Err(AuthorizationError::InactiveActor(foreign)),
         );
+    }
+
+    #[test]
+    fn configured_relations_are_queryable_but_do_not_grant_management() {
+        let universe = UniverseRepository::generate(UniverseConfig::mvp());
+        let state = GameState::new(&universe);
+        let player = state.player_faction;
+        let neutral = FactionId::new(1);
+        let hostile = FactionId::new(2);
+
+        assert_eq!(
+            state.relation_between(player, neutral),
+            Ok(DiplomaticRelation::Neutral),
+        );
+        assert_eq!(
+            state.relation_between(player, hostile),
+            Ok(DiplomaticRelation::Hostile),
+        );
+        assert!(!state.can_manage(player, Owner::Faction(neutral)));
     }
 
     #[test]

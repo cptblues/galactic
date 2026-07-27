@@ -1,17 +1,17 @@
-// MVP-018: persist faction data, owners and the active ruleset identity.
+// MVP-019: persist faction data, diplomacy, owners and the active ruleset identity.
 use galactic_domain::{
     ColonyId, EnergyGrid, FactionId, Owner, PlanetId, ResourceLedger, ResourceLedgerError,
     ResourceReservation, ResourceStock, SystemId, UniverseConfig, UniverseId, generate_universe,
 };
 use galactic_sim::{
-    BuildingLevels, ColonyState, ConstructionQueue, CraftInventory, CraftQueue, FactionData,
-    FactionKind, GameState, PlanetKnowledge, PlanetResourceProfile, ProductionRemainder,
-    ProductionRemainderError, ResearchState, SelectionTarget, Simulation, SimulationBuildError,
-    StrategicClock, StrategicClockError, StrategicTick, SystemKnowledge, TimeSpeed,
-    default_ruleset, production_refresh_ticks,
+    BuildingLevels, ColonyState, ConstructionQueue, CraftInventory, CraftQueue, DiplomacyState,
+    FactionData, FactionKind, GameState, PlanetKnowledge, PlanetResourceProfile,
+    ProductionRemainder, ProductionRemainderError, ResearchState, SelectionTarget, Simulation,
+    SimulationBuildError, StrategicClock, StrategicClockError, StrategicTick, SystemKnowledge,
+    TimeSpeed, default_ruleset, production_refresh_ticks,
 };
 
-pub const SAVE_VERSION: u32 = 13;
+pub const SAVE_VERSION: u32 = 14;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SaveGame {
@@ -37,6 +37,7 @@ pub struct UniverseReference {
 pub struct MutableGameSave {
     pub version: u32,
     pub factions: Vec<FactionSave>,
+    pub diplomacy: DiplomacyState,
     pub player_faction: FactionId,
     pub clock: StrategicClockSave,
     pub selected: SelectionTarget,
@@ -155,6 +156,7 @@ pub fn snapshot_from_simulation(simulation: &Simulation) -> SaveGame {
                     active: faction.active,
                 })
                 .collect(),
+            diplomacy: state.diplomacy.clone(),
             player_faction: state.player_faction,
             clock: StrategicClockSave {
                 current_tick: state.clock.current_tick(),
@@ -310,6 +312,7 @@ pub fn restore_from_snapshot(save: &SaveGame) -> Result<Simulation, SaveError> {
                 active: faction.active,
             })
             .collect(),
+        diplomacy: save.state.diplomacy.clone(),
         player_faction: save.state.player_faction,
         colonies,
         research: save.state.research.clone(),
@@ -328,7 +331,7 @@ mod tests {
 
     use galactic_domain::UniverseConfig;
     use galactic_sim::{
-        BuildingKind, CraftableId, GAME_STATE_VERSION, GameCommand, TechnologyId,
+        BuildingKind, CraftableId, GAME_STATE_VERSION, GameAction, TechnologyId,
         default_building_catalog,
     };
 
@@ -342,7 +345,7 @@ mod tests {
             .player_home_colony()
             .expect("home colony exists")
             .id;
-        simulation.apply_command(GameCommand::QueueBuildingUpgrade {
+        simulation.apply_player_action(GameAction::QueueBuildingUpgrade {
             colony_id,
             kind: BuildingKind::METAL_MINE,
         });
@@ -374,7 +377,7 @@ mod tests {
         colony.buildings.set_level(BuildingKind::RESEARCH_LAB, 1);
         colony.energy = default_building_catalog().energy_grid_for_levels(colony.buildings);
 
-        simulation.apply_command(GameCommand::QueueResearch {
+        simulation.apply_player_action(GameAction::QueueResearch {
             technology: TechnologyId::SPATIAL_DETECTION,
         });
         simulation.advance(Duration::from_secs(12));
@@ -422,7 +425,7 @@ mod tests {
         simulation.state_mut().research =
             ResearchState::from_completed([TechnologyId::SPATIAL_DETECTION]);
         let colony_id = simulation.state().colonies[0].id;
-        simulation.apply_command(GameCommand::QueueCraft {
+        simulation.apply_player_action(GameAction::QueueCraft {
             colony_id,
             craftable: CraftableId::LIGHT_PROBE,
         });
@@ -450,6 +453,7 @@ mod tests {
         let restored = restore_from_snapshot(&save).expect("faction save is compatible");
 
         assert_eq!(restored.state().factions, simulation.state().factions);
+        assert_eq!(restored.state().diplomacy, simulation.state().diplomacy);
         assert_eq!(
             restored.state().colonies[0].owner,
             simulation.state().colonies[0].owner,
@@ -458,7 +462,7 @@ mod tests {
     }
 
     #[test]
-    fn state_and_save_versions_match_mvp_018() {
+    fn state_and_save_versions_match_mvp_019() {
         let simulation = Simulation::new(UniverseConfig::mvp());
         let save = snapshot_from_simulation(&simulation);
 

@@ -1,10 +1,11 @@
-// MVP-018: configurable factions, ownership, starting economy and knowledge.
+// MVP-019: configurable factions, relations, ownership and starting state.
 use std::collections::BTreeSet;
 
 use galactic_domain::{ColonyId, EnergyGrid, FactionId, Owner, PlanetId, ResourceStock, SystemId};
 
 use crate::{
-    BuildingLevels, FactionKind, KnowledgeLevel, TechnologyId, UniverseRepository, default_ruleset,
+    BuildingLevels, DiplomacyError, DiplomacyState, DiplomaticRelation, FactionKind,
+    FactionRelation, KnowledgeLevel, TechnologyId, UniverseRepository, default_ruleset,
 };
 
 pub const MVP_HOME_SYSTEM_ID: SystemId = SystemId::from_index(0);
@@ -87,6 +88,8 @@ pub struct InitialPlanetKnowledge {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StartingScenario {
     pub factions: &'static [StartingFactionConfig],
+    pub default_relation: DiplomaticRelation,
+    pub initial_relations: &'static [FactionRelation],
     pub player_faction_id: FactionId,
     pub home_colony: StartingColonyConfig,
     pub initial_system_knowledge: &'static [InitialSystemKnowledge],
@@ -117,6 +120,23 @@ impl StartingScenario {
                 player_count += 1;
             }
         }
+        for relation in self.initial_relations {
+            if !faction_ids.contains(&relation.first) {
+                return Err(StartingScenarioError::UnknownRelationFaction(
+                    relation.first,
+                ));
+            }
+            if !faction_ids.contains(&relation.second) {
+                return Err(StartingScenarioError::UnknownRelationFaction(
+                    relation.second,
+                ));
+            }
+        }
+        DiplomacyState::new(
+            self.default_relation,
+            self.initial_relations.iter().copied(),
+        )
+        .map_err(StartingScenarioError::InvalidDiplomacy)?;
         if player_count != 1 {
             return Err(StartingScenarioError::InvalidPlayerFactionCount(
                 player_count,
@@ -245,6 +265,8 @@ pub enum StartingScenarioError {
     MissingFactions,
     DuplicateFaction(FactionId),
     EmptyFactionName(FactionId),
+    UnknownRelationFaction(FactionId),
+    InvalidDiplomacy(DiplomacyError),
     InvalidPlayerFactionCount(usize),
     UnknownPlayerFaction(FactionId),
     PlayerFactionKindMismatch(FactionId),

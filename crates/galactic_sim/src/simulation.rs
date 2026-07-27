@@ -1,4 +1,4 @@
-// MVP-018: faction-authorized production, construction, research and craft pipeline.
+// MVP-019: faction-addressed commands, events and deterministic diplomacy.
 use std::collections::HashSet;
 use std::time::Duration;
 
@@ -8,8 +8,9 @@ use galactic_domain::{
 };
 
 use crate::{
-    BuildingCatalogError, ConstructionQueueError, CraftStateError, FactionKind, GAME_STATE_VERSION,
-    GameCommand, GameEvent, GameState, KnowledgeLevel, ResearchStateError, SelectionTarget,
+    BuildingCatalogError, CommandRejection, ConstructionQueueError, CraftStateError,
+    DiplomacyError, DiplomacyState, FactionKind, GAME_STATE_VERSION, GameAction, GameCommand,
+    GameEvent, GameEventKind, GameState, KnowledgeLevel, ResearchStateError, SelectionTarget,
     StartingScenario, StartingScenarioError, StrategicDuration, TimeSpeed, UniverseIndexError,
     UniverseRepository, advance_colony_construction, advance_colony_craft, advance_research,
     default_building_catalog, enqueue_building_upgrade, enqueue_craft, enqueue_research,
@@ -29,6 +30,8 @@ pub enum SimulationBuildError {
     UnknownPlayerFaction(FactionId),
     PlayerFactionIsNotPlayer(FactionId),
     PlayerFactionIsInactive(FactionId),
+    InvalidDiplomacy(DiplomacyError),
+    UnknownRelationFaction(FactionId),
     DuplicateColony(ColonyId),
     InvalidColonyBuildings {
         colony_id: ColonyId,
@@ -150,24 +153,46 @@ impl Simulation {
         &mut self.state
     }
 
+    pub fn player_command(&self, action: GameAction) -> GameCommand {
+        GameCommand::new(
+            self.state.player_faction,
+            self.state.clock.current_tick(),
+            action,
+        )
+    }
+
+    pub fn apply_player_action(&mut self, action: GameAction) -> Vec<GameEvent> {
+        let command = self.player_command(action);
+        self.apply_command(command)
+    }
+
     pub fn apply_command(&mut self, command: GameCommand) -> Vec<GameEvent> {
-        match command {
-            GameCommand::TogglePause => {
+        let current_tick = self.state.clock.current_tick();
+        if let Err(error) = self.validate_command(command) {
+            return vec![GameEvent::new(
+                command.issuer,
+                current_tick,
+                GameEventKind::CommandRejected(error),
+            )];
+        }
+
+        let issuer = command.issuer;
+        let kinds = match command.action {
+            GameAction::TogglePause => {
                 let next_speed = self.state.clock.toggle_pause();
-                vec![GameEvent::SpeedChanged(next_speed)]
+                vec![GameEventKind::SpeedChanged(next_speed)]
             }
-            GameCommand::SetSpeed(speed) => self.set_speed(speed),
-            GameCommand::SelectSystem(system_id) => self.select_system(system_id),
-            GameCommand::SelectPlanet {
+            GameAction::SetSpeed(speed) => self.set_speed(speed),
+            GameAction::SelectSystem(system_id) => self.select_system(system_id),
+            GameAction::SelectPlanet {
                 system_id,
                 planet_id,
             } => self.select_planet(system_id, planet_id),
-            GameCommand::ClearSelection => self.set_selection(SelectionTarget::None),
-            GameCommand::QueueBuildingUpgrade { colony_id, kind } => {
-                let actor = self.state.player_faction;
-                match enqueue_building_upgrade(&mut self.state, actor, colony_id, kind) {
-                    Ok(queued) => vec![GameEvent::ConstructionQueued(queued)],
-                    Err(error) => vec![GameEvent::ConstructionRejected(
+            GameAction::ClearSelection => self.set_selection(SelectionTarget::None),
+            GameAction::QueueBuildingUpgrade { colony_id, kind } => {
+                match enqueue_building_upgrade(&mut self.state, issuer, colony_id, kind) {
+                    Ok(queued) => vec![GameEventKind::ConstructionQueued(queued)],
+                    Err(error) => vec![GameEventKind::ConstructionRejected(
                         crate::ConstructionRejected {
                             colony_id,
                             kind,
@@ -176,32 +201,33 @@ impl Simulation {
                     )],
                 }
             }
-            GameCommand::QueueResearch { technology } => {
-                let actor = self.state.player_faction;
-                match enqueue_research(&mut self.state, actor, technology) {
-                    Ok(queued) => vec![GameEvent::ResearchQueued(queued)],
-                    Err(error) => vec![GameEvent::ResearchRejected(crate::ResearchRejected {
+            GameAction::QueueResearch { technology } => {
+                match enqueue_research(&mut self.state, issuer, technology) {
+                    Ok(queued) => vec![GameEventKind::ResearchQueued(queued)],
+                    Err(error) => vec![GameEventKind::ResearchRejected(crate::ResearchRejected {
                         technology,
                         error,
                     })],
                 }
             }
-            GameCommand::QueueCraft {
+            GameAction::QueueCraft {
                 colony_id,
                 craftable,
-            } => {
-                let actor = self.state.player_faction;
-                match enqueue_craft(&mut self.state, actor, colony_id, craftable) {
-                    Ok(queued) => vec![GameEvent::CraftQueued(queued)],
-                    Err(error) => vec![GameEvent::CraftRejected(crate::CraftRejected {
-                        colony_id,
-                        craftable,
-                        error,
-                    })],
-                }
-            }
-            GameCommand::DebugAdvanceSelectedKnowledge => self.debug_advance_selected_knowledge(),
-        }
+            } => match enqueue_craft(&mut self.state, issuer, colony_id, craftable) {
+                Ok(queued) => vec![GameEventKind::CraftQueued(queued)],
+                Err(error) => vec![GameEventKind::CraftRejected(crate::CraftRejected {
+                    colony_id,
+                    craftable,
+                    error,
+                })],
+            },
+            GameAction::DebugAdvanceSelectedKnowledge => self.debug_advance_selected_knowledge(),
+        };
+        let occurred_at = self.state.clock.current_tick();
+        kinds
+            .into_iter()
+            .map(|kind| GameEvent::new(issuer, occurred_at, kind))
+            .collect()
     }
 
     /// Advances simulation time from a real frame duration.
@@ -214,42 +240,89 @@ impl Simulation {
             return Vec::new();
         }
 
-        let mut events = vec![GameEvent::TicksAdvanced {
-            ticks: advance.ticks,
-            current_tick: advance.current_tick,
-        }];
+        let mut events = vec![GameEvent::new(
+            self.state.player_faction,
+            advance.current_tick,
+            GameEventKind::TicksAdvanced {
+                ticks: advance.ticks,
+                current_tick: advance.current_tick,
+            },
+        )];
         let one_tick = StrategicDuration::from_ticks(1);
         for _ in 0..advance.ticks.ticks() {
             for colony in &mut self.state.colonies {
+                let recipient = colony
+                    .owner
+                    .faction()
+                    .expect("validated colonies must have a faction owner");
                 if let Some(report) = queue_colony_production(colony, one_tick) {
-                    events.push(GameEvent::ProductionRefreshed(report));
+                    events.push(GameEvent::new(
+                        recipient,
+                        advance.current_tick,
+                        GameEventKind::ProductionRefreshed(report),
+                    ));
                 }
                 let completed = advance_colony_construction(colony, one_tick)
                     .expect("validated construction reservations must commit");
-                events.extend(completed.into_iter().map(GameEvent::ConstructionCompleted));
+                events.extend(completed.into_iter().map(|completed| {
+                    GameEvent::new(
+                        recipient,
+                        advance.current_tick,
+                        GameEventKind::ConstructionCompleted(completed),
+                    )
+                }));
                 let crafted = advance_colony_craft(colony, one_tick)
                     .expect("validated craft reservations must commit");
-                events.extend(crafted.into_iter().map(GameEvent::CraftCompleted));
+                events.extend(crafted.into_iter().map(|completed| {
+                    GameEvent::new(
+                        recipient,
+                        advance.current_tick,
+                        GameEventKind::CraftCompleted(completed),
+                    )
+                }));
             }
             let research_owner = self.state.player_faction;
             events.extend(
                 advance_research(&mut self.state, research_owner, one_tick)
                     .into_iter()
-                    .map(GameEvent::ResearchCompleted),
+                    .map(|completed| {
+                        GameEvent::new(
+                            research_owner,
+                            advance.current_tick,
+                            GameEventKind::ResearchCompleted(completed),
+                        )
+                    }),
             );
         }
         events
     }
 
-    fn set_speed(&mut self, speed: TimeSpeed) -> Vec<GameEvent> {
+    fn validate_command(&self, command: GameCommand) -> Result<(), CommandRejection> {
+        let Some(issuer) = self.state.faction(command.issuer) else {
+            return Err(CommandRejection::UnknownIssuer(command.issuer));
+        };
+        if !issuer.active {
+            return Err(CommandRejection::InactiveIssuer(command.issuer));
+        }
+        let expected = self.state.clock.current_tick();
+        if command.issued_at != expected {
+            return Err(CommandRejection::TickMismatch {
+                expected,
+                found: command.issued_at,
+            });
+        }
+        Ok(())
+    }
+
+    fn set_speed(&mut self, speed: TimeSpeed) -> Vec<GameEventKind> {
         if !self.state.clock.set_speed(speed) {
             return Vec::new();
         }
 
-        vec![GameEvent::SpeedChanged(speed)]
+        vec![GameEventKind::SpeedChanged(speed)]
     }
 
-    fn select_system(&mut self, system_id: SystemId) -> Vec<GameEvent> {
+    fn select_system(&mut self, system_id: SystemId) -> Vec<GameEventKind> {
         if self.universe.system(system_id).is_none() {
             return Vec::new();
         }
@@ -257,7 +330,7 @@ impl Simulation {
         self.set_selection(SelectionTarget::System(system_id))
     }
 
-    fn select_planet(&mut self, system_id: SystemId, planet_id: PlanetId) -> Vec<GameEvent> {
+    fn select_planet(&mut self, system_id: SystemId, planet_id: PlanetId) -> Vec<GameEventKind> {
         let Some((planet_system_id, _)) = self.universe.planet_location(planet_id) else {
             return Vec::new();
         };
@@ -271,7 +344,7 @@ impl Simulation {
         })
     }
 
-    fn debug_advance_selected_knowledge(&mut self) -> Vec<GameEvent> {
+    fn debug_advance_selected_knowledge(&mut self) -> Vec<GameEventKind> {
         let changes = match self.state.selected {
             SelectionTarget::None => Vec::new(),
             SelectionTarget::System(system_id) => {
@@ -294,17 +367,17 @@ impl Simulation {
 
         changes
             .into_iter()
-            .map(GameEvent::KnowledgeChanged)
+            .map(GameEventKind::KnowledgeChanged)
             .collect()
     }
 
-    fn set_selection(&mut self, selection: SelectionTarget) -> Vec<GameEvent> {
+    fn set_selection(&mut self, selection: SelectionTarget) -> Vec<GameEventKind> {
         if self.state.selected == selection {
             return Vec::new();
         }
 
         self.state.selected = selection;
-        vec![GameEvent::SelectionChanged(selection)]
+        vec![GameEventKind::SelectionChanged(selection)]
     }
 }
 
@@ -340,6 +413,22 @@ fn validate_state(
         return Err(SimulationBuildError::PlayerFactionIsInactive(
             state.player_faction,
         ));
+    }
+
+    DiplomacyState::new(
+        state.diplomacy.default_relation(),
+        state.diplomacy.relations().iter().copied(),
+    )
+    .map_err(SimulationBuildError::InvalidDiplomacy)?;
+    for relation in state.diplomacy.relations() {
+        if state.faction(relation.first).is_none() {
+            return Err(SimulationBuildError::UnknownRelationFaction(relation.first));
+        }
+        if state.faction(relation.second).is_none() {
+            return Err(SimulationBuildError::UnknownRelationFaction(
+                relation.second,
+            ));
+        }
     }
 
     if let Err(error) = validate_research_state(state) {
@@ -531,10 +620,14 @@ mod tests {
         assert_eq!(simulation.state().clock.current_tick().value(), 2);
         assert_eq!(
             events,
-            vec![GameEvent::TicksAdvanced {
-                ticks: crate::StrategicDuration::from_ticks(2),
-                current_tick: crate::StrategicTick::new(2),
-            }]
+            vec![GameEvent::new(
+                simulation.state().player_faction,
+                crate::StrategicTick::new(2),
+                GameEventKind::TicksAdvanced {
+                    ticks: crate::StrategicDuration::from_ticks(2),
+                    current_tick: crate::StrategicTick::new(2),
+                },
+            )]
         );
         assert_eq!(simulation.state().clock.remainder_nanos(), 50_000_000);
     }
@@ -573,18 +666,18 @@ mod tests {
     #[test]
     fn pause_and_speed_apply_expected_production_ticks() {
         let mut paused = Simulation::new(UniverseConfig::mvp());
-        paused.apply_command(GameCommand::TogglePause);
+        paused.apply_player_action(GameAction::TogglePause);
         let initial = paused.state().clone();
         paused.advance(Duration::from_secs(10));
         assert_eq!(paused.state(), &initial);
 
         let mut x1 = Simulation::new(UniverseConfig::mvp());
         let mut x4 = Simulation::new(UniverseConfig::mvp());
-        x4.apply_command(GameCommand::SetSpeed(TimeSpeed::X4));
+        x4.apply_player_action(GameAction::SetSpeed(TimeSpeed::X4));
 
         x1.advance(Duration::from_secs(1));
         x4.advance(Duration::from_millis(250));
-        x4.apply_command(GameCommand::SetSpeed(TimeSpeed::X1));
+        x4.apply_player_action(GameAction::SetSpeed(TimeSpeed::X1));
 
         assert_eq!(x1.state(), x4.state());
     }
@@ -616,14 +709,14 @@ mod tests {
         assert!(
             early
                 .iter()
-                .all(|event| { !matches!(event, GameEvent::ProductionRefreshed(_)) })
+                .all(|event| !matches!(event.kind, GameEventKind::ProductionRefreshed(_)))
         );
 
         let refresh = simulation.advance(Duration::from_secs(1));
         assert!(refresh.iter().any(|event| {
             matches!(
-                event,
-                GameEvent::ProductionRefreshed(report)
+                event.kind,
+                GameEventKind::ProductionRefreshed(report)
                     if report.ticks.ticks()
                         == crate::production_refresh_ticks()
             )
@@ -689,16 +782,26 @@ mod tests {
             }
 
             for technology in crate::technology_catalog().ids() {
-                let events = simulation.apply_command(GameCommand::QueueResearch { technology });
-                assert!(matches!(events.as_slice(), [GameEvent::ResearchQueued(_)]));
+                let events =
+                    simulation.apply_player_action(GameAction::QueueResearch { technology });
+                assert!(matches!(
+                    events.as_slice(),
+                    [GameEvent {
+                        kind: GameEventKind::ResearchQueued(_),
+                        ..
+                    }]
+                ));
             }
-            let events = simulation.apply_command(GameCommand::QueueBuildingUpgrade {
+            let events = simulation.apply_player_action(GameAction::QueueBuildingUpgrade {
                 colony_id,
                 kind: BuildingKind::RESEARCH_LAB,
             });
             assert!(matches!(
                 events.as_slice(),
-                [GameEvent::ConstructionQueued(_)]
+                [GameEvent {
+                    kind: GameEventKind::ConstructionQueued(_),
+                    ..
+                }]
             ));
             simulation
         }
@@ -723,15 +826,15 @@ mod tests {
         colony.buildings.set_level(BuildingKind::RESEARCH_LAB, 1);
         colony.energy = default_building_catalog().energy_grid_for_levels(colony.buildings);
 
-        simulation.apply_command(GameCommand::QueueResearch {
+        simulation.apply_player_action(GameAction::QueueResearch {
             technology: TechnologyId::SPATIAL_DETECTION,
         });
         let events = simulation.advance(Duration::from_secs(60));
 
         assert!(events.iter().any(|event| {
             matches!(
-                event,
-                GameEvent::ResearchCompleted(completed)
+                event.kind,
+                GameEventKind::ResearchCompleted(completed)
                     if completed.technology
                         == TechnologyId::SPATIAL_DETECTION
             )
@@ -744,18 +847,22 @@ mod tests {
         let system_id = SystemId::from_index(0);
         let planet_id = PlanetId::from_system_index(system_id, 0);
 
-        simulation.apply_command(GameCommand::ClearSelection);
-        let events = simulation.apply_command(GameCommand::SelectPlanet {
+        simulation.apply_player_action(GameAction::ClearSelection);
+        let events = simulation.apply_player_action(GameAction::SelectPlanet {
             system_id,
             planet_id,
         });
 
         assert_eq!(
             events,
-            vec![GameEvent::SelectionChanged(SelectionTarget::Planet {
-                system_id,
-                planet_id,
-            })]
+            vec![GameEvent::new(
+                simulation.state().player_faction,
+                simulation.state().clock.current_tick(),
+                GameEventKind::SelectionChanged(SelectionTarget::Planet {
+                    system_id,
+                    planet_id,
+                }),
+            )]
         );
     }
 
@@ -764,10 +871,52 @@ mod tests {
         let mut simulation = Simulation::new(UniverseConfig::new(42, 16));
         let initial_selection = simulation.state().selected;
 
-        let events = simulation.apply_command(GameCommand::SelectSystem(SystemId::new(999)));
+        let events = simulation.apply_player_action(GameAction::SelectSystem(SystemId::new(999)));
 
         assert!(events.is_empty());
         assert_eq!(simulation.state().selected, initial_selection);
+    }
+
+    #[test]
+    fn commands_retain_issuer_and_reject_inactive_sources() {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+        let dormant = FactionId::new(2);
+        let tick = simulation.state().clock.current_tick();
+
+        let events = simulation.apply_command(GameCommand::new(
+            dormant,
+            tick,
+            GameAction::SetSpeed(TimeSpeed::X4),
+        ));
+
+        assert_eq!(events[0].recipient, dormant);
+        assert_eq!(events[0].occurred_at, tick);
+        assert_eq!(
+            events[0].kind,
+            GameEventKind::CommandRejected(CommandRejection::InactiveIssuer(dormant)),
+        );
+        assert_eq!(simulation.state().clock.speed(), TimeSpeed::X1);
+    }
+
+    #[test]
+    fn stale_commands_are_rejected_deterministically() {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+        let command = simulation.player_command(GameAction::SetSpeed(TimeSpeed::X4));
+        simulation.advance(Duration::from_secs(1));
+
+        let events = simulation.apply_command(command);
+
+        assert!(matches!(
+            events.as_slice(),
+            [GameEvent {
+                kind: GameEventKind::CommandRejected(CommandRejection::TickMismatch {
+                    expected,
+                    found,
+                }),
+                ..
+            }] if expected.value() == 10 && *found == crate::StrategicTick::ZERO
+        ));
+        assert_eq!(simulation.state().clock.speed(), TimeSpeed::X1);
     }
 
     #[test]
@@ -780,8 +929,8 @@ mod tests {
             .next()
             .expect("home has a neighbor");
 
-        simulation.apply_command(GameCommand::SelectSystem(target));
-        let events = simulation.apply_command(GameCommand::DebugAdvanceSelectedKnowledge);
+        simulation.apply_player_action(GameAction::SelectSystem(target));
+        let events = simulation.apply_player_action(GameAction::DebugAdvanceSelectedKnowledge);
 
         assert_eq!(
             simulation.state().system_knowledge_level(target),
@@ -789,8 +938,8 @@ mod tests {
         );
         assert!(events.iter().any(|event| {
             matches!(
-                event,
-                GameEvent::KnowledgeChanged(change)
+                event.kind,
+                GameEventKind::KnowledgeChanged(change)
                     if change.target
                         == KnowledgeTarget::System(target)
             )
@@ -807,10 +956,10 @@ mod tests {
             .next()
             .expect("home has a neighbor");
 
-        simulation.apply_command(GameCommand::SelectSystem(target));
-        simulation.apply_command(GameCommand::DebugAdvanceSelectedKnowledge);
-        simulation.apply_command(GameCommand::DebugAdvanceSelectedKnowledge);
-        let events = simulation.apply_command(GameCommand::DebugAdvanceSelectedKnowledge);
+        simulation.apply_player_action(GameAction::SelectSystem(target));
+        simulation.apply_player_action(GameAction::DebugAdvanceSelectedKnowledge);
+        simulation.apply_player_action(GameAction::DebugAdvanceSelectedKnowledge);
+        let events = simulation.apply_player_action(GameAction::DebugAdvanceSelectedKnowledge);
 
         assert!(events.is_empty());
         assert_eq!(
@@ -825,7 +974,7 @@ mod tests {
         let initial_universe = simulation.universe().clone();
 
         simulation.advance(Duration::from_secs(42));
-        simulation.apply_command(GameCommand::SetSpeed(TimeSpeed::X4));
+        simulation.apply_player_action(GameAction::SetSpeed(TimeSpeed::X4));
         simulation
             .state_mut()
             .colony_mut(ColonyId::new(0))

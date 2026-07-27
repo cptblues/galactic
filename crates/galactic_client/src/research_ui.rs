@@ -1,7 +1,7 @@
 // MVP-016: dedicated research screen kept outside the main client module.
 use bevy::prelude::*;
 use galactic_sim::{
-    GameCommand, GameEvent, ResearchError, ResearchQuote, STRATEGIC_TICKS_PER_SECOND,
+    GameAction, GameEventKind, ResearchError, ResearchQuote, STRATEGIC_TICKS_PER_SECOND,
     StrategicDuration, TechnologyId, max_research_queue, research_lab_level_total,
     research_output_milli_points_per_tick, research_output_points_per_second,
     research_progress_ratio, research_quote, technology_catalog, technology_definition,
@@ -504,19 +504,19 @@ fn handle_research_buttons(
 
 fn capture_research_feedback(simulation: Res<SimulationResource>, mut ui: ResMut<ResearchUiState>) {
     for event in &simulation.pending_events {
-        match *event {
-            GameEvent::ResearchQueued(queued) => {
+        match event.kind {
+            GameEventKind::ResearchQueued(queued) => {
                 let definition = technology_definition(queued.project.technology);
                 ui.feedback = format!("{} ajouté à la file.", definition.name,);
             }
-            GameEvent::ResearchCompleted(completed) => {
+            GameEventKind::ResearchCompleted(completed) => {
                 let definition = technology_definition(completed.technology);
                 ui.feedback = format!(
                     "{} terminé — {} débloqué.",
                     definition.name, definition.unlock_label,
                 );
             }
-            GameEvent::ResearchRejected(rejected) => {
+            GameEventKind::ResearchRejected(rejected) => {
                 ui.feedback = format!(
                     "Recherche refusée : {}",
                     research_error_text(rejected.error),
@@ -704,7 +704,7 @@ fn queue_selected_research(simulation: &mut SimulationResource, ui: &mut Researc
     let state = simulation.simulation().state();
     match research_quote(state, state.player_faction, technology) {
         Ok(_) => {
-            apply_simulation_command(simulation, GameCommand::QueueResearch { technology });
+            apply_simulation_command(simulation, GameAction::QueueResearch { technology });
         }
         Err(error) => {
             ui.feedback = research_error_text(error);
@@ -951,10 +951,10 @@ mod tests {
     #[test]
     fn queue_text_distinguishes_active_and_waiting() {
         let mut simulation = simulation_with_lab();
-        simulation.apply_command(GameCommand::QueueResearch {
+        simulation.apply_player_action(GameAction::QueueResearch {
             technology: TechnologyId::SPATIAL_DETECTION,
         });
-        simulation.apply_command(GameCommand::QueueResearch {
+        simulation.apply_player_action(GameAction::QueueResearch {
             technology: TechnologyId::PROPULSION,
         });
 
