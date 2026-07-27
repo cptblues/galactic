@@ -855,3 +855,60 @@ Versions après migration :
 - `GAME_STATE_VERSION = 9` ;
 - `SAVE_VERSION = 10` ;
 - `RESEARCH_CATALOG_VERSION = 1`.
+
+
+## MVP-016-B — Ruleset économique externe
+
+Le contenu économique est chargé au démarrage depuis
+`assets/rulesets/default/`. Les bâtiments, technologies, valeurs économiques
+et conditions initiales ne sont plus compilés dans le binaire.
+
+Les identifiants de contenu sont des clés textuelles stables. Le chargeur
+compile les fichiers RON vers les types sûrs de la simulation et refuse les
+références inconnues, doublons, cycles et valeurs invalides.
+
+La sauvegarde conserve l'identité, le schéma, la version de contenu et
+l'empreinte structurelle du ruleset. Un changement de texte ne modifie pas
+l'empreinte.
+
+Versions après migration :
+
+- `GAME_STATE_VERSION = 10` ;
+- `SAVE_VERSION = 11` ;
+- `RULESET_SCHEMA_VERSION = 1`.
+
+
+## MVP-017 — File générique de craft
+
+Chaque colonie possède une file de fabrication séquentielle et un inventaire
+de produits terminés. Les définitions sont chargées depuis
+`craftables.ron` : identifiant, textes, catégorie, coût, durée, quantité,
+prérequis et capacités.
+
+### Réservation et progression
+
+L'ajout d'un ordre valide les bâtiments, les technologies, la capacité de la
+file et les ressources. Le coût est réservé atomiquement dès l'ajout, puis
+consommé uniquement à l'achèvement.
+
+Le Chantier spatial produit des milli-points de travail à chaque tick
+stratégique. La durée configurée correspond au niveau minimal requis ; les
+niveaux supplémentaires accélèrent donc la fabrication sans changer le
+contenu du catalogue. Les points excédentaires passent à l'ordre suivant.
+
+### Interface et persistance
+
+La touche `Y` ouvre l'écran Chantier. Il présente le catalogue, les prérequis,
+le coût, la durée estimée, la file active et l'inventaire de la colonie.
+L'écran est mutuellement exclusif avec la gestion planétaire et la recherche.
+
+La sauvegarde conserve les ordres, leur progression, leurs réservations et
+l'inventaire. La reconstruction vérifie chaque identifiant et les données
+structurelles nécessaires aux ordres en cours.
+
+Versions après migration :
+
+- `GAME_STATE_VERSION = 11` ;
+- `SAVE_VERSION = 12` ;
+- `RULESET_SCHEMA_VERSION = 2` ;
+- `CRAFTABLE_CATALOG_VERSION = 1`.

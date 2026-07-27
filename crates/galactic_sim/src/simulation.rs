@@ -1,4 +1,4 @@
-// MVP-016-B: ruleset-driven production, construction and research pipeline.
+// MVP-017: ruleset-driven production, construction, research and craft pipeline.
 use std::collections::HashSet;
 use std::time::Duration;
 
@@ -8,12 +8,13 @@ use galactic_domain::{
 };
 
 use crate::{
-    BuildingCatalogError, ConstructionQueueError, FactionKind, GAME_STATE_VERSION, GameCommand,
-    GameEvent, GameState, KnowledgeLevel, ResearchStateError, SelectionTarget, StartingScenario,
-    StartingScenarioError, StrategicDuration, TimeSpeed, UniverseIndexError, UniverseRepository,
-    advance_colony_construction, advance_research, default_building_catalog,
-    enqueue_building_upgrade, enqueue_research, queue_colony_production, storage_capacity,
-    validate_construction_queue, validate_research_state,
+    BuildingCatalogError, ConstructionQueueError, CraftStateError, FactionKind, GAME_STATE_VERSION,
+    GameCommand, GameEvent, GameState, KnowledgeLevel, ResearchStateError, SelectionTarget,
+    StartingScenario, StartingScenarioError, StrategicDuration, TimeSpeed, UniverseIndexError,
+    UniverseRepository, advance_colony_construction, advance_colony_craft, advance_research,
+    default_building_catalog, enqueue_building_upgrade, enqueue_craft, enqueue_research,
+    queue_colony_production, storage_capacity, validate_construction_queue, validate_craft_state,
+    validate_research_state,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,6 +40,10 @@ pub enum SimulationBuildError {
     InvalidConstructionQueue {
         colony_id: ColonyId,
         error: ConstructionQueueError,
+    },
+    InvalidCraftState {
+        colony_id: ColonyId,
+        error: CraftStateError,
     },
     InvalidResearchState(ResearchStateError),
     InvalidColonyResourceLedger {
@@ -177,6 +182,17 @@ impl Simulation {
                     })],
                 }
             }
+            GameCommand::QueueCraft {
+                colony_id,
+                craftable,
+            } => match enqueue_craft(&mut self.state, colony_id, craftable) {
+                Ok(queued) => vec![GameEvent::CraftQueued(queued)],
+                Err(error) => vec![GameEvent::CraftRejected(crate::CraftRejected {
+                    colony_id,
+                    craftable,
+                    error,
+                })],
+            },
             GameCommand::DebugAdvanceSelectedKnowledge => self.debug_advance_selected_knowledge(),
         }
     }
@@ -204,6 +220,9 @@ impl Simulation {
                 let completed = advance_colony_construction(colony, one_tick)
                     .expect("validated construction reservations must commit");
                 events.extend(completed.into_iter().map(GameEvent::ConstructionCompleted));
+                let crafted = advance_colony_craft(colony, one_tick)
+                    .expect("validated craft reservations must commit");
+                events.extend(crafted.into_iter().map(GameEvent::CraftCompleted));
             }
             events.extend(
                 advance_research(&mut self.state, one_tick)
@@ -371,6 +390,12 @@ fn validate_state(
         }
         if let Err(error) = validate_construction_queue(colony) {
             return Err(SimulationBuildError::InvalidConstructionQueue {
+                colony_id: colony.id,
+                error,
+            });
+        }
+        if let Err(error) = validate_craft_state(state, colony) {
+            return Err(SimulationBuildError::InvalidCraftState {
                 colony_id: colony.id,
                 error,
             });

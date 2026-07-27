@@ -10,8 +10,8 @@ use galactic_sim::{
 use super::{
     ColonyManagementState, PresentationUpdateSet, SimulationResource, UiPointerBlocker,
     action_button_color, action_button_outline, apply_simulation_command,
-    collect_presentation_events, format_strategic_duration, panel_background, panel_outline,
-    ui_text_font,
+    collect_presentation_events, craft_ui::CraftUiState, format_strategic_duration,
+    panel_background, panel_outline, ui_text_font,
 };
 
 const RESEARCH_Z_INDEX: i32 = 110;
@@ -450,12 +450,14 @@ fn handle_research_shortcuts(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut ui: ResMut<ResearchUiState>,
     mut management: ResMut<ColonyManagementState>,
+    mut craft: ResMut<CraftUiState>,
 ) {
     if keyboard.just_pressed(KeyCode::KeyT) {
         ui.open = !ui.open;
         ui.feedback.clear();
         if ui.open {
             management.open = false;
+            craft.open = false;
         }
         return;
     }
@@ -469,6 +471,7 @@ fn handle_research_buttons(
     mut simulation: ResMut<SimulationResource>,
     mut ui: ResMut<ResearchUiState>,
     mut management: ResMut<ColonyManagementState>,
+    mut craft: ResMut<CraftUiState>,
     interactions: ResearchButtonInteractionQuery,
 ) {
     for (interaction, action) in &interactions {
@@ -482,6 +485,7 @@ fn handle_research_buttons(
                 ui.feedback.clear();
                 if ui.open {
                     management.open = false;
+                    craft.open = false;
                 }
             }
             ResearchButtonAction::Close => {

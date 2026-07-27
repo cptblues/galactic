@@ -12,12 +12,13 @@ use serde::de::DeserializeOwned;
 
 use crate::{
     BuildingCatalog, BuildingCatalogConfig, BuildingCatalogError, BuildingLevels,
-    InitialPlanetKnowledge, InitialSystemKnowledge, KnowledgeLevel, PlanetResourceProfile,
-    ResourceValuesConfig, StartingColonyConfig, StartingFactionConfig, StartingScenario,
-    TechnologyCatalog, TechnologyCatalogConfig, TechnologyCatalogError,
+    CraftCatalogError, CraftableCatalog, CraftableCatalogConfig, InitialPlanetKnowledge,
+    InitialSystemKnowledge, KnowledgeLevel, PlanetResourceProfile, ResourceValuesConfig,
+    StartingColonyConfig, StartingFactionConfig, StartingScenario, TechnologyCatalog,
+    TechnologyCatalogConfig, TechnologyCatalogError,
 };
 
-pub const RULESET_SCHEMA_VERSION: u32 = 1;
+pub const RULESET_SCHEMA_VERSION: u32 = 2;
 pub const RULESET_DIRECTORY_ENV: &str = "GALACTIC_RULESET_DIR";
 pub const DEFAULT_RULESET_DIRECTORY: &str = "assets/rulesets/default";
 
@@ -27,6 +28,7 @@ static DEFAULT_RULESET: OnceLock<Ruleset> = OnceLock::new();
 pub struct EconomyRules {
     pub construction_queue_limit: usize,
     pub research_queue_limit: usize,
+    pub craft_queue_limit: usize,
     pub production_refresh_seconds: u64,
 }
 
@@ -39,6 +41,7 @@ pub struct Ruleset {
     economy: EconomyRules,
     buildings: BuildingCatalog,
     technologies: TechnologyCatalog,
+    craftables: CraftableCatalog,
     starting_scenario: StartingScenario,
 }
 
@@ -66,6 +69,9 @@ impl Ruleset {
         let technology_config: TechnologyCatalogConfig = read_ron(directory, "technologies.ron")?;
         let technologies = TechnologyCatalog::from_config(technology_config)
             .map_err(RulesetLoadError::Technologies)?;
+        let craftable_config: CraftableCatalogConfig = read_ron(directory, "craftables.ron")?;
+        let craftables = CraftableCatalog::from_config(craftable_config, &buildings, &technologies)
+            .map_err(RulesetLoadError::Craftables)?;
         let starting_config: StartingScenarioConfig = read_ron(directory, "starting_scenario.ron")?;
         let starting_scenario = starting_config.compile(&buildings, &technologies)?;
 
@@ -75,6 +81,7 @@ impl Ruleset {
         );
         buildings.append_structure(&mut structure);
         technologies.append_structure(&mut structure);
+        craftables.append_structure(&mut structure);
 
         Ok(Self {
             id: manifest.id,
@@ -84,6 +91,7 @@ impl Ruleset {
             economy,
             buildings,
             technologies,
+            craftables,
             starting_scenario,
         })
     }
@@ -114,6 +122,10 @@ impl Ruleset {
 
     pub const fn technologies(&self) -> &TechnologyCatalog {
         &self.technologies
+    }
+
+    pub const fn craftables(&self) -> &CraftableCatalog {
+        &self.craftables
     }
 
     pub const fn starting_scenario(&self) -> StartingScenario {
@@ -177,6 +189,7 @@ pub enum RulesetLoadError {
     InvalidEconomy(&'static str),
     Buildings(BuildingCatalogError),
     Technologies(TechnologyCatalogError),
+    Craftables(CraftCatalogError),
     StartingScenario(&'static str),
 }
 
@@ -202,6 +215,7 @@ impl fmt::Display for RulesetLoadError {
             Self::Technologies(error) => {
                 write!(formatter, "invalid technologies catalog: {error:?}")
             }
+            Self::Craftables(error) => write!(formatter, "invalid craftables catalog: {error:?}"),
             Self::StartingScenario(message) => {
                 write!(formatter, "invalid starting scenario: {message}")
             }
@@ -230,6 +244,7 @@ struct EconomyConfig {
     base_storage: ResourceValuesConfig,
     construction_queue_limit: usize,
     research_queue_limit: usize,
+    craft_queue_limit: usize,
     production_refresh_seconds: u64,
 }
 
@@ -253,6 +268,11 @@ impl EconomyConfig {
                 "research_queue_limit must be greater than zero",
             ));
         }
+        if self.craft_queue_limit == 0 {
+            return Err(RulesetLoadError::InvalidEconomy(
+                "craft_queue_limit must be greater than zero",
+            ));
+        }
         if self.production_refresh_seconds == 0
             || self.production_refresh_seconds > u64::from(u16::MAX) / 10
         {
@@ -263,6 +283,7 @@ impl EconomyConfig {
         Ok(EconomyRules {
             construction_queue_limit: self.construction_queue_limit,
             research_queue_limit: self.research_queue_limit,
+            craft_queue_limit: self.craft_queue_limit,
             production_refresh_seconds: self.production_refresh_seconds,
         })
     }
@@ -469,15 +490,17 @@ mod tests {
         assert_ne!(ruleset.structure_fingerprint(), 0);
         assert_eq!(ruleset.buildings().definitions().count(), 8);
         assert_eq!(ruleset.technologies().definitions().count(), 6);
+        assert_eq!(ruleset.craftables().definitions().count(), 3);
     }
 
     #[test]
     fn text_is_not_part_of_the_structure_fingerprint() {
-        let mut first = String::from("ruleset:default;schema:1;");
+        let mut first = format!("ruleset:default;schema:{RULESET_SCHEMA_VERSION};");
         default_ruleset().buildings().append_structure(&mut first);
         default_ruleset()
             .technologies()
             .append_structure(&mut first);
+        default_ruleset().craftables().append_structure(&mut first);
         assert_eq!(
             default_ruleset().structure_fingerprint(),
             fnv1a64(first.as_bytes()),

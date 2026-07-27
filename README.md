@@ -39,8 +39,9 @@ Documentation courte: `docs/mvp_architecture.md`.
 ## Ruleset
 
 Le contenu économique actif est chargé depuis `assets/rulesets/default/` au
-démarrage. Les coûts, durées, textes, bâtiments, technologies, limites de files
-et données de départ peuvent être modifiés sans recompiler le jeu.
+démarrage. Les coûts, durées, textes, bâtiments, technologies, fabrications,
+limites de files et données de départ peuvent être modifiés sans recompiler le
+jeu.
 
 Guide de configuration : `docs/ruleset.md`.
 
@@ -52,6 +53,9 @@ Guide de configuration : `docs/ruleset.md`.
 | Vitesse x1 | `1` |
 | Vitesse x2 | `2` |
 | Vitesse x4 | `3` |
+| Gestion planétaire | `C` |
+| Recherche | `T` |
+| Chantier spatial | `Y` |
 | Reconstruire les vues Bevy | `R` |
 
 ## Baseline

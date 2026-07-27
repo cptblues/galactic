@@ -1,17 +1,17 @@
-// MVP-016: persistent production, construction and research
+// MVP-017: persistent production, construction, research and shipyard craft.
 use galactic_domain::{ColonyId, EnergyGrid, FactionId, PlanetId, ResourceLedger, Route, SystemId};
 
 use crate::{
-    BuildingLevels, ConstructionQueue, KnowledgeChange, KnowledgeCounts, KnowledgeLevel,
-    KnowledgeTarget, PlanetKnowledge, PlanetResourceProfile, ProductionRemainder, ResearchState,
-    SelectionTarget, StartingScenario, StartingScenarioError, StrategicClock, SystemKnowledge,
-    UniverseRepository,
+    BuildingLevels, ConstructionQueue, CraftInventory, CraftQueue, KnowledgeChange,
+    KnowledgeCounts, KnowledgeLevel, KnowledgeTarget, PlanetKnowledge, PlanetResourceProfile,
+    ProductionRemainder, ResearchState, SelectionTarget, StartingScenario, StartingScenarioError,
+    StrategicClock, SystemKnowledge, UniverseRepository,
 };
 
 /// Version of the mutable in-memory state contract.
 ///
-/// Version 10 stores data-driven building and technology identifiers.
-pub const GAME_STATE_VERSION: u32 = 10;
+/// Version 11 adds per-colony craft queues and inventories.
+pub const GAME_STATE_VERSION: u32 = 11;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemVisibility {
@@ -80,6 +80,8 @@ impl GameState {
                 production_remainder: ProductionRemainder::ZERO,
                 production_pending_ticks: 0,
                 construction_queue: ConstructionQueue::default(),
+                craft_queue: CraftQueue::default(),
+                inventory: CraftInventory::default(),
                 buildings: home.buildings,
                 resource_profile: home.resource_profile,
             }],
@@ -371,6 +373,8 @@ pub struct ColonyState {
     pub production_remainder: ProductionRemainder,
     pub production_pending_ticks: u16,
     pub construction_queue: ConstructionQueue,
+    pub craft_queue: CraftQueue,
+    pub inventory: CraftInventory,
     pub buildings: BuildingLevels,
     pub resource_profile: PlanetResourceProfile,
 }

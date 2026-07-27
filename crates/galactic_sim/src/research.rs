@@ -22,6 +22,10 @@ impl TechnologyId {
     pub const PLANETARY_ANALYSIS: Self = Self("planetary_analysis");
     pub const COLONIZATION: Self = Self("colonization");
 
+    pub const fn from_static(key: &'static str) -> Self {
+        Self(key)
+    }
+
     pub const fn key(self) -> &'static str {
         self.0
     }

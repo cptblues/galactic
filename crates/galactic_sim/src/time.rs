@@ -3,7 +3,7 @@ use std::time::Duration;
 
 /// Fréquence métier du MVP.
 ///
-/// Tous les futurs systèmes temporels (production, construction, recherche,
+/// Tous les systèmes temporels (production, construction, recherche, craft,
 /// missions) doivent progresser sur ces ticks, jamais directement sur les FPS.
 pub const STRATEGIC_TICKS_PER_SECOND: u32 = 10;
 pub const STRATEGIC_TICK_NANOS: u64 = 1_000_000_000_u64 / STRATEGIC_TICKS_PER_SECOND as u64;

@@ -1,17 +1,17 @@
-// MVP-016-B: persist construction, research and active ruleset identity.
+// MVP-017: persist construction, research, craft and active ruleset identity.
 use galactic_domain::{
     ColonyId, EnergyGrid, FactionId, PlanetId, ResourceLedger, ResourceLedgerError,
     ResourceReservation, ResourceStock, SystemId, UniverseConfig, UniverseId, generate_universe,
 };
 use galactic_sim::{
-    BuildingLevels, ColonyState, ConstructionQueue, FactionKind, FactionState, GameState,
-    PlanetKnowledge, PlanetResourceProfile, ProductionRemainder, ProductionRemainderError,
-    ResearchState, SelectionTarget, Simulation, SimulationBuildError, StrategicClock,
-    StrategicClockError, StrategicTick, SystemKnowledge, TimeSpeed, default_ruleset,
-    production_refresh_ticks,
+    BuildingLevels, ColonyState, ConstructionQueue, CraftInventory, CraftQueue, FactionKind,
+    FactionState, GameState, PlanetKnowledge, PlanetResourceProfile, ProductionRemainder,
+    ProductionRemainderError, ResearchState, SelectionTarget, Simulation, SimulationBuildError,
+    StrategicClock, StrategicClockError, StrategicTick, SystemKnowledge, TimeSpeed,
+    default_ruleset, production_refresh_ticks,
 };
 
-pub const SAVE_VERSION: u32 = 11;
+pub const SAVE_VERSION: u32 = 12;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SaveGame {
@@ -78,6 +78,8 @@ pub struct ColonySave {
     pub production_remainder_fuel: u16,
     pub production_pending_ticks: u16,
     pub construction_queue: ConstructionQueue,
+    pub craft_queue: CraftQueue,
+    pub inventory: CraftInventory,
     pub buildings: BuildingLevels,
     pub resource_profile: PlanetResourceProfile,
 }
@@ -180,6 +182,8 @@ pub fn snapshot_from_simulation(simulation: &Simulation) -> SaveGame {
                     production_remainder_fuel: colony.production_remainder.fuel_milli(),
                     production_pending_ticks: colony.production_pending_ticks,
                     construction_queue: colony.construction_queue.clone(),
+                    craft_queue: colony.craft_queue.clone(),
+                    inventory: colony.inventory.clone(),
                     buildings: colony.buildings,
                     resource_profile: colony.resource_profile,
                 })
@@ -283,6 +287,8 @@ pub fn restore_from_snapshot(save: &SaveGame) -> Result<Simulation, SaveError> {
                 production_remainder,
                 production_pending_ticks: colony.production_pending_ticks,
                 construction_queue: colony.construction_queue.clone(),
+                craft_queue: colony.craft_queue.clone(),
+                inventory: colony.inventory.clone(),
                 buildings: colony.buildings,
                 resource_profile: colony.resource_profile,
             })
@@ -319,7 +325,8 @@ mod tests {
 
     use galactic_domain::UniverseConfig;
     use galactic_sim::{
-        BuildingKind, GAME_STATE_VERSION, GameCommand, TechnologyId, default_building_catalog,
+        BuildingKind, CraftableId, GAME_STATE_VERSION, GameCommand, TechnologyId,
+        default_building_catalog,
     };
 
     use super::*;
@@ -389,7 +396,52 @@ mod tests {
     }
 
     #[test]
-    fn state_and_save_versions_match_mvp_016_b() {
+    fn craft_queue_and_inventory_survive_round_trip() {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+        let colony = simulation
+            .state_mut()
+            .colonies
+            .first_mut()
+            .expect("home colony exists");
+        colony
+            .buildings
+            .set_level(BuildingKind::CONSTRUCTION_CENTER, 2);
+        colony.buildings.set_level(BuildingKind::METAL_MINE, 2);
+        colony
+            .buildings
+            .set_level(BuildingKind::CRYSTAL_EXTRACTOR, 2);
+        colony.buildings.set_level(BuildingKind::SHIPYARD, 1);
+        colony.energy = default_building_catalog().energy_grid_for_levels(colony.buildings);
+        colony
+            .resources
+            .credit(ResourceStock::new(1_000, 1_000, 1_000))
+            .expect("resource credit fits");
+        simulation.state_mut().research =
+            ResearchState::from_completed([TechnologyId::SPATIAL_DETECTION]);
+        let colony_id = simulation.state().colonies[0].id;
+        simulation.apply_command(GameCommand::QueueCraft {
+            colony_id,
+            craftable: CraftableId::LIGHT_PROBE,
+        });
+        simulation.advance(Duration::from_secs(12));
+
+        let save = snapshot_from_simulation(&simulation);
+        let restored = restore_from_snapshot(&save).expect("craft save is compatible");
+
+        assert_eq!(restored.state(), simulation.state());
+        assert_eq!(
+            restored
+                .state()
+                .colony(colony_id)
+                .expect("colony exists")
+                .craft_queue
+                .len(),
+            1,
+        );
+    }
+
+    #[test]
+    fn state_and_save_versions_match_mvp_017() {
         let simulation = Simulation::new(UniverseConfig::mvp());
         let save = snapshot_from_simulation(&simulation);
 

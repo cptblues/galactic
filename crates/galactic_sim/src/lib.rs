@@ -1,6 +1,7 @@
 pub mod building_catalog;
 pub mod command;
 pub mod construction;
+pub mod craft;
 pub mod event;
 pub mod knowledge;
 pub mod production;
@@ -15,6 +16,7 @@ pub mod universe;
 pub use building_catalog::*;
 pub use command::*;
 pub use construction::*;
+pub use craft::*;
 pub use event::*;
 pub use knowledge::*;
 pub use production::*;

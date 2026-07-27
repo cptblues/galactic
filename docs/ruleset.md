@@ -4,17 +4,18 @@ Galactic charge son ruleset au démarrage depuis
 `assets/rulesets/default/`. La variable d'environnement
 `GALACTIC_RULESET_DIR` permet de sélectionner un autre dossier.
 
-Le ruleset est composé de cinq fichiers RON :
+Le ruleset est composé de six fichiers RON :
 
 - `manifest.ron` : identifiant et versions ;
 - `economy.ron` : stockage de base, limites de files et cadence de production ;
 - `buildings.ron` : bâtiments, coûts, durées, effets et prérequis ;
 - `technologies.ron` : arbre de recherche, coûts et déblocages ;
+- `craftables.ron` : objets fabricables, coûts, durées, prérequis et capacités ;
 - `starting_scenario.ron` : faction, colonie, ressources et bâtiments initiaux.
 
-Les durées de construction sont exprimées en secondes dans les données puis
-converties en ticks stratégiques au chargement. La fréquence de dix ticks par
-seconde reste une règle du moteur.
+Les durées de construction et de fabrication sont exprimées en secondes dans
+les données puis converties en ticks stratégiques au chargement. La fréquence
+de dix ticks par seconde reste une règle du moteur.
 
 ## Identifiants et effets
 
@@ -42,14 +43,28 @@ Les déblocages technologiques disponibles sont :
 - `AnalyzePlanets` ;
 - `FoundColonies`.
 
+Les fabrications possèdent un `CraftableId` textuel, une catégorie, un coût,
+une durée de base, une quantité produite, des prérequis de bâtiments et de
+technologies ainsi qu'une liste de capacités numériques. Le catalogue par
+défaut contient :
+
+- `light_probe` avec `probe_strength` ;
+- `light_cargo` avec `cargo_capacity` ;
+- `colony_ship` avec `colonization_capacity`.
+
+Les catégories `Defense`, `Military` et `Support` sont déjà reconnues, sans
+imposer de contenu actif. Une fabrication doit dépendre d'au moins un bâtiment
+ayant l'effet `ShipyardPoints`. Sa durée de base correspond à la cadence du
+niveau minimal requis ; améliorer le chantier accélère ensuite la file.
+
 Un comportement entièrement nouveau reste une mécanique du moteur et nécessite
 une implémentation Rust.
 
 ## Validation et sauvegardes
 
 Le chargement refuse notamment les identifiants invalides ou dupliqués, les
-références absentes, les cycles de prérequis, les coûts scientifiques nuls, les
-durées invalides et les niveaux de départ incohérents.
+références absentes, les cycles de prérequis, les coûts nuls, les durées ou
+capacités invalides et les niveaux de départ incohérents.
 
 Les sauvegardes enregistrent l'identifiant du ruleset, sa version de schéma et
 une empreinte structurelle. Les noms et descriptions ne participent pas à cette
