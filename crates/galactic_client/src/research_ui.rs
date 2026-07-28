@@ -574,7 +574,7 @@ fn update_research_summary(
             }
             ResearchTextRole::Summary => {
                 text.0 = format!(
-                    "Laboratoires cumulés : niveau {}  •  production scientifique : {:.2} point(s)/s  •  file : {}/{}",
+                    "Instituts d'analyse cumulés : niveau {}  •  production scientifique : {:.2} point(s)/s  •  file : {}/{}",
                     labs,
                     output,
                     state.research.queue_len(),
@@ -821,7 +821,7 @@ fn research_queue_text(state: &galactic_sim::GameState) -> String {
     if state.research.is_queue_empty() {
         let has_output = research_output_milli_points_per_tick(state, state.player_faction) > 0;
         let hint = if !has_output {
-            "Construis un Laboratoire pour produire des points de recherche."
+            "Construis un Institut d'analyse pour produire des points de recherche."
         } else {
             "Sélectionne une technologie disponible."
         };
@@ -873,7 +873,7 @@ fn research_queue_text(state: &galactic_sim::GameState) -> String {
 fn research_error_text(error: ResearchError) -> String {
     match error {
         ResearchError::Access(_) => "Recherche non autorisée".to_string(),
-        ResearchError::NoResearchCapacity => "Laboratoire requis".to_string(),
+        ResearchError::NoResearchCapacity => "Institut d'analyse requis".to_string(),
         ResearchError::AlreadyCompleted(technology) => {
             format!("{} déjà acquise", technology_definition(technology).name,)
         }
@@ -944,8 +944,8 @@ mod tests {
             ),
         );
 
-        assert!(text.contains("Laboratoire requis"));
-        assert!(text.contains("Détection"));
+        assert!(text.contains("Institut d'analyse requis"));
+        assert!(text.contains("VEILLE SIDÉRALE"));
     }
 
     #[test]

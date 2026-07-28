@@ -88,3 +88,7 @@ empreinte : leur correction ne rend donc pas une sauvegarde incompatible.
 
 Le hot reload pendant une partie n'est pas pris en charge. Il faut redémarrer le
 jeu après chaque modification.
+
+Les noms visibles du ruleset `default` suivent
+[`docs/universe_bible.md`](universe_bible.md). Les identifiants techniques
+restent stables même lorsqu'un libellé ou une description évolue.

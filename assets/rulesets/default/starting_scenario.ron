@@ -1,7 +1,7 @@
 (
     player_faction_id: 0,
     colony_id: 0,
-    colony_name: "Aster Prime Colony",
+    colony_name: "Port-Sillage",
     home_system_index: 0,
     home_planet_index: 0,
     initial_stock: (metal: 600, crystal: 300, fuel: 220),

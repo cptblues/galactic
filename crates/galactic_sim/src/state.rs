@@ -642,7 +642,7 @@ mod tests {
             .colony(ColonyId::new(0))
             .expect("home colony is indexed");
 
-        assert_eq!(colony.name, "Aster Prime Colony");
+        assert_eq!(colony.name, "Port-Sillage");
     }
 
     #[test]

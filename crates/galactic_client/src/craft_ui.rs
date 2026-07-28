@@ -141,7 +141,7 @@ pub(crate) fn spawn_craft_toggle(parent: &mut ChildSpawnerCommands) {
         ))
         .with_children(|button| {
             button.spawn((
-                Text::new("Chantier spatial  [Y]"),
+                Text::new("Chantier orbital  [Y]"),
                 ui_text_font(12.0),
                 TextColor(Color::srgb(1.0, 0.86, 0.66)),
                 CraftTextRole::Toggle,
@@ -556,7 +556,7 @@ fn update_craft_visibility(
             text.0 = if ui.open {
                 "Fermer chantier".to_string()
             } else {
-                "Chantier spatial  [Y]".to_string()
+                "Chantier orbital  [Y]".to_string()
             };
         }
     }
@@ -810,7 +810,7 @@ fn craft_queue_text(colony: &galactic_sim::ColonyState) -> String {
     let mut lines = Vec::new();
     if colony.craft_queue.is_empty() {
         let hint = if shipyard_output_milli_per_tick(colony) == 0 {
-            "Construis un Chantier spatial pour fabriquer des unités."
+            "Construis un Chantier orbital pour fabriquer des unités."
         } else {
             "Sélectionne une fabrication disponible."
         };
@@ -887,7 +887,7 @@ fn craft_error_text(error: CraftError) -> String {
         CraftError::MissingTechnology(technology) => {
             format!("Requiert {}", technology_definition(technology).name)
         }
-        CraftError::NoShipyardCapacity => "Chantier spatial requis".to_string(),
+        CraftError::NoShipyardCapacity => "Chantier orbital requis".to_string(),
         CraftError::InsufficientResources { available, cost } => format!(
             "Ressources insuffisantes — dispo {}/{}/{} • coût {}/{}/{}",
             available.metal, available.crystal, available.fuel, cost.metal, cost.crystal, cost.fuel,

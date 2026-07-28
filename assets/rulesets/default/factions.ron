@@ -4,19 +4,19 @@
     factions: [
         (
             id: 0,
-            name: "Aster Expedition",
+            name: "Expédition Aster",
             kind: Player,
             active: true,
         ),
         (
             id: 1,
-            name: "Mondes indépendants",
+            name: "Communes des Confins",
             kind: Neutral,
             active: false,
         ),
         (
             id: 2,
-            name: "Directoire dormant",
+            name: "Directoire Vesper",
             kind: FutureAi,
             active: false,
         ),

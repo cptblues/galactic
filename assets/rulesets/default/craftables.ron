@@ -3,8 +3,8 @@
     craftables: [
         (
             id: "light_probe",
-            name: "Sonde légère",
-            description: "Un éclaireur automatisé destiné aux premières opérations de reconnaissance.",
+            name: "Sonde Luciole",
+            description: "Un éclaireur automatisé rapide, conçu pour cartographier la frontière.",
             category: Probe,
             cost: (metal: 200, crystal: 150, fuel: 80),
             base_duration_seconds: 45,
@@ -22,8 +22,8 @@
         ),
         (
             id: "light_cargo",
-            name: "Cargo léger",
-            description: "Un transport orbital modeste, homologué pour déplacer du matériel utile.",
+            name: "Caboteur Sillage",
+            description: "Un transport fiable à courte portée, adapté aux premières lignes logistiques.",
             category: Transport,
             cost: (metal: 400, crystal: 260, fuel: 180),
             base_duration_seconds: 75,
@@ -41,8 +41,8 @@
         ),
         (
             id: "colony_ship",
-            name: "Vaisseau-colonie",
-            description: "Une administration complète emballée dans une coque pressurisée.",
+            name: "Arche Pionnière",
+            description: "Une implantation autonome réunie dans une coque lente et lourdement équipée.",
             category: Colony,
             cost: (metal: 1200, crystal: 900, fuel: 700),
             base_duration_seconds: 180,

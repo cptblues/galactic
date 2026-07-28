@@ -1,5 +1,5 @@
 (
     id: "default",
     schema_version: 5,
-    content_version: 5,
+    content_version: 6,
 )

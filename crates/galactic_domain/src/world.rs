@@ -8,8 +8,8 @@ use crate::{PlanetId, StarId, SystemId, UniverseId, WorldPosition};
 
 pub const MVP_UNIVERSE_SEED: u64 = 42;
 pub const MVP_SYSTEM_COUNT: usize = 16;
-pub const GENERATION_VERSION: u32 = 2;
-pub const MVP_REFERENCE_FINGERPRINT: u64 = 12539308657388844103;
+pub const GENERATION_VERSION: u32 = 3;
+pub const MVP_REFERENCE_FINGERPRINT: u64 = 202568768259003109;
 
 const MAX_SYSTEM_COUNT: usize = 256;
 
@@ -220,12 +220,15 @@ fn generate_system(index: usize, rng: &mut ChaCha8Rng) -> StarSystem {
         random_star(id, rng)
     };
 
+    let name = system_name(index, rng);
+    let planets = generate_planets(id, index, &name, rng);
+
     StarSystem {
         id,
-        name: system_name(index, rng),
+        name,
         position,
         star,
-        planets: generate_planets(id, index, rng),
+        planets,
     }
 }
 
@@ -271,7 +274,12 @@ fn random_star(system_id: SystemId, rng: &mut ChaCha8Rng) -> Star {
     }
 }
 
-fn generate_planets(system_id: SystemId, system_index: usize, rng: &mut ChaCha8Rng) -> Vec<Planet> {
+fn generate_planets(
+    system_id: SystemId,
+    system_index: usize,
+    system_name: &str,
+    rng: &mut ChaCha8Rng,
+) -> Vec<Planet> {
     let count = if system_index == 0 {
         3
     } else {
@@ -284,7 +292,7 @@ fn generate_planets(system_id: SystemId, system_index: usize, rng: &mut ChaCha8R
             if system_index == 0 && index == 0 {
                 return Planet {
                     id,
-                    name: "Aster Prime".to_string(),
+                    name: "Nacre".to_string(),
                     kind: PlanetKind::Ocean,
                     habitability: 92,
                 };
@@ -293,7 +301,7 @@ fn generate_planets(system_id: SystemId, system_index: usize, rng: &mut ChaCha8R
             let kind = random_planet_kind(rng);
             Planet {
                 id,
-                name: planet_name(system_index, index),
+                name: planet_name(system_name, index),
                 kind,
                 habitability: habitability_for(kind, rng),
             }
@@ -401,26 +409,47 @@ fn generate_routes(systems: &[StarSystem]) -> Vec<Route> {
 }
 
 fn system_name(index: usize, rng: &mut ChaCha8Rng) -> String {
-    const PREFIXES: &[&str] = &[
-        "Aster", "Nova", "Kepler", "Vega", "Orion", "Lyra", "Cygni", "Helio",
-    ];
-    const SUFFIXES: &[&str] = &[
-        "Reach", "Gate", "Hold", "Bastion", "Drift", "Crown", "Harbor", "Span",
+    const NAMES: &[&str] = &[
+        "Hélianthe",
+        "Vespera",
+        "Néréide",
+        "Talos",
+        "Cyrène",
+        "Ophira",
+        "Méroé",
+        "Eidolon",
+        "Sélène",
+        "Praxia",
+        "Ilyr",
+        "Calder",
+        "Thémis",
+        "Orphéon",
+        "Nacréon",
+        "Arkan",
     ];
 
     if index == 0 {
-        "Aster".to_string()
+        return NAMES[0].to_string();
+    }
+
+    // Preserve the two random draws used by generation version 2 so that this
+    // editorial migration changes identities, not physical world properties.
+    let _ = rng.random_range(0..8);
+    let _ = rng.random_range(0..8);
+
+    let base = NAMES[index % NAMES.len()];
+    let cycle = index / NAMES.len();
+    if cycle == 0 {
+        base.to_string()
     } else {
-        format!(
-            "{} {}",
-            PREFIXES[rng.random_range(0..PREFIXES.len())],
-            SUFFIXES[rng.random_range(0..SUFFIXES.len())]
-        )
+        format!("{base}-{}", cycle + 1)
     }
 }
 
-fn planet_name(system_index: usize, planet_index: usize) -> String {
-    format!("P{}-{}", system_index + 1, planet_index + 1)
+fn planet_name(system_name: &str, planet_index: usize) -> String {
+    const DESIGNATORS: &[&str] = &["b", "c", "d", "e", "f", "g", "h", "i"];
+    let designator = DESIGNATORS.get(planet_index).copied().unwrap_or("x");
+    format!("{system_name} {designator}")
 }
 
 pub fn fingerprint_universe(universe: &UniverseDefinition) -> u64 {
@@ -502,6 +531,43 @@ mod tests {
         assert_eq!(home.star.id, StarId::for_system(home_system_id));
         assert_eq!(planet.kind, PlanetKind::Ocean);
         assert!(planet.habitability >= 90);
+    }
+
+    #[test]
+    fn canonical_mvp_names_are_stable_and_unique() {
+        let universe = generate_universe(UniverseConfig::mvp());
+        let system_names = universe
+            .systems
+            .iter()
+            .map(|system| system.name.as_str())
+            .collect::<Vec<_>>();
+        let unique_names = system_names.iter().copied().collect::<BTreeSet<_>>();
+
+        assert_eq!(
+            system_names,
+            [
+                "Hélianthe",
+                "Vespera",
+                "Néréide",
+                "Talos",
+                "Cyrène",
+                "Ophira",
+                "Méroé",
+                "Eidolon",
+                "Sélène",
+                "Praxia",
+                "Ilyr",
+                "Calder",
+                "Thémis",
+                "Orphéon",
+                "Nacréon",
+                "Arkan",
+            ],
+        );
+        assert_eq!(unique_names.len(), system_names.len());
+        assert_eq!(universe.systems[0].planets[0].name, "Nacre");
+        assert_eq!(universe.systems[0].planets[1].name, "Hélianthe c");
+        assert_eq!(universe.systems[1].planets[0].name, "Vespera b");
     }
 
     #[test]

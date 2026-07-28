@@ -24,7 +24,7 @@ Le combat, la diplomatie active et les factions contrôlées par l'IA ne font pa
 
 1. Observer la planète mère et ses productions.
 2. Améliorer les bâtiments de ressources et d’énergie.
-3. Construire Laboratoire et Chantier spatial.
+3. Construire Institut d'analyse et Chantier orbital.
 4. Rechercher les technologies nécessaires.
 5. Construire une sonde et sonder un système voisin.
 6. Comparer les corps révélés et leurs opportunités.
@@ -94,26 +94,30 @@ Le rendu peut montrer une planète sans révéler ses propriétés. Le HUD doit 
 
 ### Bâtiments du MVP
 
-1. Mine de métal
-2. Extracteur de cristal
-3. Raffinerie de carburant
-4. Centrale énergétique
-5. Entrepôt
-6. Centre de construction
-7. Laboratoire de recherche
-8. Chantier spatial
+1. Fosse sidérurgique
+2. Extracteur cristallin
+3. Raffinerie de volatils
+4. Réacteur hélionique
+5. Dépôt logistique
+6. Atelier d'assemblage
+7. Institut d'analyse
+8. Chantier orbital
 
 Les coûts et durées augmentent avec le niveau. Les formules et définitions doivent être pilotées par les données afin de faciliter l’équilibrage.
 
 ## 10. Recherche et crafts
 
-Technologies initiales : Détection spatiale, Propulsion, Capacité cargo, Extraction distante, Analyse planétaire et Colonisation.
+Technologies initiales : Veille sidérale, Propulsion à flux, Architecture de
+soute, Prospection autonome, Spectrométrie planétaire et Ingénierie
+d'implantation.
 
 Le chantier spatial utilise une file générique de craft. Les catégories Défense et Militaire peuvent exister dans le modèle ou l’interface, mais restent inactives tant qu’aucun ennemi n’est simulé.
 
 ## 11. Flottes et missions
 
-Les trois unités actives du MVP sont la Sonde légère, le Cargo léger et le Vaisseau-colonie. Une flotte possède un propriétaire, une localisation, une composition, une cargaison et éventuellement une mission.
+Les trois unités actives du MVP sont la Sonde Luciole, le Caboteur Sillage et
+l'Arche Pionnière. Une flotte possède un propriétaire, une localisation, une
+composition, une cargaison et éventuellement une mission.
 
 La machine d’état commune est : Préparation → Transit aller → Sur place → Transit retour → Terminée, avec un état Échec contrôlé.
 
@@ -153,7 +157,7 @@ Le jeu fonctionne en temps réel avec pause et vitesses x1, x2 et x4. Les temps 
 - Vue Système : étoile, planètes, lunes et information partielle.
 - Gestion planétaire : ressources, énergie, stockage et bâtiments.
 - Recherche : technologies et prérequis.
-- Chantier spatial : crafts et files.
+- Chantier orbital : crafts et files.
 - Flottes : composition, trajet, cargaison et missions.
 - Empire : aperçu agrégé et sélection de colonie.
 - Objectifs : progression du parcours MVP.

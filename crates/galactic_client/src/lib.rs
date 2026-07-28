@@ -4484,7 +4484,7 @@ mod tests {
         let text =
             building_management_detail_text(colony, galactic_sim::BuildingKind::METAL_MINE, quote);
 
-        assert!(text.contains("MINE DE MÉTAL"));
+        assert!(text.contains("FOSSE SIDÉRURGIQUE"));
         assert!(text.contains("Niveau actif"));
         assert!(text.contains("Coût"));
         assert!(text.contains("Actuel"));
@@ -4768,7 +4768,7 @@ mod tests {
         let rendered = panel.render();
 
         assert_eq!(panel.level, Some(KnowledgeLevel::Colonized));
-        assert!(rendered.contains("Aster Prime Colony"));
+        assert!(rendered.contains("Port-Sillage"));
         assert!(rendered.contains("ÉCONOMIE — RÉSUMÉ"));
         assert!(rendered.contains("Gestion complète : touche C"));
         assert!(rendered.contains("INFRASTRUCTURE"));

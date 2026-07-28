@@ -219,9 +219,9 @@ GameState mutable
 Configuration MVP :
 
 - système natal : `SystemId(0)` ;
-- planète mère : première planète de ce système, `Aster Prime` ;
+- planète mère : première planète de ce système, `Nacre` ;
 - habitabilité minimale validée : 80 ;
-- faction joueur : `Aster Expedition` ;
+- faction joueur : `Expédition Aster` ;
 - une colonie initiale ;
 - stocks initiaux : 600 métal, 300 cristal, 220 carburant, 80 énergie ;
 - profil planétaire équilibré : 100/100/100/100 ;
@@ -468,8 +468,8 @@ même état.
 
 Règles temporaires centralisées, en attendant le catalogue MVP-013 :
 
-- Mine de métal niveau 1 : 2,50 unités/s à potentiel 100 ;
-- Extracteur de cristal niveau 1 : 1,25 unité/s à potentiel 100 ;
+- Fosse sidérurgique niveau 1 : 2,50 unités/s à potentiel 100 ;
+- Extracteur cristallin niveau 1 : 1,25 unité/s à potentiel 100 ;
 - Raffinerie niveau 1 : 0,75 unité/s à potentiel 100 ;
 - chaque taux est multiplié par le niveau et le potentiel planétaire ;
 - capacité de base : 1 000 / 800 / 600 ;
@@ -769,7 +769,7 @@ Cette étape est client-only :
 
 ## MVP-016 — Recherche et arbre technologique minimal
 
-La recherche est une progression globale au joueur. Tous les Laboratoires des
+La recherche est une progression globale au joueur. Tous les Instituts d'analyse des
 colonies du joueur contribuent à une seule production scientifique et à une
 file commune de six projets maximum.
 
@@ -777,23 +777,23 @@ file commune de six projets maximum.
 
 L'arbre minimal contient :
 
-1. Détection spatiale ;
-2. Propulsion ;
-3. Capacité cargo ;
-4. Extraction distante ;
-5. Analyse planétaire ;
-6. Colonisation.
+1. Veille sidérale ;
+2. Propulsion à flux ;
+3. Architecture de soute ;
+4. Prospection autonome ;
+5. Spectrométrie planétaire ;
+6. Ingénierie d'implantation.
 
 Les dépendances sont déterministes :
 
 ```text
-Détection spatiale
-├── Propulsion
-│   └── Capacité cargo
-│       ├── Extraction distante
-│       └── Colonisation
-└── Analyse planétaire
-    └── Colonisation
+Veille sidérale
+├── Propulsion à flux
+│   └── Architecture de soute
+│       ├── Prospection autonome
+│       └── Ingénierie d'implantation
+└── Spectrométrie planétaire
+    └── Ingénierie d'implantation
 ```
 
 Chaque définition possède un nom, une description, un coût en milli-points,
@@ -803,24 +803,24 @@ checkpoints suivants.
 
 ### Production scientifique
 
-Le Laboratoire du catalogue produit des milli-points par tick et par niveau.
-La production globale additionne les niveaux actifs de Laboratoire de toutes
+L'Institut d'analyse du catalogue produit des milli-points par tick et par niveau.
+La production globale additionne les niveaux actifs d'Institut d'analyse de toutes
 les colonies du joueur.
 
-Sans Laboratoire actif, aucune technologie ne peut être ajoutée à la file.
-Une amélioration de Laboratoire agit dès le tick stratégique où sa construction
+Sans Institut d'analyse actif, aucune technologie ne peut être ajoutée à la file.
+Une amélioration d'Institut d'analyse agit dès le tick stratégique où sa construction
 se termine.
 
 La simulation traite production, construction et recherche tick par tick à
 l'intérieur d'un lot de temps. Le résultat reste donc identique quel que soit
-le découpage des frames, y compris lorsqu'un Laboratoire termine pendant le
+le découpage des frames, y compris lorsqu'un Institut d'analyse termine pendant le
 lot.
 
 ### File globale
 
 Une technologie peut être ajoutée lorsque :
 
-- un Laboratoire produit des points ;
+- un Institut d'analyse produit des points ;
 - ses prérequis sont acquis ou placés avant elle dans la file ;
 - elle n'est ni acquise ni déjà planifiée ;
 - la file n'est pas pleine.
@@ -891,7 +891,7 @@ L'ajout d'un ordre valide les bâtiments, les technologies, la capacité de la
 file et les ressources. Le coût est réservé atomiquement dès l'ajout, puis
 consommé uniquement à l'achèvement.
 
-Le Chantier spatial produit des milli-points de travail à chaque tick
+Le Chantier orbital produit des milli-points de travail à chaque tick
 stratégique. La durée configurée correspond au niveau minimal requis ; les
 niveaux supplémentaires accélèrent donc la fabrication sans changer le
 contenu du catalogue. Les points excédentaires passent à l'ordre suivant.
@@ -994,3 +994,28 @@ Versions après migration :
 - `SAVE_VERSION = 15` ;
 - `RULESET_SCHEMA_VERSION = 5` ;
 - `CRAFTABLE_CATALOG_VERSION = 2`.
+
+
+## MVP-020-B — Bible d'univers et nomenclature V1
+
+Le ruleset `default` suit désormais une référence éditoriale unique :
+`docs/universe_bible.md`. Elle fixe le ton de science-fiction de frontière, les
+familles lexicales et les noms canoniques des factions, infrastructures,
+recherches et premiers vaisseaux.
+
+Les identifiants techniques restent inchangés. Les nouveaux libellés du ruleset
+n'altèrent donc ni les coûts, ni les capacités, ni son empreinte structurelle.
+`content_version` passe à 6.
+
+Le générateur utilise seize noms de systèmes fixes pour le preset MVP. Les
+planètes non baptisées suivent la convention astronomique `Système b`,
+`Système c`, tandis que la planète mère devient `Nacre` et la colonie initiale
+`Port-Sillage`. Les tirages aléatoires historiques sont consommés à l'identique
+afin que cette passe éditoriale ne modifie pas les propriétés physiques de
+l'univers.
+
+Les noms faisant partie du fingerprint de l'univers, cette modification
+volontaire porte `GENERATION_VERSION` à 3 et renouvelle le fingerprint de
+référence. Les anciennes sauvegardes de développement sont incompatibles.
+`GAME_STATE_VERSION`, `SAVE_VERSION` et `RULESET_SCHEMA_VERSION` restent
+respectivement à 14, 15 et 5.

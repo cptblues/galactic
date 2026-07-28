@@ -3,8 +3,8 @@
     buildings: [
         (
             id: "metal_mine",
-            name: "Mine de métal",
-            description: "Extrait le métal nécessaire aux infrastructures et aux futurs vaisseaux.",
+            name: "Fosse sidérurgique",
+            description: "Extrait et trie les minerais métalliques destinés aux infrastructures.",
             max_level: 10,
             base_cost: (metal: 120, crystal: 60, fuel: 20),
             cost_growth_per_mille: 1450,
@@ -16,8 +16,8 @@
         ),
         (
             id: "crystal_extractor",
-            name: "Extracteur de cristal",
-            description: "Produit les cristaux employés par les systèmes avancés.",
+            name: "Extracteur cristallin",
+            description: "Isole les cristaux techniques employés par les systèmes de précision.",
             max_level: 10,
             base_cost: (metal: 100, crystal: 80, fuel: 25),
             cost_growth_per_mille: 1450,
@@ -29,8 +29,8 @@
         ),
         (
             id: "fuel_refinery",
-            name: "Raffinerie de carburant",
-            description: "Raffine le carburant des convois et des opérations orbitales.",
+            name: "Raffinerie de volatils",
+            description: "Transforme les composés volatils en carburant pour les opérations orbitales.",
             max_level: 10,
             base_cost: (metal: 140, crystal: 90, fuel: 40),
             cost_growth_per_mille: 1500,
@@ -42,8 +42,8 @@
         ),
         (
             id: "power_plant",
-            name: "Centrale énergétique",
-            description: "Alimente les bâtiments de la colonie.",
+            name: "Réacteur hélionique",
+            description: "Fournit l'énergie stable nécessaire aux installations de la colonie.",
             max_level: 10,
             base_cost: (metal: 160, crystal: 120, fuel: 40),
             cost_growth_per_mille: 1500,
@@ -55,8 +55,8 @@
         ),
         (
             id: "warehouse",
-            name: "Entrepôt",
-            description: "Augmente la capacité de stockage des trois ressources.",
+            name: "Dépôt logistique",
+            description: "Sécurise et augmente les réserves de métal, de cristal et de carburant.",
             max_level: 10,
             base_cost: (metal: 180, crystal: 100, fuel: 30),
             cost_growth_per_mille: 1450,
@@ -72,8 +72,8 @@
         ),
         (
             id: "construction_center",
-            name: "Centre de construction",
-            description: "Accélère les améliorations d'infrastructure.",
+            name: "Atelier d'assemblage",
+            description: "Coordonne les chantiers au sol et accélère les extensions d'infrastructure.",
             max_level: 5,
             base_cost: (metal: 250, crystal: 180, fuel: 80),
             cost_growth_per_mille: 1600,
@@ -85,8 +85,8 @@
         ),
         (
             id: "research_lab",
-            name: "Laboratoire",
-            description: "Produit les points scientifiques de la recherche globale.",
+            name: "Institut d'analyse",
+            description: "Mutualise les relevés de la colonie et produit les données de recherche.",
             max_level: 5,
             base_cost: (metal: 300, crystal: 250, fuel: 100),
             cost_growth_per_mille: 1650,
@@ -98,8 +98,8 @@
         ),
         (
             id: "shipyard",
-            name: "Chantier spatial",
-            description: "Prépare la production des futurs équipements orbitaux.",
+            name: "Chantier orbital",
+            description: "Assemble sondes, transports et arches dans les cales orbitales.",
             max_level: 5,
             base_cost: (metal: 500, crystal: 350, fuel: 220),
             cost_growth_per_mille: 1700,

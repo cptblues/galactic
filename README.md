@@ -44,6 +44,7 @@ capacités, factions, relations initiales, limites de files et données de dépa
 peuvent être modifiés sans recompiler le jeu.
 
 Guide de configuration : `docs/ruleset.md`.
+Référence éditoriale : `docs/universe_bible.md`.
 
 ## Controles Actuels
 
@@ -55,7 +56,7 @@ Guide de configuration : `docs/ruleset.md`.
 | Vitesse x4 | `3` |
 | Gestion planétaire | `C` |
 | Recherche | `T` |
-| Chantier spatial | `Y` |
+| Chantier orbital | `Y` |
 | Reconstruire les vues Bevy | `R` |
 
 ## Baseline
