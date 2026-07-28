@@ -961,3 +961,36 @@ Versions après migration :
 - `GAME_STATE_VERSION = 13` ;
 - `SAVE_VERSION = 14` ;
 - `RULESET_SCHEMA_VERSION = 4`.
+
+
+## MVP-020 — Flottes, vaisseaux et capacités
+
+Les fabrications de vaisseaux décrivent maintenant dans `craftables.ron` leur
+classe, leur vitesse de croisière, leur portée en sauts, leur capacité cargo et
+leur consommation de carburant par saut. Les valeurs restent configurables,
+tandis que les règles d'agrégation appartiennent à la simulation.
+
+Une flotte possède un `FleetId` stable, un `Owner`, une localisation, une
+composition générique, une cargaison et une affectation éventuelle à une
+mission. Une flotte mixte utilise la vitesse et la portée de son vaisseau le
+plus contraignant ; les capacités cargo et consommations sont additionnées.
+
+Former une flotte est une commande atomique :
+
+1. valider la faction et la colonie ;
+2. valider chaque classe et quantité demandée ;
+3. vérifier l'inventaire disponible au sol ;
+4. retirer les vaisseaux de cet inventaire ;
+5. créer une seule flotte possédée par la faction.
+
+Une seconde formation ne peut donc pas réutiliser les mêmes unités. Les flottes,
+leur composition, leur localisation, leur cargaison, leur affectation et le
+prochain identifiant sont sauvegardés. Le moteur de trajet et les missions
+restent hors périmètre jusqu'à MVP-021.
+
+Versions après migration :
+
+- `GAME_STATE_VERSION = 14` ;
+- `SAVE_VERSION = 15` ;
+- `RULESET_SCHEMA_VERSION = 5` ;
+- `CRAFTABLE_CATALOG_VERSION = 2`.

@@ -4237,6 +4237,12 @@ fn event_label(event: GameEvent) -> String {
             "craft {:?} refusé : {:?}",
             rejected.craftable, rejected.error,
         ),
+        GameEventKind::FleetCreated(created) => {
+            format!("flotte {:?} formée", created.fleet_id)
+        }
+        GameEventKind::FleetCreationRejected(rejected) => {
+            format!("formation de flotte refusée : {:?}", rejected.error)
+        }
     }
 }
 

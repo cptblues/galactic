@@ -1,13 +1,13 @@
 use galactic_domain::{ColonyId, FactionId, PlanetId, SystemId};
 
-use crate::{BuildingKind, CraftableId, StrategicTick, TechnologyId, TimeSpeed};
+use crate::{BuildingKind, CraftableId, FleetComposition, StrategicTick, TechnologyId, TimeSpeed};
 
 /// An action requested from the deterministic simulation.
 ///
 /// Actions contain no implicit player identity. The issuing faction and tick
 /// live in [`GameCommand`], so a future AI can use the exact same input path as
 /// the player UI.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GameAction {
     TogglePause,
     SetSpeed(TimeSpeed),
@@ -28,12 +28,16 @@ pub enum GameAction {
         colony_id: ColonyId,
         craftable: CraftableId,
     },
+    FormFleet {
+        colony_id: ColonyId,
+        composition: FleetComposition,
+    },
     /// Temporary validation action until the probe mission loop is added.
     DebugAdvanceSelectedKnowledge,
 }
 
 /// Generic command envelope shared by player and future AI command sources.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GameCommand {
     pub issuer: FactionId,
     pub issued_at: StrategicTick,

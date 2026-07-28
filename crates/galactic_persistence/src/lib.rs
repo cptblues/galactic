@@ -1,17 +1,18 @@
-// MVP-019: persist faction data, diplomacy, owners and the active ruleset identity.
+// MVP-020: persist fleet ownership, composition, location, cargo and allocation.
 use galactic_domain::{
-    ColonyId, EnergyGrid, FactionId, Owner, PlanetId, ResourceLedger, ResourceLedgerError,
+    ColonyId, EnergyGrid, FactionId, FleetId, Owner, PlanetId, ResourceLedger, ResourceLedgerError,
     ResourceReservation, ResourceStock, SystemId, UniverseConfig, UniverseId, generate_universe,
 };
 use galactic_sim::{
     BuildingLevels, ColonyState, ConstructionQueue, CraftInventory, CraftQueue, DiplomacyState,
-    FactionData, FactionKind, GameState, PlanetKnowledge, PlanetResourceProfile,
-    ProductionRemainder, ProductionRemainderError, ResearchState, SelectionTarget, Simulation,
-    SimulationBuildError, StrategicClock, StrategicClockError, StrategicTick, SystemKnowledge,
-    TimeSpeed, default_ruleset, production_refresh_ticks,
+    FactionData, FactionKind, FleetAssignment, FleetComposition, FleetLocation, FleetState,
+    GameState, PlanetKnowledge, PlanetResourceProfile, ProductionRemainder,
+    ProductionRemainderError, ResearchState, SelectionTarget, Simulation, SimulationBuildError,
+    StrategicClock, StrategicClockError, StrategicTick, SystemKnowledge, TimeSpeed,
+    default_ruleset, production_refresh_ticks,
 };
 
-pub const SAVE_VERSION: u32 = 14;
+pub const SAVE_VERSION: u32 = 15;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SaveGame {
@@ -44,6 +45,8 @@ pub struct MutableGameSave {
     pub system_knowledge: Vec<SystemKnowledge>,
     pub planet_knowledge: Vec<PlanetKnowledge>,
     pub colonies: Vec<ColonySave>,
+    pub fleets: Vec<FleetSave>,
+    pub next_fleet_id: u64,
     pub research: ResearchState,
 }
 
@@ -84,6 +87,16 @@ pub struct ColonySave {
     pub inventory: CraftInventory,
     pub buildings: BuildingLevels,
     pub resource_profile: PlanetResourceProfile,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FleetSave {
+    pub id: FleetId,
+    pub owner: Owner,
+    pub location: FleetLocation,
+    pub composition: FleetComposition,
+    pub cargo: ResourceStock,
+    pub assignment: FleetAssignment,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -192,6 +205,19 @@ pub fn snapshot_from_simulation(simulation: &Simulation) -> SaveGame {
                     resource_profile: colony.resource_profile,
                 })
                 .collect(),
+            fleets: state
+                .fleets
+                .iter()
+                .map(|fleet| FleetSave {
+                    id: fleet.id,
+                    owner: fleet.owner,
+                    location: fleet.location,
+                    composition: fleet.composition.clone(),
+                    cargo: fleet.cargo,
+                    assignment: fleet.assignment,
+                })
+                .collect(),
+            next_fleet_id: state.next_fleet_id,
             research: state.research.clone(),
         },
     }
@@ -315,6 +341,20 @@ pub fn restore_from_snapshot(save: &SaveGame) -> Result<Simulation, SaveError> {
         diplomacy: save.state.diplomacy.clone(),
         player_faction: save.state.player_faction,
         colonies,
+        fleets: save
+            .state
+            .fleets
+            .iter()
+            .map(|fleet| FleetState {
+                id: fleet.id,
+                owner: fleet.owner,
+                location: fleet.location,
+                composition: fleet.composition.clone(),
+                cargo: fleet.cargo,
+                assignment: fleet.assignment,
+            })
+            .collect(),
+        next_fleet_id: save.state.next_fleet_id,
         research: save.state.research.clone(),
         system_knowledge: save.state.system_knowledge.clone(),
         planet_knowledge: save.state.planet_knowledge.clone(),
@@ -331,8 +371,8 @@ mod tests {
 
     use galactic_domain::UniverseConfig;
     use galactic_sim::{
-        BuildingKind, CraftableId, GAME_STATE_VERSION, GameAction, TechnologyId,
-        default_building_catalog,
+        BuildingKind, CraftableId, FleetComposition, GAME_STATE_VERSION, GameAction, ShipStack,
+        TechnologyId, default_building_catalog,
     };
 
     use super::*;
@@ -462,7 +502,66 @@ mod tests {
     }
 
     #[test]
-    fn state_and_save_versions_match_mvp_019() {
+    fn fleets_and_docked_inventory_survive_round_trip() {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+        let actor = simulation.state().player_faction;
+        let colony_id = simulation.state().colonies[0].id;
+        let colony = &mut simulation.state_mut().colonies[0];
+        colony
+            .buildings
+            .set_level(BuildingKind::CONSTRUCTION_CENTER, 2);
+        colony.buildings.set_level(BuildingKind::METAL_MINE, 2);
+        colony
+            .buildings
+            .set_level(BuildingKind::CRYSTAL_EXTRACTOR, 2);
+        colony.buildings.set_level(BuildingKind::SHIPYARD, 1);
+        colony.energy = default_building_catalog().energy_grid_for_levels(colony.buildings);
+        colony
+            .resources
+            .credit(ResourceStock::new(1_000, 1_000, 1_000))
+            .expect("test funding fits");
+        simulation.state_mut().research = ResearchState::from_completed([
+            TechnologyId::SPATIAL_DETECTION,
+            TechnologyId::PROPULSION,
+        ]);
+        for _ in 0..2 {
+            let events = simulation.apply_player_action(GameAction::QueueCraft {
+                colony_id,
+                craftable: CraftableId::LIGHT_CARGO,
+            });
+            assert!(matches!(
+                events.as_slice(),
+                [galactic_sim::GameEvent {
+                    kind: galactic_sim::GameEventKind::CraftQueued(_),
+                    ..
+                }]
+            ));
+        }
+        simulation.advance(Duration::from_secs(160));
+        let composition =
+            FleetComposition::from_stacks([ShipStack::new(CraftableId::LIGHT_CARGO, 1)])
+                .expect("composition is valid");
+        simulation.apply_player_action(GameAction::FormFleet {
+            colony_id,
+            composition,
+        });
+
+        let save = snapshot_from_simulation(&simulation);
+        let restored = restore_from_snapshot(&save).expect("fleet save is compatible");
+
+        assert_eq!(restored.state(), simulation.state());
+        assert_eq!(restored.state().player_fleets().count(), 1);
+        assert_eq!(restored.state().fleets[0].owner, Owner::Faction(actor));
+        assert_eq!(
+            restored.state().colonies[0]
+                .inventory
+                .quantity(CraftableId::LIGHT_CARGO),
+            1,
+        );
+    }
+
+    #[test]
+    fn state_and_save_versions_match_mvp_020() {
         let simulation = Simulation::new(UniverseConfig::mvp());
         let save = snapshot_from_simulation(&simulation);
 

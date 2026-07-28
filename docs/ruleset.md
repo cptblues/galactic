@@ -11,7 +11,7 @@ Le ruleset est composé de sept fichiers RON :
 - `factions.ron` : factions, types, activation et relations initiales ;
 - `buildings.ron` : bâtiments, coûts, durées, effets et prérequis ;
 - `technologies.ron` : arbre de recherche, coûts et déblocages ;
-- `craftables.ron` : objets fabricables, coûts, durées, prérequis et capacités ;
+- `craftables.ron` : objets fabricables, vaisseaux, coûts, prérequis et capacités ;
 - `starting_scenario.ron` : faction joueur, colonie, ressources et bâtiments initiaux.
 
 Les durées de construction et de fabrication sont exprimées en secondes dans
@@ -57,17 +57,21 @@ Les déblocages technologiques disponibles sont :
 
 Les fabrications possèdent un `CraftableId` textuel, une catégorie, un coût,
 une durée de base, une quantité produite, des prérequis de bâtiments et de
-technologies ainsi qu'une liste de capacités numériques. Le catalogue par
-défaut contient :
+technologies ainsi qu'une liste de capacités numériques. Une fabrication qui
+représente un vaisseau ajoute une classe, une vitesse de croisière, une portée
+en sauts, une capacité cargo et une consommation de carburant par saut. Le
+catalogue par défaut contient :
 
 - `light_probe` avec `probe_strength` ;
-- `light_cargo` avec `cargo_capacity` ;
+- `light_cargo` avec 800 unités de capacité cargo ;
 - `colony_ship` avec `colonization_capacity`.
 
-Les catégories `Defense`, `Military` et `Support` sont déjà reconnues, sans
-imposer de contenu actif. Une fabrication doit dépendre d'au moins un bâtiment
-ayant l'effet `ShipyardPoints`. Sa durée de base correspond à la cadence du
-niveau minimal requis ; améliorer le chantier accélère ensuite la file.
+Les classes de vaisseau reconnues sont `Probe`, `Cargo`, `Colony`, `Military`
+et `Support`. Les catégories `Defense`, `Military` et `Support` sont déjà
+reconnues, sans imposer de contenu militaire actif. Une défense n'est pas un
+vaisseau. Une fabrication doit dépendre d'au moins un bâtiment ayant l'effet
+`ShipyardPoints`. Sa durée de base correspond à la cadence du niveau minimal
+requis ; améliorer le chantier accélère ensuite la file.
 
 Un comportement entièrement nouveau reste une mécanique du moteur et nécessite
 une implémentation Rust.

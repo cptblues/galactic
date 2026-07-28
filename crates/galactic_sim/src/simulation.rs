@@ -3,18 +3,19 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use galactic_domain::{
-    ColonyId, FactionId, Owner, PlanetId, ResourceLedgerError, ResourceStock, SystemId,
+    ColonyId, FactionId, FleetId, Owner, PlanetId, ResourceLedgerError, ResourceStock, SystemId,
     UniverseConfig, UniverseDefinition,
 };
 
 use crate::{
     BuildingCatalogError, CommandRejection, ConstructionQueueError, CraftStateError,
-    DiplomacyError, DiplomacyState, FactionKind, GAME_STATE_VERSION, GameAction, GameCommand,
-    GameEvent, GameEventKind, GameState, KnowledgeLevel, ResearchStateError, SelectionTarget,
-    StartingScenario, StartingScenarioError, StrategicDuration, TimeSpeed, UniverseIndexError,
-    UniverseRepository, advance_colony_construction, advance_colony_craft, advance_research,
-    default_building_catalog, enqueue_building_upgrade, enqueue_craft, enqueue_research,
-    queue_colony_production, storage_capacity, validate_construction_queue, validate_craft_state,
+    DiplomacyError, DiplomacyState, FactionKind, FleetStateError, GAME_STATE_VERSION, GameAction,
+    GameCommand, GameEvent, GameEventKind, GameState, KnowledgeLevel, ResearchStateError,
+    SelectionTarget, StartingScenario, StartingScenarioError, StrategicDuration, TimeSpeed,
+    UniverseIndexError, UniverseRepository, advance_colony_construction, advance_colony_craft,
+    advance_research, default_building_catalog, enqueue_building_upgrade, enqueue_craft,
+    enqueue_research, form_fleet, queue_colony_production, storage_capacity,
+    validate_construction_queue, validate_craft_state, validate_fleet_state,
     validate_research_state,
 };
 
@@ -64,6 +65,32 @@ pub enum SimulationBuildError {
         faction_id: FactionId,
     },
     UnownedColony(ColonyId),
+    DuplicateFleet(FleetId),
+    InvalidFleetState {
+        fleet_id: FleetId,
+        error: FleetStateError,
+    },
+    InvalidNextFleetId {
+        next_fleet_id: u64,
+        existing_fleet_id: FleetId,
+    },
+    UnknownFleetFaction {
+        fleet_id: FleetId,
+        faction_id: FactionId,
+    },
+    UnownedFleet(FleetId),
+    UnknownFleetColony {
+        fleet_id: FleetId,
+        colony_id: ColonyId,
+    },
+    UnknownFleetSystem {
+        fleet_id: FleetId,
+        system_id: SystemId,
+    },
+    DockedFleetOwnerMismatch {
+        fleet_id: FleetId,
+        colony_id: ColonyId,
+    },
     DuplicateSystemKnowledge(SystemId),
     DuplicatePlanetKnowledge(PlanetId),
     ExplicitUnknownSystemKnowledge(SystemId),
@@ -168,7 +195,7 @@ impl Simulation {
 
     pub fn apply_command(&mut self, command: GameCommand) -> Vec<GameEvent> {
         let current_tick = self.state.clock.current_tick();
-        if let Err(error) = self.validate_command(command) {
+        if let Err(error) = self.validate_command(&command) {
             return vec![GameEvent::new(
                 command.issuer,
                 current_tick,
@@ -220,6 +247,15 @@ impl Simulation {
                     craftable,
                     error,
                 })],
+            },
+            GameAction::FormFleet {
+                colony_id,
+                composition,
+            } => match form_fleet(&mut self.state, issuer, colony_id, composition) {
+                Ok(created) => vec![GameEventKind::FleetCreated(created)],
+                Err(error) => vec![GameEventKind::FleetCreationRejected(
+                    crate::FleetCreationRejected { colony_id, error },
+                )],
             },
             GameAction::DebugAdvanceSelectedKnowledge => self.debug_advance_selected_knowledge(),
         };
@@ -297,7 +333,7 @@ impl Simulation {
         events
     }
 
-    fn validate_command(&self, command: GameCommand) -> Result<(), CommandRejection> {
+    fn validate_command(&self, command: &GameCommand) -> Result<(), CommandRejection> {
         let Some(issuer) = self.state.faction(command.issuer) else {
             return Err(CommandRejection::UnknownIssuer(command.issuer));
         };
@@ -559,6 +595,61 @@ fn validate_state(
                 colony_id: colony.id,
                 planet_id: colony.planet_id,
             });
+        }
+    }
+
+    let mut fleet_ids = HashSet::with_capacity(state.fleets.len());
+    for fleet in &state.fleets {
+        if !fleet_ids.insert(fleet.id) {
+            return Err(SimulationBuildError::DuplicateFleet(fleet.id));
+        }
+        if fleet.id.raw() >= state.next_fleet_id {
+            return Err(SimulationBuildError::InvalidNextFleetId {
+                next_fleet_id: state.next_fleet_id,
+                existing_fleet_id: fleet.id,
+            });
+        }
+        if let Err(error) = validate_fleet_state(fleet) {
+            return Err(SimulationBuildError::InvalidFleetState {
+                fleet_id: fleet.id,
+                error,
+            });
+        }
+        match fleet.owner {
+            Owner::Unowned => {
+                return Err(SimulationBuildError::UnownedFleet(fleet.id));
+            }
+            Owner::Faction(faction_id) if state.faction(faction_id).is_none() => {
+                return Err(SimulationBuildError::UnknownFleetFaction {
+                    fleet_id: fleet.id,
+                    faction_id,
+                });
+            }
+            Owner::Faction(_) => {}
+        }
+        match fleet.location {
+            crate::FleetLocation::Docked(colony_id) => {
+                let Some(colony) = state.colony(colony_id) else {
+                    return Err(SimulationBuildError::UnknownFleetColony {
+                        fleet_id: fleet.id,
+                        colony_id,
+                    });
+                };
+                if colony.owner != fleet.owner {
+                    return Err(SimulationBuildError::DockedFleetOwnerMismatch {
+                        fleet_id: fleet.id,
+                        colony_id,
+                    });
+                }
+            }
+            crate::FleetLocation::InSystem(system_id) => {
+                if universe.system(system_id).is_none() {
+                    return Err(SimulationBuildError::UnknownFleetSystem {
+                        fleet_id: fleet.id,
+                        system_id,
+                    });
+                }
+            }
         }
     }
 

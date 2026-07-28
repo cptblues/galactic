@@ -1,5 +1,5 @@
 (
-    version: 1,
+    version: 2,
     craftables: [
         (
             id: "light_probe",
@@ -12,6 +12,13 @@
             building_prerequisites: [(id: "shipyard", level: 1)],
             technology_prerequisites: ["spatial_detection"],
             capabilities: [(id: "probe_strength", value: 1)],
+            ship: Some((
+                class: Probe,
+                cruise_speed: 160,
+                range_hops: 4,
+                cargo_capacity: 0,
+                fuel_per_hop: 6,
+            )),
         ),
         (
             id: "light_cargo",
@@ -23,7 +30,14 @@
             result_quantity: 1,
             building_prerequisites: [(id: "shipyard", level: 1)],
             technology_prerequisites: ["propulsion"],
-            capabilities: [(id: "cargo_capacity", value: 800)],
+            capabilities: [],
+            ship: Some((
+                class: Cargo,
+                cruise_speed: 100,
+                range_hops: 3,
+                cargo_capacity: 800,
+                fuel_per_hop: 15,
+            )),
         ),
         (
             id: "colony_ship",
@@ -36,6 +50,13 @@
             building_prerequisites: [(id: "shipyard", level: 2)],
             technology_prerequisites: ["colonization"],
             capabilities: [(id: "colonization_capacity", value: 1)],
+            ship: Some((
+                class: Colony,
+                cruise_speed: 70,
+                range_hops: 2,
+                cargo_capacity: 300,
+                fuel_per_hop: 30,
+            )),
         ),
     ],
 )

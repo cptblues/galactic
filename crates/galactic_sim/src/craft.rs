@@ -118,6 +118,36 @@ pub struct CraftCapability {
     pub value: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub enum ShipClass {
+    Probe,
+    Cargo,
+    Colony,
+    Military,
+    Support,
+}
+
+impl ShipClass {
+    const fn structural_key(self) -> &'static str {
+        match self {
+            Self::Probe => "probe",
+            Self::Cargo => "cargo",
+            Self::Colony => "colony",
+            Self::Military => "military",
+            Self::Support => "support",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShipDefinition {
+    pub class: ShipClass,
+    pub cruise_speed: u64,
+    pub range_hops: u16,
+    pub cargo_capacity: u64,
+    pub fuel_per_hop: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CraftBuildingPrerequisite {
     pub kind: BuildingKind,
@@ -137,6 +167,7 @@ pub struct CraftableDefinition {
     pub building_prerequisites: Vec<CraftBuildingPrerequisite>,
     pub technology_prerequisites: Vec<TechnologyId>,
     pub capabilities: Vec<CraftCapability>,
+    pub ship: Option<ShipDefinition>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -152,7 +183,7 @@ impl CraftableCatalog {
         buildings: &BuildingCatalog,
         technologies: &TechnologyCatalog,
     ) -> Result<Self, CraftCatalogError> {
-        if config.version != 1 {
+        if config.version != 2 {
             return Err(CraftCatalogError::UnsupportedVersion(config.version));
         }
         if config.craftables.is_empty() || config.craftables.len() > MAX_RULESET_CRAFTABLES {
@@ -256,6 +287,7 @@ impl CraftableCatalog {
                     building_prerequisites,
                     technology_prerequisites,
                     capabilities,
+                    ship: craftable.ship.map(ShipDefinitionConfig::compile),
                 },
             );
         }
@@ -321,6 +353,12 @@ impl CraftableCatalog {
             for capability in &definition.capabilities {
                 output.push_str(capability.id.key());
                 output.push(',');
+            }
+            output.push('|');
+            if let Some(ship) = definition.ship {
+                output.push_str("ship:");
+                output.push_str(ship.class.structural_key());
+                output.push_str(":cruise_speed:range_hops:cargo_capacity:fuel_per_hop");
             }
             output.push_str("];");
         }
@@ -389,6 +427,36 @@ impl CraftableCatalog {
                         craftable: definition.id,
                         capability: capability.id,
                     });
+                }
+            }
+
+            match (definition.category, definition.ship) {
+                (CraftableCategory::Defense, Some(_)) => {
+                    return Err(CraftCatalogError::DefenseCannotBeShip(definition.id));
+                }
+                (CraftableCategory::Defense, None) => {}
+                (_, None) => {
+                    return Err(CraftCatalogError::MissingShipDefinition(definition.id));
+                }
+                (category, Some(ship)) => {
+                    let expected = match category {
+                        CraftableCategory::Probe => ShipClass::Probe,
+                        CraftableCategory::Transport => ShipClass::Cargo,
+                        CraftableCategory::Colony => ShipClass::Colony,
+                        CraftableCategory::Military => ShipClass::Military,
+                        CraftableCategory::Support => ShipClass::Support,
+                        CraftableCategory::Defense => unreachable!("handled above"),
+                    };
+                    if ship.class != expected {
+                        return Err(CraftCatalogError::ShipClassMismatch {
+                            craftable: definition.id,
+                            expected,
+                            found: ship.class,
+                        });
+                    }
+                    if ship.cruise_speed == 0 || ship.range_hops == 0 || ship.fuel_per_hop == 0 {
+                        return Err(CraftCatalogError::InvalidShipDefinition(definition.id));
+                    }
                 }
             }
         }
@@ -474,12 +542,25 @@ impl CraftInventory {
             .map(|(craftable, quantity)| (*craftable, *quantity))
     }
 
-    fn add(&mut self, craftable: CraftableId, quantity: u64) {
+    pub(crate) fn add(&mut self, craftable: CraftableId, quantity: u64) {
         let total = self
             .quantity(craftable)
             .checked_add(quantity)
             .expect("validated craft inventory cannot overflow");
         self.quantities.insert(craftable, total);
+    }
+
+    pub(crate) fn take(&mut self, craftable: CraftableId, quantity: u64) -> bool {
+        let available = self.quantity(craftable);
+        let Some(remaining) = available.checked_sub(quantity) else {
+            return false;
+        };
+        if remaining == 0 {
+            self.quantities.remove(&craftable);
+        } else {
+            self.quantities.insert(craftable, remaining);
+        }
+        true
     }
 }
 
@@ -903,6 +984,14 @@ pub enum CraftCatalogError {
         craftable: CraftableId,
         capability: CraftCapabilityId,
     },
+    MissingShipDefinition(CraftableId),
+    InvalidShipDefinition(CraftableId),
+    DefenseCannotBeShip(CraftableId),
+    ShipClassMismatch {
+        craftable: CraftableId,
+        expected: ShipClass,
+        found: ShipClass,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -923,6 +1012,8 @@ struct CraftableDefinitionConfig {
     building_prerequisites: Vec<CraftBuildingPrerequisiteConfig>,
     technology_prerequisites: Vec<String>,
     capabilities: Vec<CraftCapabilityConfig>,
+    #[serde(default)]
+    ship: Option<ShipDefinitionConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -935,6 +1026,27 @@ struct CraftBuildingPrerequisiteConfig {
 struct CraftCapabilityConfig {
     id: String,
     value: u64,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+struct ShipDefinitionConfig {
+    class: ShipClass,
+    cruise_speed: u64,
+    range_hops: u16,
+    cargo_capacity: u64,
+    fuel_per_hop: u64,
+}
+
+impl ShipDefinitionConfig {
+    const fn compile(self) -> ShipDefinition {
+        ShipDefinition {
+            class: self.class,
+            cruise_speed: self.cruise_speed,
+            range_hops: self.range_hops,
+            cargo_capacity: self.cargo_capacity,
+            fuel_per_hop: self.fuel_per_hop,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -1010,11 +1122,18 @@ mod tests {
 
     #[test]
     fn default_catalog_is_external_and_generic() {
-        assert_eq!(craftable_catalog().version(), 1);
+        assert_eq!(craftable_catalog().version(), 2);
         assert_eq!(craftable_catalog().ids().count(), 3);
         assert_eq!(
             craftable_definition(CraftableId::LIGHT_PROBE).category,
             CraftableCategory::Probe,
+        );
+        assert_eq!(
+            craftable_definition(CraftableId::LIGHT_CARGO)
+                .ship
+                .expect("cargo is a ship")
+                .cargo_capacity,
+            800,
         );
     }
 
