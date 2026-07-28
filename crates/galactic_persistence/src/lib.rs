@@ -1,4 +1,4 @@
-// MVP-021: persist fleets, active missions, timelines and reports.
+// MVP-022: persist active reconnaissance, knowledge results and reports.
 use galactic_domain::{
     ColonyId, EnergyGrid, FactionId, FleetId, Owner, PlanetId, ResourceLedger, ResourceLedgerError,
     ResourceReservation, ResourceStock, SystemId, UniverseConfig, UniverseId, generate_universe,
@@ -12,7 +12,7 @@ use galactic_sim::{
     TimeSpeed, default_ruleset, production_refresh_ticks,
 };
 
-pub const SAVE_VERSION: u32 = 16;
+pub const SAVE_VERSION: u32 = 17;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SaveGame {
@@ -380,8 +380,9 @@ mod tests {
 
     use galactic_domain::UniverseConfig;
     use galactic_sim::{
-        BuildingKind, CraftableId, FleetComposition, GAME_STATE_VERSION, GameAction, MissionKind,
-        MissionOrder, MissionPhase, ShipStack, TechnologyId, default_building_catalog,
+        BuildingKind, CraftableId, FleetComposition, GAME_STATE_VERSION, GameAction,
+        KnowledgeLevel, MissionKind, MissionOrder, MissionPhase, MissionResult, ProbeMissionResult,
+        ShipStack, TechnologyId, default_building_catalog,
     };
 
     use super::*;
@@ -627,10 +628,22 @@ mod tests {
             restored.state().mission_reports[0].occurred_at,
             StrategicTick::new(701),
         );
+        assert_eq!(
+            restored.state().system_knowledge_level(target),
+            KnowledgeLevel::Probed,
+        );
+        assert!(matches!(
+            restored.state().mission_reports[0].result,
+            Some(MissionResult::Probe(ProbeMissionResult {
+                target: resolved,
+                current: KnowledgeLevel::Probed,
+                ..
+            })) if resolved == target
+        ));
     }
 
     #[test]
-    fn state_and_save_versions_match_mvp_021() {
+    fn state_and_save_versions_match_mvp_022() {
         let simulation = Simulation::new(UniverseConfig::mvp());
         let save = snapshot_from_simulation(&simulation);
 

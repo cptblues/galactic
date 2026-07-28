@@ -35,6 +35,10 @@ pub enum GameAction {
         colony_id: ColonyId,
         composition: FleetComposition,
     },
+    LaunchProbe {
+        colony_id: ColonyId,
+        target: SystemId,
+    },
     LaunchMission(MissionOrder),
     CancelMission {
         mission_id: MissionId,

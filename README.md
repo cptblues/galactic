@@ -34,7 +34,8 @@ cargo build --release
 Le domaine, la simulation et la persistance ne dependent pas de Bevy. Les vues
 peuvent etre recreees depuis l'etat metier sans conserver d'`Entity`. Le moteur
 de mission calcule les trajets, verrouille les flottes et progresse uniquement
-sur les ticks stratégiques.
+sur les ticks stratégiques. Une Sonde Luciole construite au chantier peut être
+envoyée vers le système détecté sélectionné et révèle la cible à son arrivée.
 
 Documentation courte: `docs/mvp_architecture.md`.
 
@@ -59,6 +60,7 @@ Référence éditoriale : `docs/universe_bible.md`.
 | Gestion planétaire | `C` |
 | Recherche | `T` |
 | Chantier orbital | `Y` |
+| Lancer une reconnaissance | `K` |
 | Reconstruire les vues Bevy | `R` |
 
 ## Baseline

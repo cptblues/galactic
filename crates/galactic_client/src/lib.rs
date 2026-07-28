@@ -15,7 +15,8 @@ use galactic_domain::{
 };
 use galactic_sim::{
     GameAction, GameEvent, GameEventKind, KnowledgeLevel, KnowledgeTarget, MVP_HOME_SYSTEM_ID,
-    SelectionTarget, Simulation, SystemVisibility, TimeSpeed,
+    MissionKind, MissionPhase, MissionResult, SelectionTarget, Simulation, SystemVisibility,
+    TimeSpeed,
 };
 
 pub fn run() {
@@ -553,7 +554,7 @@ enum UiAction {
     FocusSelection,
     EnterSystem,
     ExitSystem,
-    AdvanceKnowledge,
+    LaunchProbe,
     ToggleDebugGraph,
     RebuildView,
 }
@@ -1006,7 +1007,7 @@ fn spawn_ui(mut commands: Commands) {
             spawn_action_button(parent, UiAction::FocusSelection, "Recentrer", "F");
             spawn_action_button(parent, UiAction::EnterSystem, "Entrer système", "Enter");
             spawn_action_button(parent, UiAction::ExitSystem, "Retour univers", "Esc");
-            spawn_action_button(parent, UiAction::AdvanceKnowledge, "Analyser cible", "K");
+            spawn_action_button(parent, UiAction::LaunchProbe, "Lancer reconnaissance", "K");
             spawn_action_button(parent, UiAction::ToggleDebugGraph, "Debug graphe", "G");
             spawn_action_button(parent, UiAction::RebuildView, "Reconstruire", "R");
             spawn_colony_management_toggle(parent);
@@ -3027,7 +3028,7 @@ fn simulation_shortcut(keyboard: &ButtonInput<KeyCode>) -> Option<UiAction> {
     } else if keyboard.just_pressed(KeyCode::Digit3) {
         Some(UiAction::SetSpeed(TimeSpeed::X4))
     } else if keyboard.just_pressed(KeyCode::KeyK) {
-        Some(UiAction::AdvanceKnowledge)
+        Some(UiAction::LaunchProbe)
     } else {
         None
     }
@@ -3089,8 +3090,10 @@ fn apply_ui_action(
             navigation.exit_system();
             rebuild.0 = true;
         }
-        UiAction::AdvanceKnowledge => {
-            apply_simulation_command(simulation, GameAction::DebugAdvanceSelectedKnowledge);
+        UiAction::LaunchProbe => {
+            if let Some((colony_id, target)) = selected_probe_context(simulation.simulation()) {
+                apply_simulation_command(simulation, GameAction::LaunchProbe { colony_id, target });
+            }
         }
         UiAction::ToggleDebugGraph => {
             navigation.debug_full_graph = !navigation.debug_full_graph;
@@ -3137,9 +3140,7 @@ fn action_available(
                 && enterable_selected_system(simulation, navigation.debug_full_graph).is_some()
         }
         UiAction::ExitSystem => matches!(navigation.mode, StrategicViewMode::System(_)),
-        UiAction::AdvanceKnowledge => selected_knowledge_level(simulation.simulation())
-            .and_then(KnowledgeLevel::next_exploration_level)
-            .is_some(),
+        UiAction::LaunchProbe => selected_probe_context(simulation.simulation()).is_some(),
     }
 }
 
@@ -3157,13 +3158,17 @@ fn action_active(
     }
 }
 
-fn selected_knowledge_level(simulation: &Simulation) -> Option<KnowledgeLevel> {
+fn selected_probe_context(
+    simulation: &Simulation,
+) -> Option<(galactic_domain::ColonyId, SystemId)> {
     let state = simulation.state();
-    match state.selected {
-        SelectionTarget::None => None,
-        SelectionTarget::System(system_id) => Some(state.system_knowledge_level(system_id)),
-        SelectionTarget::Planet { planet_id, .. } => Some(state.planet_knowledge_level(planet_id)),
+    let SelectionTarget::System(target) = state.selected else {
+        return None;
+    };
+    if state.system_knowledge_level(target) != KnowledgeLevel::Detected {
+        return None;
     }
+    Some((state.player_home_colony()?.id, target))
 }
 
 fn focus_selected_system(simulation: &SimulationResource, navigation: &mut StrategicNavigation) {
@@ -3655,6 +3660,7 @@ fn update_ui(
         state.visible_systems().len()
     };
     let knowledge = state.system_knowledge_counts();
+    let mission_status = mission_status_line(simulation);
     let view_label = match navigation.mode {
         StrategicViewMode::Universe => format!("univers {:?}", navigation.lod),
         StrategicViewMode::System(system_id) => {
@@ -3663,7 +3669,7 @@ fn update_ui(
     };
 
     text.0 = format!(
-        "Galactic MVP | preset {:?} | {} | tick {} | vitesse {} | cible {}\nSystèmes {}/{} | Routes {}/{} | Détectés/Sondés/Analysés/Colonisés {}/{}/{}/{} | debug {} | {}",
+        "Galactic MVP | preset {:?} | {} | tick {} | vitesse {} | cible {}\nSystèmes {}/{} | Routes {}/{} | Détectés/Sondés/Analysés/Colonisés {}/{}/{}/{} | debug {} | {}\n{}",
         navigation.preset,
         view_label,
         state.clock.current_tick(),
@@ -3678,8 +3684,70 @@ fn update_ui(
         knowledge.analyzed,
         knowledge.colonized,
         navigation.debug_full_graph,
-        last_event
+        last_event,
+        mission_status,
     );
+}
+
+fn mission_status_line(simulation: &Simulation) -> String {
+    let state = simulation.state();
+    let Some(mission) = state
+        .player_missions()
+        .filter(|mission| !mission.phase.is_terminal())
+        .min_by_key(|mission| mission.id)
+    else {
+        return "Missions : aucune mission active".to_string();
+    };
+    let target = simulation
+        .universe()
+        .system(mission.order.target)
+        .map(|system| {
+            if state
+                .system_knowledge_level(mission.order.target)
+                .reveals_identity()
+            {
+                system.name.clone()
+            } else {
+                format!("Signal {}", mission.order.target.index())
+            }
+        })
+        .unwrap_or_else(|| format!("Système {}", mission.order.target.index()));
+    let phase = match mission.phase {
+        MissionPhase::Preparation => "préparation",
+        MissionPhase::Outbound => "transit aller",
+        MissionPhase::OnSite => "sur place",
+        MissionPhase::Returning => "transit retour",
+        MissionPhase::Completed => "terminée",
+        MissionPhase::Cancelled => "annulée",
+        MissionPhase::Failed => "échec",
+    };
+    let deadline = match mission.phase {
+        MissionPhase::Preparation => mission.order.departure_at,
+        MissionPhase::Outbound => mission.plan.outbound_arrival_at,
+        MissionPhase::OnSite => mission.plan.return_departure_at,
+        MissionPhase::Returning => mission.plan.return_arrival_at,
+        MissionPhase::Completed | MissionPhase::Cancelled | MissionPhase::Failed => {
+            state.clock.current_tick()
+        }
+    };
+    let remaining = deadline
+        .value()
+        .saturating_sub(state.clock.current_tick().value());
+    let kind = match mission.order.kind {
+        MissionKind::Probe => "Reconnaissance",
+        MissionKind::Transport => "Transport",
+        MissionKind::Harvest => "Récolte",
+        MissionKind::Colonize => "Colonisation",
+    };
+
+    format!(
+        "Mission {} • {} vers {} • {} • prochaine étape dans {}",
+        mission.id.raw(),
+        kind,
+        target,
+        phase,
+        format_strategic_duration(galactic_sim::StrategicDuration::from_ticks(remaining)),
+    )
 }
 
 fn update_info_panel(
@@ -4248,12 +4316,20 @@ fn event_label(event: GameEvent) -> String {
             launched.kind, launched.target,
         ),
         GameEventKind::MissionLaunchRejected(rejected) => {
-            format!("mission refusée : {:?}", rejected.error)
+            format!("mission refusée : {}", mission_error_text(rejected.error))
         }
         GameEventKind::MissionTransitioned(transition) => format!(
             "mission {:?} : {:?} -> {:?}",
             transition.mission_id, transition.from, transition.to,
         ),
+        GameEventKind::MissionResolved(resolution) => match resolution.result {
+            MissionResult::Probe(result) => format!(
+                "reconnaissance terminée : système {} sondé, {} systèmes et {} planètes révélés",
+                result.target.index(),
+                result.revealed_systems,
+                result.revealed_planets,
+            ),
+        },
         GameEventKind::MissionReported(report) => format!(
             "rapport mission {:?} : {:?}",
             report.mission_id, report.outcome,
@@ -4261,6 +4337,46 @@ fn event_label(event: GameEvent) -> String {
         GameEventKind::MissionCancellationRejected(rejected) => {
             format!("annulation de mission refusée : {:?}", rejected.error)
         }
+    }
+}
+
+fn mission_error_text(error: galactic_sim::MissionError) -> String {
+    match error {
+        galactic_sim::MissionError::ProbeUnavailable(_) => {
+            "aucune Sonde Luciole disponible ; construisez-en une au chantier orbital".to_string()
+        }
+        galactic_sim::MissionError::ProbeRequired(_) => {
+            "la flotte sélectionnée ne contient aucune Sonde Luciole".to_string()
+        }
+        galactic_sim::MissionError::ProbeTargetNotDetected { .. } => {
+            "la reconnaissance exige un système actuellement détecté".to_string()
+        }
+        galactic_sim::MissionError::NoAccessibleRoute { .. } => {
+            "aucune route connue ne permet d'atteindre cette destination".to_string()
+        }
+        galactic_sim::MissionError::InsufficientRange {
+            required_hops,
+            available_hops,
+        } => format!(
+            "portée insuffisante : {required_hops} sauts requis, {available_hops} disponibles"
+        ),
+        galactic_sim::MissionError::Resources(_) => {
+            "carburant insuffisant dans la colonie d'origine".to_string()
+        }
+        galactic_sim::MissionError::FleetBusy { .. } => {
+            "la flotte est déjà affectée à une mission".to_string()
+        }
+        galactic_sim::MissionError::FleetNotDocked(_) => {
+            "la flotte doit être amarrée à la colonie d'origine".to_string()
+        }
+        galactic_sim::MissionError::UnknownTarget(_)
+        | galactic_sim::MissionError::UnknownOrigin(_) => {
+            "origine ou destination inconnue".to_string()
+        }
+        galactic_sim::MissionError::SameSystem(_) => {
+            "l'origine et la destination doivent être différentes".to_string()
+        }
+        _ => format!("{error:?}"),
     }
 }
 
@@ -4717,6 +4833,68 @@ mod tests {
         keyboard.press(KeyCode::F3);
 
         assert_eq!(view_shortcut(&keyboard), None);
+    }
+
+    #[test]
+    fn reconnaissance_shortcut_uses_k() {
+        let mut keyboard = ButtonInput::<KeyCode>::default();
+        keyboard.press(KeyCode::KeyK);
+
+        assert_eq!(simulation_shortcut(&keyboard), Some(UiAction::LaunchProbe));
+    }
+
+    #[test]
+    fn active_probe_mission_is_visible_in_the_hud() {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+        let colony_id = simulation.state().colonies[0].id;
+        let origin = simulation.state().colonies[0].system_id;
+        let target = simulation.universe_repository().neighboring_systems(origin)[0];
+        let colony = &mut simulation.state_mut().colonies[0];
+        colony
+            .buildings
+            .set_level(galactic_sim::BuildingKind::CONSTRUCTION_CENTER, 2);
+        colony
+            .buildings
+            .set_level(galactic_sim::BuildingKind::METAL_MINE, 2);
+        colony
+            .buildings
+            .set_level(galactic_sim::BuildingKind::CRYSTAL_EXTRACTOR, 2);
+        colony
+            .buildings
+            .set_level(galactic_sim::BuildingKind::SHIPYARD, 1);
+        colony.energy =
+            galactic_sim::default_building_catalog().energy_grid_for_levels(colony.buildings);
+        colony
+            .resources
+            .credit(ResourceStock::new(1_000, 1_000, 1_000))
+            .expect("test funding fits");
+        simulation.state_mut().research = galactic_sim::ResearchState::from_completed([
+            galactic_sim::TechnologyId::SPATIAL_DETECTION,
+        ]);
+        simulation.apply_player_action(GameAction::QueueCraft {
+            colony_id,
+            craftable: galactic_sim::CraftableId::LIGHT_PROBE,
+        });
+        simulation.advance(Duration::from_secs(50));
+        simulation.apply_player_action(GameAction::LaunchProbe { colony_id, target });
+        simulation.advance(Duration::from_secs(1));
+
+        let status = mission_status_line(&simulation);
+
+        assert!(status.contains("Reconnaissance"));
+        assert!(status.contains("Signal"));
+        assert!(status.contains("transit aller"));
+    }
+
+    #[test]
+    fn missing_probe_has_a_player_facing_error() {
+        let message = mission_error_text(galactic_sim::MissionError::ProbeUnavailable(
+            galactic_domain::ColonyId::new(0),
+        ));
+
+        assert!(message.contains("Sonde Luciole"));
+        assert!(message.contains("chantier orbital"));
+        assert!(!message.contains("ProbeUnavailable"));
     }
 
     #[test]

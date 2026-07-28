@@ -16,8 +16,8 @@ use crate::{
     UniverseIndexError, UniverseRepository, advance_colony_construction, advance_colony_craft,
     advance_missions, advance_research, cancel_mission, default_building_catalog,
     enqueue_building_upgrade, enqueue_craft, enqueue_research, form_fleet, launch_mission,
-    queue_colony_production, storage_capacity, validate_construction_queue, validate_craft_state,
-    validate_fleet_state, validate_mission_state, validate_research_state,
+    launch_probe_mission, queue_colony_production, storage_capacity, validate_construction_queue,
+    validate_craft_state, validate_fleet_state, validate_mission_state, validate_research_state,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -313,12 +313,36 @@ impl Simulation {
                     crate::FleetCreationRejected { colony_id, error },
                 )],
             },
+            GameAction::LaunchProbe { colony_id, target } => {
+                match launch_probe_mission(
+                    &mut self.state,
+                    &self.universe,
+                    issuer,
+                    colony_id,
+                    target,
+                ) {
+                    Ok((created, launched)) => {
+                        let mut events = Vec::with_capacity(2);
+                        if let Some(created) = created {
+                            events.push(GameEventKind::FleetCreated(created));
+                        }
+                        events.push(GameEventKind::MissionLaunched(launched));
+                        events
+                    }
+                    Err(error) => vec![GameEventKind::MissionLaunchRejected(
+                        crate::MissionLaunchRejected {
+                            fleet_id: None,
+                            error,
+                        },
+                    )],
+                }
+            }
             GameAction::LaunchMission(order) => {
                 match launch_mission(&mut self.state, &self.universe, issuer, order) {
                     Ok(launched) => vec![GameEventKind::MissionLaunched(launched)],
                     Err(error) => vec![GameEventKind::MissionLaunchRejected(
                         crate::MissionLaunchRejected {
-                            fleet_id: order.fleet_id,
+                            fleet_id: Some(order.fleet_id),
                             error,
                         },
                     )],
@@ -408,7 +432,8 @@ impl Simulation {
                     }),
             );
         }
-        for mission_event in advance_missions(&mut self.state, advance.current_tick) {
+        for mission_event in advance_missions(&mut self.state, &self.universe, advance.current_tick)
+        {
             match mission_event {
                 MissionEngineEvent::Transition {
                     recipient,
@@ -422,6 +447,23 @@ impl Simulation {
                     recipient,
                     report.occurred_at,
                     GameEventKind::MissionReported(report),
+                )),
+                MissionEngineEvent::Knowledge {
+                    recipient,
+                    change,
+                    occurred_at,
+                } => events.push(GameEvent::new(
+                    recipient,
+                    occurred_at,
+                    GameEventKind::KnowledgeChanged(change),
+                )),
+                MissionEngineEvent::Resolution {
+                    recipient,
+                    resolution,
+                } => events.push(GameEvent::new(
+                    recipient,
+                    resolution.occurred_at,
+                    GameEventKind::MissionResolved(resolution),
                 )),
             }
         }

@@ -14,8 +14,8 @@ use crate::{
 
 /// Version of the mutable in-memory state contract.
 ///
-/// Version 15 adds generic missions, deterministic travel and reports.
-pub const GAME_STATE_VERSION: u32 = 15;
+/// Version 16 adds persisted reconnaissance results to missions and reports.
+pub const GAME_STATE_VERSION: u32 = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemVisibility {

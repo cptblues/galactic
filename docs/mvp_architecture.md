@@ -293,9 +293,9 @@ Règles :
 - les autres planètes du système natal commencent `Detected` ;
 - les voisins directs du système natal commencent `Detected`.
 
-Tant que les missions de sonde ne sont pas implémentées, la touche `K` fait
-progresser la cible sélectionnée jusqu'à `Analyzed`. Elle ne peut jamais
-coloniser.
+Depuis MVP-022, la touche `K` lance une mission de reconnaissance réelle vers le
+système détecté sélectionné. La commande de progression directe reste réservée
+aux tests de simulation et n'est plus exposée dans l'interface.
 
 Dans la vue Système, `Tab` sélectionne successivement les planètes visibles.
 Dans la vue Univers, `Tab` continue de parcourir les systèmes visibles.
@@ -1055,4 +1055,35 @@ Versions après migration :
 
 - `GAME_STATE_VERSION = 15` ;
 - `SAVE_VERSION = 16` ;
+- `RULESET_SCHEMA_VERSION = 5` (inchangé).
+
+
+## MVP-022 — Sonde et mission de reconnaissance
+
+La reconnaissance branche le premier effet métier concret sur la phase
+`OnSite`. Une mission `Probe` exige une Sonde Luciole et une cible actuellement
+`Detected`. Les cibles inconnues, déjà sondées ou sans route accessible sont
+refusées explicitement.
+
+La commande joueur `LaunchProbe` est atomique. Elle réutilise d'abord la flotte
+de sondes inactive de plus petit identifiant qui est amarrée à la colonie
+d'origine. À défaut, elle forme une flotte d'une Sonde Luciole depuis
+l'inventaire du chantier. Une validation échouée ne retire aucune sonde et ne
+crée aucune flotte orpheline.
+
+À l'arrivée, le système passe immédiatement à `Probed`. Les changements de
+connaissance et un `MissionResolution` sont émis sans rechargement. Le résultat
+persisté indique la cible, les niveaux avant/après et le nombre de systèmes et
+planètes révélés. Le rapport final reprend ce résultat après le retour, puis la
+flotte est de nouveau amarrée et réutilisable.
+
+Le HUD conserve une présentation minimale jusqu'à MVP-030 : il affiche la
+première mission active, sa cible masquée tant qu'elle n'est pas sondée, sa
+phase et le temps jusqu'à la prochaine transition. La touche `K` lance la
+reconnaissance vers le système détecté sélectionné.
+
+Versions après migration :
+
+- `GAME_STATE_VERSION = 16` ;
+- `SAVE_VERSION = 17` ;
 - `RULESET_SCHEMA_VERSION = 5` (inchangé).

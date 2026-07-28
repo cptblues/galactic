@@ -7,8 +7,9 @@ use galactic_domain::{
 };
 
 use crate::{
-    AuthorizationError, FleetAssignment, FleetCompositionError, FleetLocation, GameState,
-    StrategicDuration, StrategicTick, UniverseRepository,
+    AuthorizationError, CraftableId, FleetAssignment, FleetComposition, FleetCompositionError,
+    FleetCreated, FleetError, FleetLocation, GameState, KnowledgeChange, KnowledgeLevel,
+    KnowledgeTarget, ShipStack, StrategicDuration, StrategicTick, UniverseRepository, form_fleet,
 };
 
 /// Abstract distance crossed by a fleet for one route hop.
@@ -74,6 +75,7 @@ pub struct MissionState {
     pub phase: MissionPhase,
     pub phase_started_at: StrategicTick,
     pub fuel_reservation: Option<ReservationId>,
+    pub result: Option<MissionResult>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,7 +91,7 @@ pub struct MissionLaunched {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MissionLaunchRejected {
-    pub fleet_id: FleetId,
+    pub fleet_id: Option<FleetId>,
     pub error: MissionError,
 }
 
@@ -109,12 +111,34 @@ pub enum MissionReportOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProbeMissionResult {
+    pub target: SystemId,
+    pub previous: KnowledgeLevel,
+    pub current: KnowledgeLevel,
+    pub revealed_systems: u16,
+    pub revealed_planets: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MissionResult {
+    Probe(ProbeMissionResult),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MissionResolution {
+    pub mission_id: MissionId,
+    pub result: MissionResult,
+    pub occurred_at: StrategicTick,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MissionReport {
     pub mission_id: MissionId,
     pub fleet_id: FleetId,
     pub kind: MissionKind,
     pub outcome: MissionReportOutcome,
     pub occurred_at: StrategicTick,
+    pub result: Option<MissionResult>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,6 +149,7 @@ pub struct MissionCancellationRejected {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MissionError {
+    UnknownOriginColony(ColonyId),
     UnknownFleet(FleetId),
     UnknownMission(MissionId),
     Access(AuthorizationError),
@@ -140,6 +165,12 @@ pub enum MissionError {
         found: SystemId,
     },
     SameSystem(SystemId),
+    ProbeUnavailable(ColonyId),
+    ProbeRequired(FleetId),
+    ProbeTargetNotDetected {
+        target: SystemId,
+        current: KnowledgeLevel,
+    },
     DepartureInPast {
         current: StrategicTick,
         requested: StrategicTick,
@@ -156,6 +187,7 @@ pub enum MissionError {
     TravelDurationOverflow,
     FuelCostOverflow,
     MissionIdOverflow,
+    Fleet(FleetError),
     Resources(ResourceLedgerError),
     CannotCancelAfterDeparture(MissionId),
     InvalidTransition {
@@ -192,6 +224,12 @@ pub enum MissionStateError {
     InvalidFuelCost,
     MissingFuelReservation,
     UnexpectedFuelReservation,
+    MissingProbeResult,
+    UnexpectedMissionResult,
+    ProbeResultTargetMismatch {
+        expected: SystemId,
+        found: SystemId,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -203,6 +241,15 @@ pub(crate) enum MissionEngineEvent {
     Report {
         recipient: FactionId,
         report: MissionReport,
+    },
+    Knowledge {
+        recipient: FactionId,
+        change: KnowledgeChange,
+        occurred_at: StrategicTick,
+    },
+    Resolution {
+        recipient: FactionId,
+        resolution: MissionResolution,
     },
 }
 
@@ -259,6 +306,18 @@ pub fn plan_mission(
             target: order.target,
         },
     )?;
+    if order.kind == MissionKind::Probe {
+        let current = state.system_knowledge_level(order.target);
+        if current != KnowledgeLevel::Detected {
+            return Err(MissionError::ProbeTargetNotDetected {
+                target: order.target,
+                current,
+            });
+        }
+        if fleet.composition.quantity(CraftableId::LIGHT_PROBE) == 0 {
+            return Err(MissionError::ProbeRequired(fleet.id));
+        }
+    }
     let hops = u16::try_from(route.len().saturating_sub(1))
         .map_err(|_| MissionError::TravelDurationOverflow)?;
     let capabilities = fleet
@@ -345,6 +404,7 @@ pub fn launch_mission(
         phase: MissionPhase::Preparation,
         phase_started_at: state.clock.current_tick(),
         fuel_reservation: Some(reservation),
+        result: None,
     });
     state.missions.sort_by_key(|mission| mission.id);
 
@@ -357,6 +417,88 @@ pub fn launch_mission(
         return_arrival_at: plan.return_arrival_at,
         fuel_cost: plan.fuel_cost,
     })
+}
+
+/// Launches the minimal player-facing reconnaissance loop atomically.
+///
+/// The command reuses the lowest-id idle probe-only fleet docked at the
+/// origin. If none exists, it forms one from a previously crafted Luciole in
+/// the colony inventory. Any validation failure leaves the original state
+/// untouched.
+pub fn launch_probe_mission(
+    state: &mut GameState,
+    universe: &UniverseRepository,
+    actor: FactionId,
+    origin_colony_id: ColonyId,
+    target: SystemId,
+) -> Result<(Option<FleetCreated>, MissionLaunched), MissionError> {
+    let origin_colony = state
+        .colony(origin_colony_id)
+        .ok_or(MissionError::UnknownOriginColony(origin_colony_id))?;
+    state
+        .authorize_management(actor, origin_colony.owner)
+        .map_err(MissionError::Access)?;
+    let origin = origin_colony.system_id;
+    if universe.system(target).is_none() {
+        return Err(MissionError::UnknownTarget(target));
+    }
+    let current = state.system_knowledge_level(target);
+    if current == KnowledgeLevel::Unknown {
+        return Err(MissionError::NoAccessibleRoute { origin, target });
+    }
+    if current != KnowledgeLevel::Detected {
+        return Err(MissionError::ProbeTargetNotDetected { target, current });
+    }
+
+    let mut candidate = state.clone();
+    let existing_fleet = candidate
+        .fleets
+        .iter()
+        .filter(|fleet| {
+            candidate.can_manage(actor, fleet.owner)
+                && fleet.is_idle()
+                && fleet.location == FleetLocation::Docked(origin_colony_id)
+                && fleet.composition.total_ships()
+                    == fleet.composition.quantity(CraftableId::LIGHT_PROBE)
+        })
+        .map(|fleet| fleet.id)
+        .min();
+
+    let (fleet_id, created) = if let Some(fleet_id) = existing_fleet {
+        (fleet_id, None)
+    } else {
+        let available = candidate
+            .colony(origin_colony_id)
+            .ok_or(MissionError::UnknownOriginColony(origin_colony_id))?
+            .inventory
+            .quantity(CraftableId::LIGHT_PROBE);
+        if available == 0 {
+            return Err(MissionError::ProbeUnavailable(origin_colony_id));
+        }
+        let composition =
+            FleetComposition::from_stacks([ShipStack::new(CraftableId::LIGHT_PROBE, 1)])
+                .map_err(FleetError::InvalidComposition)
+                .map_err(MissionError::Fleet)?;
+        let created = form_fleet(&mut candidate, actor, origin_colony_id, composition)
+            .map_err(MissionError::Fleet)?;
+        (created.fleet_id, Some(created))
+    };
+
+    let departure_at = candidate.clock.current_tick();
+    let launched = launch_mission(
+        &mut candidate,
+        universe,
+        actor,
+        MissionOrder {
+            fleet_id,
+            origin,
+            target,
+            kind: MissionKind::Probe,
+            departure_at,
+        },
+    )?;
+    *state = candidate;
+    Ok((created, launched))
 }
 
 pub fn cancel_mission(
@@ -412,6 +554,7 @@ pub fn cancel_mission(
         kind,
         outcome: MissionReportOutcome::Cancelled,
         occurred_at,
+        result: None,
     };
     state.mission_reports.push(report);
     Ok((transition, report))
@@ -519,11 +662,36 @@ pub fn validate_mission_state(
     if mission.phase != MissionPhase::Preparation && mission.fuel_reservation.is_some() {
         return Err(MissionStateError::UnexpectedFuelReservation);
     }
+    match (mission.order.kind, mission.phase, mission.result) {
+        (
+            MissionKind::Probe,
+            MissionPhase::OnSite | MissionPhase::Returning | MissionPhase::Completed,
+            None,
+        ) => return Err(MissionStateError::MissingProbeResult),
+        (
+            MissionKind::Probe,
+            MissionPhase::Preparation | MissionPhase::Outbound | MissionPhase::Cancelled,
+            Some(_),
+        ) => return Err(MissionStateError::UnexpectedMissionResult),
+        (MissionKind::Probe, _, Some(MissionResult::Probe(result)))
+            if result.target != mission.order.target =>
+        {
+            return Err(MissionStateError::ProbeResultTargetMismatch {
+                expected: mission.order.target,
+                found: result.target,
+            });
+        }
+        (MissionKind::Transport | MissionKind::Harvest | MissionKind::Colonize, _, Some(_)) => {
+            return Err(MissionStateError::UnexpectedMissionResult);
+        }
+        _ => {}
+    }
     Ok(())
 }
 
 pub(crate) fn advance_missions(
     state: &mut GameState,
+    universe: &UniverseRepository,
     current_tick: StrategicTick,
 ) -> Vec<MissionEngineEvent> {
     let mut events = Vec::new();
@@ -557,6 +725,9 @@ pub(crate) fn advance_missions(
                 .faction()
                 .expect("validated missions always have a faction owner");
             let kind = mission.order.kind;
+            let mission_result = mission.result;
+            let mut knowledge_changes = Vec::new();
+            let mut resolution = None;
 
             validate_mission_transition(from, next_phase)
                 .expect("engine transitions must follow the mission state machine");
@@ -578,13 +749,45 @@ pub(crate) fn advance_missions(
                         .fleet_mut(fleet_id)
                         .expect("validated mission fleet exists")
                         .location = FleetLocation::InSystem(target);
+                    if kind == MissionKind::Probe {
+                        let previous = state.system_knowledge_level(target);
+                        knowledge_changes = state.advance_system_knowledge(
+                            universe,
+                            target,
+                            KnowledgeLevel::Probed,
+                        );
+                        let revealed_systems = knowledge_changes
+                            .iter()
+                            .filter(|change| matches!(change.target, KnowledgeTarget::System(_)))
+                            .count()
+                            .min(usize::from(u16::MAX))
+                            as u16;
+                        let revealed_planets = knowledge_changes
+                            .iter()
+                            .filter(|change| matches!(change.target, KnowledgeTarget::Planet(_)))
+                            .count()
+                            .min(usize::from(u16::MAX))
+                            as u16;
+                        let result = MissionResult::Probe(ProbeMissionResult {
+                            target,
+                            previous,
+                            current: state.system_knowledge_level(target),
+                            revealed_systems,
+                            revealed_planets,
+                        });
+                        resolution = Some(MissionResolution {
+                            mission_id,
+                            result,
+                            occurred_at: transition_at,
+                        });
+                    }
                 }
                 MissionPhase::Returning => {}
                 MissionPhase::Completed => {
                     let fleet = state
                         .fleet_mut(fleet_id)
                         .expect("validated mission fleet exists");
-                    fleet.location = FleetLocation::InSystem(origin);
+                    fleet.location = FleetLocation::Docked(origin_colony_id);
                     fleet.assignment = FleetAssignment::Idle;
                 }
                 MissionPhase::Preparation | MissionPhase::Cancelled | MissionPhase::Failed => {
@@ -598,6 +801,9 @@ pub(crate) fn advance_missions(
             if next_phase == MissionPhase::Outbound {
                 mission.fuel_reservation = None;
             }
+            if let Some(resolution) = resolution {
+                mission.result = Some(resolution.result);
+            }
             let transition = MissionTransition {
                 mission_id,
                 from,
@@ -608,6 +814,19 @@ pub(crate) fn advance_missions(
                 recipient: owner,
                 transition,
             });
+            events.extend(knowledge_changes.into_iter().map(|change| {
+                MissionEngineEvent::Knowledge {
+                    recipient: owner,
+                    change,
+                    occurred_at: transition_at,
+                }
+            }));
+            if let Some(resolution) = resolution {
+                events.push(MissionEngineEvent::Resolution {
+                    recipient: owner,
+                    resolution,
+                });
+            }
             if next_phase == MissionPhase::Completed {
                 let report = MissionReport {
                     mission_id,
@@ -615,6 +834,7 @@ pub(crate) fn advance_missions(
                     kind,
                     outcome: MissionReportOutcome::Completed,
                     occurred_at: transition_at,
+                    result: mission_result,
                 };
                 state.mission_reports.push(report);
                 events.push(MissionEngineEvent::Report {
@@ -780,6 +1000,100 @@ mod tests {
             ),
             Err(MissionError::FleetBusy { .. }),
         ));
+    }
+
+    #[test]
+    fn probe_shortcut_requires_a_crafted_probe_and_is_atomic() {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+        let actor = simulation.state().player_faction;
+        let colony_id = simulation.state().colonies[0].id;
+        let target = neighboring_target(&simulation);
+        let before = simulation.state().clone();
+        let repository = UniverseRepository::generate(UniverseConfig::mvp());
+
+        assert_eq!(
+            launch_probe_mission(
+                simulation.state_mut(),
+                &repository,
+                actor,
+                colony_id,
+                target,
+            ),
+            Err(MissionError::ProbeUnavailable(colony_id)),
+        );
+        assert_eq!(simulation.state(), &before);
+
+        simulation.state_mut().colonies[0]
+            .inventory
+            .add(CraftableId::LIGHT_PROBE, 1);
+        let (created, launched) = launch_probe_mission(
+            simulation.state_mut(),
+            &repository,
+            actor,
+            colony_id,
+            target,
+        )
+        .expect("a crafted probe can launch");
+
+        assert_eq!(
+            created.map(|created| created.fleet_id),
+            Some(launched.fleet_id),
+        );
+        assert_eq!(
+            simulation.state().colonies[0]
+                .inventory
+                .quantity(CraftableId::LIGHT_PROBE),
+            0,
+        );
+        assert_eq!(simulation.state().missions.len(), 1);
+    }
+
+    #[test]
+    fn probe_arrival_reveals_the_target_and_records_a_result() {
+        let (mut simulation, fleet_id) = simulation_with_probe_fleet();
+        let origin = simulation.state().colonies[0].system_id;
+        let target = neighboring_target(&simulation);
+        let events = simulation.apply_player_action(GameAction::LaunchMission(MissionOrder {
+            fleet_id,
+            origin,
+            target,
+            kind: MissionKind::Probe,
+            departure_at: StrategicTick::ZERO,
+        }));
+        assert!(matches!(
+            events.as_slice(),
+            [crate::GameEvent {
+                kind: crate::GameEventKind::MissionLaunched(_),
+                ..
+            }],
+        ));
+
+        let events = simulation.advance(Duration::from_secs(10));
+
+        assert_eq!(
+            simulation.state().system_knowledge_level(target),
+            KnowledgeLevel::Probed,
+        );
+        assert_eq!(simulation.state().missions[0].phase, MissionPhase::OnSite);
+        assert!(events.iter().any(|event| matches!(
+            event.kind,
+            crate::GameEventKind::KnowledgeChanged(KnowledgeChange {
+                target: KnowledgeTarget::System(system_id),
+                current: KnowledgeLevel::Probed,
+                ..
+            }) if system_id == target
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event.kind,
+            crate::GameEventKind::MissionResolved(MissionResolution {
+                result: MissionResult::Probe(ProbeMissionResult {
+                    target: resolved,
+                    current: KnowledgeLevel::Probed,
+                    ..
+                }),
+                ..
+            }) if resolved == target
+        )));
     }
 
     #[test]
@@ -950,12 +1264,20 @@ mod tests {
         assert_eq!(fast.state().missions[0].phase, MissionPhase::Completed);
         assert_eq!(
             fast.state().fleet(fleet_id).unwrap().location,
-            FleetLocation::InSystem(origin),
+            FleetLocation::Docked(fast.state().colonies[0].id),
         );
         assert_eq!(
             fast.state().mission_reports[0].outcome,
             MissionReportOutcome::Completed,
         );
+        assert!(matches!(
+            fast.state().mission_reports[0].result,
+            Some(MissionResult::Probe(ProbeMissionResult {
+                target: resolved,
+                current: KnowledgeLevel::Probed,
+                ..
+            })) if resolved == target
+        ));
         assert_eq!(
             fast.state().colonies[0].resources.stock(),
             ResourceStock::new(650, 325, 223),

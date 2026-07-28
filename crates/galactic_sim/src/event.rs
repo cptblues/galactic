@@ -4,8 +4,8 @@ use crate::{
     ColonyProductionReport, CommandRejection, ConstructionCompleted, ConstructionQueued,
     ConstructionRejected, CraftCompleted, CraftQueued, CraftRejected, FleetCreated,
     FleetCreationRejected, KnowledgeChange, MissionCancellationRejected, MissionLaunchRejected,
-    MissionLaunched, MissionReport, MissionTransition, ResearchCompleted, ResearchQueued,
-    ResearchRejected, StrategicDuration, StrategicTick, TimeSpeed,
+    MissionLaunched, MissionReport, MissionResolution, MissionTransition, ResearchCompleted,
+    ResearchQueued, ResearchRejected, StrategicDuration, StrategicTick, TimeSpeed,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -66,6 +66,7 @@ pub enum GameEventKind {
     MissionLaunched(MissionLaunched),
     MissionLaunchRejected(MissionLaunchRejected),
     MissionTransitioned(MissionTransition),
+    MissionResolved(MissionResolution),
     MissionReported(MissionReport),
     MissionCancellationRejected(MissionCancellationRejected),
 }
