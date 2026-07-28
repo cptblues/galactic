@@ -1,4 +1,4 @@
-// MVP-019: faction-owned state, deterministic relations and authorization.
+// MVP-023: faction-owned state with deterministic discovery frontiers.
 use galactic_domain::{
     ColonyId, EnergyGrid, FactionId, FleetId, MissionId, Owned, Owner, PlanetId, ResourceLedger,
     Route, SystemId,
@@ -6,16 +6,16 @@ use galactic_domain::{
 
 use crate::{
     BuildingLevels, ConstructionQueue, CraftInventory, CraftQueue, DiplomacyError, DiplomacyState,
-    DiplomaticRelation, FleetState, KnowledgeChange, KnowledgeCounts, KnowledgeLevel,
-    KnowledgeTarget, MissionReport, MissionState, PlanetKnowledge, PlanetResourceProfile,
-    ProductionRemainder, ResearchState, SelectionTarget, StartingScenario, StartingScenarioError,
-    StrategicClock, SystemKnowledge, UniverseRepository,
+    DiplomaticRelation, DiscoveryFrontier, FleetState, KnowledgeChange, KnowledgeCounts,
+    KnowledgeLevel, KnowledgeTarget, MissionReport, MissionState, PlanetKnowledge,
+    PlanetResourceProfile, ProductionRemainder, ResearchState, SelectionTarget, StartingScenario,
+    StartingScenarioError, StrategicClock, SystemKnowledge, UniverseRepository,
 };
 
 /// Version of the mutable in-memory state contract.
 ///
-/// Version 16 adds persisted reconnaissance results to missions and reports.
-pub const GAME_STATE_VERSION: u32 = 16;
+/// Version 17 adds persisted discovery-frontier metrics to reconnaissance results.
+pub const GAME_STATE_VERSION: u32 = 17;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemVisibility {
@@ -345,6 +345,51 @@ impl GameState {
             .collect()
     }
 
+    /// Probes one system and opens exactly its immediate discovery frontier.
+    ///
+    /// The underlying knowledge update remains monotone. Newly detected
+    /// neighbors are not expanded recursively, so one probe opens one graph
+    /// ring regardless of their own degree.
+    pub fn probe_system(
+        &mut self,
+        universe: &UniverseRepository,
+        system_id: SystemId,
+    ) -> DiscoveryFrontier {
+        let visible_before = self
+            .visible_routes(universe)
+            .into_iter()
+            .copied()
+            .collect::<Vec<_>>();
+        let changes = self.advance_system_knowledge(universe, system_id, KnowledgeLevel::Probed);
+        let mut newly_detected_systems = changes
+            .iter()
+            .filter_map(|change| match change {
+                KnowledgeChange {
+                    target: KnowledgeTarget::System(detected),
+                    previous: KnowledgeLevel::Unknown,
+                    current: KnowledgeLevel::Detected,
+                } => Some(*detected),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        newly_detected_systems.sort();
+
+        let mut revealed_routes = self
+            .visible_routes(universe)
+            .into_iter()
+            .copied()
+            .filter(|route| route.other(system_id).is_some() && !visible_before.contains(route))
+            .collect::<Vec<_>>();
+        revealed_routes.sort_by_key(|route| (route.from, route.to));
+
+        DiscoveryFrontier {
+            source: system_id,
+            changes,
+            newly_detected_systems,
+            revealed_routes,
+        }
+    }
+
     /// Raises a system's knowledge and propagates the immediate frontier.
     ///
     /// Once a system is probed, all its planets are detected and adjacent
@@ -611,19 +656,49 @@ mod tests {
     }
 
     #[test]
-    fn probing_system_reveals_planets_and_next_frontier() {
+    fn probing_system_opens_exactly_one_frontier_ring() {
         let universe = UniverseRepository::generate(UniverseConfig::mvp());
         let mut state = GameState::new(&universe);
+        let home = SystemId::from_index(0);
         let target = universe
-            .neighboring_systems(SystemId::from_index(0))
+            .neighboring_systems(home)
             .into_iter()
-            .next()
-            .expect("home has a neighbor");
+            .find(|candidate| {
+                universe
+                    .neighboring_systems(*candidate)
+                    .into_iter()
+                    .any(|neighbor| {
+                        state.system_knowledge_level(neighbor) == KnowledgeLevel::Unknown
+                    })
+            })
+            .expect("one initial signal opens a new frontier");
+        let mut expected_new_systems = universe
+            .neighboring_systems(target)
+            .into_iter()
+            .filter(|neighbor| state.system_knowledge_level(*neighbor) == KnowledgeLevel::Unknown)
+            .collect::<Vec<_>>();
+        expected_new_systems.sort();
+        let beyond_frontier = expected_new_systems
+            .iter()
+            .flat_map(|frontier| universe.neighboring_systems(*frontier))
+            .filter(|candidate| {
+                *candidate != target
+                    && !expected_new_systems.contains(candidate)
+                    && state.system_knowledge_level(*candidate) == KnowledgeLevel::Unknown
+            })
+            .collect::<Vec<_>>();
 
-        let changes = state.advance_system_knowledge(&universe, target, KnowledgeLevel::Probed);
+        let frontier = state.probe_system(&universe, target);
 
-        assert!(!changes.is_empty());
+        assert_eq!(frontier.source, target);
+        assert_eq!(frontier.newly_detected_systems, expected_new_systems);
         assert_eq!(state.system_knowledge_level(target), KnowledgeLevel::Probed);
+        assert!(frontier.newly_detected_systems.iter().all(|system_id| {
+            state.system_knowledge_level(*system_id) == KnowledgeLevel::Detected
+        }));
+        assert!(beyond_frontier.iter().all(|system_id| {
+            state.system_knowledge_level(*system_id) == KnowledgeLevel::Unknown
+        }));
         let system = universe.system(target).expect("target exists");
         assert!(
             system.planets.iter().all(|planet| {
@@ -636,6 +711,20 @@ mod tests {
                 .into_iter()
                 .all(|neighbor| { state.system_knowledge_level(neighbor).is_visible() })
         );
+        assert!(frontier.revealed_routes.iter().all(|route| {
+            route
+                .other(target)
+                .is_some_and(|neighbor| frontier.newly_detected_systems.contains(&neighbor))
+        }));
+        assert_eq!(
+            frontier.revealed_routes.len(),
+            frontier.newly_detected_systems.len(),
+        );
+
+        let repeated = state.probe_system(&universe, target);
+        assert!(repeated.changes.is_empty());
+        assert!(repeated.newly_detected_systems.is_empty());
+        assert!(repeated.revealed_routes.is_empty());
     }
 
     #[test]

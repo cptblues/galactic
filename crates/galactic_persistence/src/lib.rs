@@ -1,4 +1,4 @@
-// MVP-022: persist active reconnaissance, knowledge results and reports.
+// MVP-023: persist reconnaissance results and progressive discovery frontiers.
 use galactic_domain::{
     ColonyId, EnergyGrid, FactionId, FleetId, Owner, PlanetId, ResourceLedger, ResourceLedgerError,
     ResourceReservation, ResourceStock, SystemId, UniverseConfig, UniverseId, generate_universe,
@@ -12,7 +12,7 @@ use galactic_sim::{
     TimeSpeed, default_ruleset, production_refresh_ticks,
 };
 
-pub const SAVE_VERSION: u32 = 17;
+pub const SAVE_VERSION: u32 = 18;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SaveGame {
@@ -381,8 +381,8 @@ mod tests {
     use galactic_domain::UniverseConfig;
     use galactic_sim::{
         BuildingKind, CraftableId, FleetComposition, GAME_STATE_VERSION, GameAction,
-        KnowledgeLevel, MissionKind, MissionOrder, MissionPhase, MissionResult, ProbeMissionResult,
-        ShipStack, TechnologyId, default_building_catalog,
+        KnowledgeLevel, MissionKind, MissionOrder, MissionPhase, MissionResult, ShipStack,
+        TechnologyId, default_building_catalog,
     };
 
     use super::*;
@@ -575,7 +575,29 @@ mod tests {
         let mut simulation = Simulation::new(UniverseConfig::mvp());
         let colony_id = simulation.state().colonies[0].id;
         let origin = simulation.state().colonies[0].system_id;
-        let target = simulation.universe_repository().neighboring_systems(origin)[0];
+        let target = simulation
+            .universe_repository()
+            .neighboring_systems(origin)
+            .into_iter()
+            .find(|candidate| {
+                simulation
+                    .universe_repository()
+                    .neighboring_systems(*candidate)
+                    .into_iter()
+                    .any(|neighbor| {
+                        simulation.state().system_knowledge_level(neighbor)
+                            == KnowledgeLevel::Unknown
+                    })
+            })
+            .expect("one initial signal opens a new frontier");
+        let expected_frontier = simulation
+            .universe_repository()
+            .neighboring_systems(target)
+            .into_iter()
+            .filter(|neighbor| {
+                simulation.state().system_knowledge_level(*neighbor) == KnowledgeLevel::Unknown
+            })
+            .collect::<Vec<_>>();
         let colony = &mut simulation.state_mut().colonies[0];
         colony
             .buildings
@@ -632,18 +654,23 @@ mod tests {
             restored.state().system_knowledge_level(target),
             KnowledgeLevel::Probed,
         );
-        assert!(matches!(
-            restored.state().mission_reports[0].result,
-            Some(MissionResult::Probe(ProbeMissionResult {
-                target: resolved,
-                current: KnowledgeLevel::Probed,
-                ..
-            })) if resolved == target
-        ));
+        let Some(MissionResult::Probe(result)) = restored.state().mission_reports[0].result else {
+            panic!("completed reconnaissance keeps its frontier result");
+        };
+        assert_eq!(result.target, target);
+        assert_eq!(result.current, KnowledgeLevel::Probed);
+        assert_eq!(
+            usize::from(result.newly_detected_systems),
+            expected_frontier.len(),
+        );
+        assert_eq!(usize::from(result.revealed_routes), expected_frontier.len(),);
+        assert!(expected_frontier.iter().all(|system_id| {
+            restored.state().system_knowledge_level(*system_id) == KnowledgeLevel::Detected
+        }));
     }
 
     #[test]
-    fn state_and_save_versions_match_mvp_022() {
+    fn state_and_save_versions_match_mvp_023() {
         let simulation = Simulation::new(UniverseConfig::mvp());
         let save = snapshot_from_simulation(&simulation);
 

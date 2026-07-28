@@ -1,6 +1,6 @@
 use std::fmt;
 
-use galactic_domain::{PlanetId, SystemId};
+use galactic_domain::{PlanetId, Route, SystemId};
 
 /// Progressive information available to the player.
 ///
@@ -81,6 +81,19 @@ pub struct KnowledgeChange {
     pub target: KnowledgeTarget,
     pub previous: KnowledgeLevel,
     pub current: KnowledgeLevel,
+}
+
+/// Deterministic, non-recursive result of probing one system.
+///
+/// `newly_detected_systems` contains only the direct neighbors that were
+/// unknown before the probe. `revealed_routes` contains only direct routes
+/// from `source` that became visible during the same operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveryFrontier {
+    pub source: SystemId,
+    pub changes: Vec<KnowledgeChange>,
+    pub newly_detected_systems: Vec<SystemId>,
+    pub revealed_routes: Vec<Route>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

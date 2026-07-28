@@ -35,7 +35,8 @@ Le domaine, la simulation et la persistance ne dependent pas de Bevy. Les vues
 peuvent etre recreees depuis l'etat metier sans conserver d'`Entity`. Le moteur
 de mission calcule les trajets, verrouille les flottes et progresse uniquement
 sur les ticks stratégiques. Une Sonde Luciole construite au chantier peut être
-envoyée vers le système détecté sélectionné et révèle la cible à son arrivée.
+envoyée vers le système détecté sélectionné : son arrivée révèle la cible,
+ses routes directes et exactement le prochain anneau de signaux.
 
 Documentation courte: `docs/mvp_architecture.md`.
 

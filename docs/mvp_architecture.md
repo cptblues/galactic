@@ -1087,3 +1087,27 @@ Versions après migration :
 - `GAME_STATE_VERSION = 16` ;
 - `SAVE_VERSION = 17` ;
 - `RULESET_SCHEMA_VERSION = 5` (inchangé).
+
+
+## MVP-023 — Frontière de découverte progressive
+
+Une reconnaissance réussie produit désormais un `DiscoveryFrontier`
+déterministe. Le résultat distingue les changements de connaissance généraux,
+les systèmes voisins qui passent précisément de `Unknown` à `Detected` et les
+routes directes de la cible qui deviennent visibles pendant cette opération.
+
+L'ouverture est strictement limitée à un anneau du graphe : les nouveaux
+signaux restent `Detected`, leurs identités et détails demeurent masqués, et
+leurs propres voisins ne sont pas propagés avant une reconnaissance ultérieure.
+Une seconde application sur le même système ne produit aucun changement.
+
+`ProbeMissionResult` conserve les nombres de nouveaux signaux et de routes
+révélées. Ces métriques suivent la mission et son rapport dans la sauvegarde ;
+le client les affiche dans la notification de résolution et reconstruit la
+carte à partir des événements de connaissance.
+
+Versions après migration :
+
+- `GAME_STATE_VERSION = 17` ;
+- `SAVE_VERSION = 18` ;
+- `RULESET_SCHEMA_VERSION = 5` (inchangé).

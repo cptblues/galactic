@@ -4324,9 +4324,10 @@ fn event_label(event: GameEvent) -> String {
         ),
         GameEventKind::MissionResolved(resolution) => match resolution.result {
             MissionResult::Probe(result) => format!(
-                "reconnaissance terminée : système {} sondé, {} systèmes et {} planètes révélés",
+                "reconnaissance terminée : système {} sondé, {} nouveaux signaux, {} routes et {} planètes révélées",
                 result.target.index(),
-                result.revealed_systems,
+                result.newly_detected_systems,
+                result.revealed_routes,
                 result.revealed_planets,
             ),
         },
@@ -4895,6 +4896,31 @@ mod tests {
         assert!(message.contains("Sonde Luciole"));
         assert!(message.contains("chantier orbital"));
         assert!(!message.contains("ProbeUnavailable"));
+    }
+
+    #[test]
+    fn reconnaissance_result_announces_the_new_frontier() {
+        let label = event_label(GameEvent::new(
+            galactic_domain::FactionId::new(0),
+            galactic_sim::StrategicTick::new(100),
+            GameEventKind::MissionResolved(galactic_sim::MissionResolution {
+                mission_id: galactic_domain::MissionId::new(0),
+                result: MissionResult::Probe(galactic_sim::ProbeMissionResult {
+                    target: SystemId::new(4),
+                    previous: KnowledgeLevel::Detected,
+                    current: KnowledgeLevel::Probed,
+                    revealed_systems: 3,
+                    newly_detected_systems: 2,
+                    revealed_routes: 2,
+                    revealed_planets: 4,
+                }),
+                occurred_at: galactic_sim::StrategicTick::new(100),
+            }),
+        ));
+
+        assert!(label.contains("2 nouveaux signaux"));
+        assert!(label.contains("2 routes"));
+        assert!(label.contains("4 planètes"));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-// MVP-021: deterministic travel planning and generic mission state machine.
+// MVP-023: deterministic missions with explicit discovery-frontier results.
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use galactic_domain::{
@@ -116,6 +116,8 @@ pub struct ProbeMissionResult {
     pub previous: KnowledgeLevel,
     pub current: KnowledgeLevel,
     pub revealed_systems: u16,
+    pub newly_detected_systems: u16,
+    pub revealed_routes: u16,
     pub revealed_planets: u16,
 }
 
@@ -751,28 +753,36 @@ pub(crate) fn advance_missions(
                         .location = FleetLocation::InSystem(target);
                     if kind == MissionKind::Probe {
                         let previous = state.system_knowledge_level(target);
-                        knowledge_changes = state.advance_system_knowledge(
-                            universe,
-                            target,
-                            KnowledgeLevel::Probed,
-                        );
-                        let revealed_systems = knowledge_changes
+                        let frontier = state.probe_system(universe, target);
+                        let revealed_systems = frontier
+                            .changes
                             .iter()
                             .filter(|change| matches!(change.target, KnowledgeTarget::System(_)))
                             .count()
                             .min(usize::from(u16::MAX))
                             as u16;
-                        let revealed_planets = knowledge_changes
+                        let revealed_planets = frontier
+                            .changes
                             .iter()
                             .filter(|change| matches!(change.target, KnowledgeTarget::Planet(_)))
                             .count()
                             .min(usize::from(u16::MAX))
                             as u16;
+                        let newly_detected_systems = frontier
+                            .newly_detected_systems
+                            .len()
+                            .min(usize::from(u16::MAX))
+                            as u16;
+                        let revealed_routes =
+                            frontier.revealed_routes.len().min(usize::from(u16::MAX)) as u16;
+                        knowledge_changes = frontier.changes;
                         let result = MissionResult::Probe(ProbeMissionResult {
                             target,
                             previous,
                             current: state.system_knowledge_level(target),
                             revealed_systems,
+                            newly_detected_systems,
+                            revealed_routes,
                             revealed_planets,
                         });
                         resolution = Some(MissionResolution {
