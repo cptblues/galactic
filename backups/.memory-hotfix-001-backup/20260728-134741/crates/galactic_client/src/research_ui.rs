@@ -533,25 +533,19 @@ fn update_research_visibility(
     mut texts: Query<(&ResearchTextRole, &mut Text)>,
 ) {
     for mut visibility in &mut roots {
-        let next = if ui.open {
+        *visibility = if ui.open {
             Visibility::Visible
         } else {
             Visibility::Hidden
         };
-        if *visibility != next {
-            *visibility = next;
-        }
     }
     for (role, mut text) in &mut texts {
         if *role == ResearchTextRole::Toggle {
-            let next = if ui.open {
+            text.0 = if ui.open {
                 "Fermer recherche".to_string()
             } else {
                 "Recherche  [T]".to_string()
             };
-            if text.0 != next {
-                text.0 = next;
-            }
         }
     }
 }

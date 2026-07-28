@@ -8,11 +8,7 @@ use std::{collections::HashMap, time::Duration};
 use bevy::ecs::system::SystemParam;
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit};
 use bevy::prelude::*;
-use bevy::render::{
-    RenderPlugin,
-    settings::{MemoryHints, RenderCreation, WgpuSettings},
-};
-use bevy::text::{FontAtlasSet, FontCx, FontSource};
+use bevy::text::FontSource;
 use bevy::window::{PresentMode, PrimaryWindow};
 use galactic_domain::{
     PlanetId, PlanetKind, ResourceStock, StarClass, SystemId, UniverseConfig, UniverseScalePreset,
@@ -62,20 +58,16 @@ impl Plugin for ClientPlugin {
         let navigation =
             StrategicNavigation::for_universe(self.scale_preset, simulation.universe());
 
-        app.add_plugins(
-            DefaultPlugins
-                .set(WindowPlugin {
-                    primary_window: Some(Window {
-                        title: "Galactic MVP".to_string(),
-                        resolution: (1280, 720).into(),
-                        present_mode: PresentMode::AutoVsync,
-                        resizable: true,
-                        ..default()
-                    }),
-                    ..default()
-                })
-                .set(low_memory_render_plugin()),
-        )
+        app.add_plugins(DefaultPlugins.set(WindowPlugin {
+            primary_window: Some(Window {
+                title: "Galactic MVP".to_string(),
+                resolution: (1280, 720).into(),
+                present_mode: PresentMode::AutoVsync,
+                resizable: true,
+                ..default()
+            }),
+            ..default()
+        }))
         .insert_resource(ClearColor(Color::srgb(0.006, 0.008, 0.014)))
         .insert_resource(SimulationResource {
             simulation,
@@ -87,23 +79,11 @@ impl Plugin for ClientPlugin {
         .init_resource::<ViewRebuildRequest>()
         .init_resource::<PointerSelectionState>()
         .init_resource::<ColonyManagementState>()
-        .init_resource::<MemoryDiagnostics>()
         .add_plugins(SimulationBridgePlugin)
         .add_plugins(PresentationPlugin)
         .add_plugins(ResearchUiPlugin)
         .add_plugins(CraftUiPlugin)
-        .add_systems(Startup, log_startup)
-        .add_systems(Update, log_memory_diagnostics);
-    }
-}
-
-fn low_memory_render_plugin() -> RenderPlugin {
-    RenderPlugin {
-        render_creation: RenderCreation::Automatic(Box::new(WgpuSettings {
-            memory_hints: MemoryHints::MemoryUsage,
-            ..default()
-        })),
-        ..default()
+        .add_systems(Startup, log_startup);
     }
 }
 
@@ -150,13 +130,7 @@ impl Plugin for PresentationPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             Startup,
-            (
-                install_stable_ui_font,
-                spawn_scene,
-                spawn_strategic_view,
-                spawn_ui,
-            )
-                .chain(),
+            (spawn_scene, spawn_strategic_view, spawn_ui).chain(),
         )
         .configure_sets(
             Update,
@@ -241,47 +215,6 @@ impl SimulationResource {
 #[derive(Resource, Default)]
 struct PresentationLog {
     last_event: Option<GameEvent>,
-}
-
-#[derive(Resource)]
-struct MemoryDiagnostics {
-    enabled: bool,
-    sample_timer: Timer,
-}
-
-impl Default for MemoryDiagnostics {
-    fn default() -> Self {
-        let enabled = std::env::var("GALACTIC_MEMORY_DIAGNOSTICS").is_ok_and(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        });
-        Self {
-            enabled,
-            sample_timer: Timer::from_seconds(15.0, TimerMode::Repeating),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct ProcessMemorySnapshot {
-    rss_kib: u64,
-    anonymous_kib: u64,
-    file_kib: u64,
-    shared_kib: u64,
-    swap_kib: u64,
-}
-
-#[derive(SystemParam)]
-struct MemoryDiagnosticSources<'w, 's> {
-    simulation: Res<'w, SimulationResource>,
-    entities: Query<'w, 's, Entity>,
-    strategic_entities: Query<'w, 's, Entity, With<StrategicViewEntity>>,
-    meshes: Res<'w, Assets<Mesh>>,
-    materials: Res<'w, Assets<StandardMaterial>>,
-    images: Res<'w, Assets<Image>>,
-    font_atlases: Res<'w, FontAtlasSet>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -789,98 +722,6 @@ const AZERTY_ZOOM_OUT_KEY: KeyCode = KeyCode::KeyE;
 
 fn log_startup() {
     info!("Galactic MVP client starting on Bevy 0.19");
-}
-
-fn install_stable_ui_font(mut fonts: ResMut<Assets<Font>>, mut font_cx: ResMut<FontCx>) {
-    let Some(font_data) = stable_system_sans_serif_data(&mut font_cx) else {
-        warn!(
-            "No system sans-serif font could be frozen; using Bevy's ASCII fallback font instead"
-        );
-        return;
-    };
-
-    fonts
-        .insert(AssetId::default(), Font::from_bytes(font_data))
-        .expect("Bevy's default font asset should already be reserved");
-}
-
-fn stable_system_sans_serif_data(font_cx: &mut FontCx) -> Option<Vec<u8>> {
-    let family_name = font_cx.get_family(&FontSource::SansSerif)?.to_owned();
-    let family = font_cx.context.collection.family_by_name(&family_name)?;
-    let font = family.default_font()?;
-    let data = font.load(Some(&mut font_cx.context.source_cache))?;
-    Some(data.as_ref().to_vec())
-}
-
-fn log_memory_diagnostics(
-    time: Res<Time>,
-    mut diagnostics: ResMut<MemoryDiagnostics>,
-    sources: MemoryDiagnosticSources,
-) {
-    if !diagnostics.enabled || !diagnostics.sample_timer.tick(time.delta()).just_finished() {
-        return;
-    }
-
-    let state = sources.simulation.simulation().state();
-    let process = process_memory_snapshot();
-    info!(
-        target: "galactic_memory",
-        "rss={} MiB anon={} MiB file={} MiB shmem={} MiB swap={} MiB | entities={} strategic={} meshes={} materials={} images={} font_atlas={} MiB pending_events={} missions={} reports={}",
-        kib_to_mib(process.rss_kib),
-        kib_to_mib(process.anonymous_kib),
-        kib_to_mib(process.file_kib),
-        kib_to_mib(process.shared_kib),
-        kib_to_mib(process.swap_kib),
-        sources.entities.iter().count(),
-        sources.strategic_entities.iter().count(),
-        sources.meshes.len(),
-        sources.materials.len(),
-        sources.images.len(),
-        kib_to_mib(sources.font_atlases.total_bytes(&sources.images) / 1024),
-        sources.simulation.pending_events.len(),
-        state.missions.len(),
-        state.mission_reports.len(),
-    );
-}
-
-fn kib_to_mib(value: u64) -> u64 {
-    value / 1024
-}
-
-#[cfg(target_os = "linux")]
-fn process_memory_snapshot() -> ProcessMemorySnapshot {
-    std::fs::read_to_string("/proc/self/status")
-        .ok()
-        .map(|status| parse_linux_process_status(&status))
-        .unwrap_or_default()
-}
-
-#[cfg(not(target_os = "linux"))]
-fn process_memory_snapshot() -> ProcessMemorySnapshot {
-    ProcessMemorySnapshot::default()
-}
-
-fn parse_linux_process_status(status: &str) -> ProcessMemorySnapshot {
-    let mut snapshot = ProcessMemorySnapshot::default();
-    for line in status.lines() {
-        let Some((label, value)) = line.split_once(':') else {
-            continue;
-        };
-        let value_kib = value
-            .split_whitespace()
-            .next()
-            .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(0);
-        match label {
-            "VmRSS" => snapshot.rss_kib = value_kib,
-            "RssAnon" => snapshot.anonymous_kib = value_kib,
-            "RssFile" => snapshot.file_kib = value_kib,
-            "RssShmem" => snapshot.shared_kib = value_kib,
-            "VmSwap" => snapshot.swap_kib = value_kib,
-            _ => {}
-        }
-    }
-    snapshot
 }
 
 fn spawn_scene(mut commands: Commands) {
@@ -1947,6 +1788,7 @@ fn spawn_action_button(
 
 fn ui_text_font(size: f32) -> TextFont {
     TextFont {
+        font: FontSource::SansSerif,
         font_size: FontSize::Px(size),
         ..default()
     }
@@ -2207,14 +2049,11 @@ fn update_pointer_halos(
     }
 
     for (halo, mut visibility) in &mut halos {
-        let next = if Some(halo.target) == pointer_state.hovered {
+        *visibility = if Some(halo.target) == pointer_state.hovered {
             Visibility::Visible
         } else {
             Visibility::Hidden
         };
-        if *visibility != next {
-            *visibility = next;
-        }
     }
 }
 
@@ -2228,41 +2067,22 @@ fn update_pointer_tooltip(
         return;
     };
     let Ok(window) = windows.single() else {
-        if *visibility != Visibility::Hidden {
-            *visibility = Visibility::Hidden;
-        }
+        *visibility = Visibility::Hidden;
         return;
     };
     let Some(target) = pointer_state.hovered else {
-        if *visibility != Visibility::Hidden {
-            *visibility = Visibility::Hidden;
-        }
+        *visibility = Visibility::Hidden;
         return;
     };
     let Some(screen_position) = pointer_state.hovered_screen_position else {
-        if *visibility != Visibility::Hidden {
-            *visibility = Visibility::Hidden;
-        }
+        *visibility = Visibility::Hidden;
         return;
     };
 
-    let next_text = pointer_tooltip_text(simulation.simulation(), target);
-    if text.0 != next_text {
-        text.0 = next_text;
-    }
-    let next_left =
-        Val::Px((screen_position.x + 18.0).clamp(8.0, (window.width() - 270.0).max(8.0)));
-    if node.left != next_left {
-        node.left = next_left;
-    }
-    let next_top =
-        Val::Px((screen_position.y + 18.0).clamp(8.0, (window.height() - 110.0).max(8.0)));
-    if node.top != next_top {
-        node.top = next_top;
-    }
-    if *visibility != Visibility::Visible {
-        *visibility = Visibility::Visible;
-    }
+    text.0 = pointer_tooltip_text(simulation.simulation(), target);
+    node.left = Val::Px((screen_position.x + 18.0).clamp(8.0, (window.width() - 270.0).max(8.0)));
+    node.top = Val::Px((screen_position.y + 18.0).clamp(8.0, (window.height() - 110.0).max(8.0)));
+    *visibility = Visibility::Visible;
 }
 
 fn update_ambiguity_panel(
@@ -2274,9 +2094,7 @@ fn update_ambiguity_panel(
         return;
     };
     let Some(ambiguity) = pointer_state.ambiguity.as_ref() else {
-        if *visibility != Visibility::Hidden {
-            *visibility = Visibility::Hidden;
-        }
+        *visibility = Visibility::Hidden;
         return;
     };
 
@@ -2299,13 +2117,8 @@ fn update_ambiguity_panel(
         ));
     }
 
-    let next_text = lines.join("\n");
-    if text.0 != next_text {
-        text.0 = next_text;
-    }
-    if *visibility != Visibility::Visible {
-        *visibility = Visibility::Visible;
-    }
+    text.0 = lines.join("\n");
+    *visibility = Visibility::Visible;
 }
 
 fn select_pick_target(simulation: &mut SimulationResource, target: PickTarget) {
@@ -2567,14 +2380,11 @@ fn update_colony_management_visibility(
     }
 
     for mut visibility in &mut roots {
-        let next = if management.open {
+        *visibility = if management.open {
             Visibility::Visible
         } else {
             Visibility::Hidden
         };
-        if *visibility != next {
-            *visibility = next;
-        }
     }
 
     let colony = active_management_colony(&management, simulation.simulation());
@@ -2586,19 +2396,21 @@ fn update_colony_management_visibility(
     });
 
     for (role, mut text) in &mut texts {
-        let next = match role {
-            ManagementTextRole::ToggleLabel => Some(if management.open {
-                "Fermer gestion colonie".to_string()
-            } else {
-                "Gestion colonie  [C]".to_string()
-            }),
-            ManagementTextRole::Title => Some(
-                colony
+        match role {
+            ManagementTextRole::ToggleLabel => {
+                text.0 = if management.open {
+                    "Fermer gestion colonie".to_string()
+                } else {
+                    "Gestion colonie  [C]".to_string()
+                };
+            }
+            ManagementTextRole::Title => {
+                text.0 = colony
                     .map(|active| format!("GESTION PLANÉTAIRE — {}", active.name,))
-                    .unwrap_or_else(|| "GESTION PLANÉTAIRE".to_string()),
-            ),
-            ManagementTextRole::Colony => Some(
-                colony
+                    .unwrap_or_else(|| "GESTION PLANÉTAIRE".to_string());
+            }
+            ManagementTextRole::Colony => {
+                text.0 = colony
                     .map(|active| {
                         let index = current_index.unwrap_or(0) + 1;
                         let planet = simulation
@@ -2609,17 +2421,14 @@ fn update_colony_management_visibility(
                             .unwrap_or("Planète");
                         format!("{} / {}  •  {}", index, colonies.len().max(1), planet,)
                     })
-                    .unwrap_or_else(|| "Aucune colonie".to_string()),
-            ),
-            ManagementTextRole::Feedback => Some(management.feedback.clone()),
+                    .unwrap_or_else(|| "Aucune colonie".to_string());
+            }
+            ManagementTextRole::Feedback => {
+                text.0 = management.feedback.clone();
+            }
             ManagementTextRole::BuildingDetail
             | ManagementTextRole::UpgradeLabel
-            | ManagementTextRole::Queue => None,
-        };
-        if let Some(next) = next
-            && text.0 != next
-        {
-            text.0 = next;
+            | ManagementTextRole::Queue => {}
         }
     }
 }
@@ -3398,14 +3207,8 @@ fn update_action_buttons(
     for (button, interaction, mut background, mut outline) in &mut buttons {
         let available = action_available(button.action, &simulation, &navigation);
         let active = action_active(button.action, &simulation, &navigation);
-        let next_background = action_button_color(available, active, interaction);
-        if background.0 != next_background {
-            background.0 = next_background;
-        }
-        let next_outline = action_button_outline(available, active, interaction);
-        if outline.color != next_outline {
-            outline.color = next_outline;
-        }
+        background.0 = action_button_color(available, active, interaction);
+        outline.color = action_button_outline(available, active, interaction);
     }
 }
 
@@ -3721,12 +3524,8 @@ fn update_strategic_camera(
                 let mut yaw = navigation.universe_yaw;
                 let mut pitch = navigation.universe_pitch;
                 apply_orbit_drag(&mut yaw, &mut pitch, motion);
-                if navigation.universe_yaw != yaw {
-                    navigation.universe_yaw = yaw;
-                }
-                if navigation.universe_pitch != pitch {
-                    navigation.universe_pitch = pitch;
-                }
+                navigation.universe_yaw = yaw;
+                navigation.universe_pitch = pitch;
             }
             if input.mouse_buttons.pressed(MouseButton::Middle) {
                 let pan = mouse_pan_delta(
@@ -3734,9 +3533,7 @@ fn update_strategic_camera(
                     motion,
                     navigation.universe_distance,
                 );
-                if pan != Vec3::ZERO {
-                    navigation.universe_focus += pan;
-                }
+                navigation.universe_focus += pan;
             }
 
             let keyboard_pan = keyboard_pan_direction(&input.keyboard, navigation.universe_yaw);
@@ -3746,51 +3543,40 @@ fn update_strategic_camera(
             }
 
             let maximum = navigation.universe_max_distance;
-            let mut next_distance = navigation.universe_distance;
             apply_keyboard_zoom(
                 &input.keyboard,
                 delta_seconds,
-                &mut next_distance,
+                &mut navigation.universe_distance,
                 20.0,
                 maximum,
             );
-            apply_scroll_zoom(&mut next_distance, scroll_lines, 20.0, maximum);
-            if navigation.universe_distance != next_distance {
-                navigation.universe_distance = next_distance;
-            }
-            let next_lod = UniverseLod::from_distance(next_distance);
-            if navigation.lod != next_lod {
-                navigation.lod = next_lod;
-            }
+            apply_scroll_zoom(
+                &mut navigation.universe_distance,
+                scroll_lines,
+                20.0,
+                maximum,
+            );
+            navigation.lod = UniverseLod::from_distance(navigation.universe_distance);
 
-            let next_transform = orbit_transform(
+            *transform = orbit_transform(
                 navigation.universe_focus,
-                next_distance,
+                navigation.universe_distance,
                 navigation.universe_yaw,
                 navigation.universe_pitch,
             );
-            if *transform != next_transform {
-                *transform = next_transform;
-            }
         }
         StrategicViewMode::System(_) => {
             if input.mouse_buttons.pressed(MouseButton::Right) {
                 let mut yaw = navigation.system_yaw;
                 let mut pitch = navigation.system_pitch;
                 apply_orbit_drag(&mut yaw, &mut pitch, motion);
-                if navigation.system_yaw != yaw {
-                    navigation.system_yaw = yaw;
-                }
-                if navigation.system_pitch != pitch {
-                    navigation.system_pitch = pitch;
-                }
+                navigation.system_yaw = yaw;
+                navigation.system_pitch = pitch;
             }
             if input.mouse_buttons.pressed(MouseButton::Middle) {
                 let pan =
                     mouse_pan_delta(navigation.system_yaw, motion, navigation.system_distance);
-                if pan != Vec3::ZERO {
-                    navigation.system_focus += pan;
-                }
+                navigation.system_focus += pan;
             }
 
             let keyboard_pan = keyboard_pan_direction(&input.keyboard, navigation.system_yaw);
@@ -3799,28 +3585,21 @@ fn update_strategic_camera(
                 navigation.system_focus += keyboard_pan.normalize() * pan_speed * delta_seconds;
             }
 
-            let mut next_distance = navigation.system_distance;
             apply_keyboard_zoom(
                 &input.keyboard,
                 delta_seconds,
-                &mut next_distance,
+                &mut navigation.system_distance,
                 10.0,
                 80.0,
             );
-            apply_scroll_zoom(&mut next_distance, scroll_lines, 10.0, 80.0);
-            if navigation.system_distance != next_distance {
-                navigation.system_distance = next_distance;
-            }
+            apply_scroll_zoom(&mut navigation.system_distance, scroll_lines, 10.0, 80.0);
 
-            let next_transform = orbit_transform(
+            *transform = orbit_transform(
                 navigation.system_focus,
-                next_distance,
+                navigation.system_distance,
                 navigation.system_yaw,
                 navigation.system_pitch,
             );
-            if *transform != next_transform {
-                *transform = next_transform;
-            }
         }
     }
 }
@@ -3915,14 +3694,8 @@ fn update_projection_transition(time: Res<Time>, mut navigation: ResMut<Strategi
     const TRANSITION_SECONDS: f32 = 0.65;
     let current = navigation.projection_mix;
     let target = navigation.projection.target_mix();
-    if current == target {
-        return;
-    }
     let step = time.delta_secs() / TRANSITION_SECONDS;
-    let next = advance_projection_mix(current, target, step);
-    if next != current {
-        navigation.projection_mix = next;
-    }
+    navigation.projection_mix = advance_projection_mix(current, target, step);
 }
 
 fn advance_projection_mix(current: f32, target: f32, maximum_step: f32) -> f32 {
@@ -3948,10 +3721,8 @@ fn update_system_visuals(
 
     for (visual, mut transform) in &mut query {
         if let Some(system) = simulation.simulation().universe().system(visual.id) {
-            let next = projected_universe_position(system.position, navigation.projection_mix);
-            if transform.translation != next {
-                transform.translation = next;
-            }
+            transform.translation =
+                projected_universe_position(system.position, navigation.projection_mix);
         }
         let selected_multiplier = if Some(visual.id) == selected_system {
             1.55
@@ -3968,11 +3739,8 @@ fn update_system_visuals(
             SystemVisibility::Detected => 0.84,
         };
 
-        let next_scale =
+        transform.scale =
             visual.base_scale * selected_multiplier * lod_multiplier * visibility_multiplier;
-        if transform.scale != next_scale {
-            transform.scale = next_scale;
-        }
     }
 }
 
@@ -3990,11 +3758,9 @@ fn update_system_labels(
 
     for (label, mut transform, mut visibility) in &mut query {
         if let Some(system) = simulation.simulation().universe().system(label.id) {
-            let next = projected_universe_position(system.position, navigation.projection_mix)
-                + Vec3::new(0.0, 1.8, 0.0);
-            if transform.translation != next {
-                transform.translation = next;
-            }
+            transform.translation =
+                projected_universe_position(system.position, navigation.projection_mix)
+                    + Vec3::new(0.0, 1.8, 0.0);
         }
         let is_selected = Some(label.id) == selected;
         let is_colony = state
@@ -4010,14 +3776,11 @@ fn update_system_labels(
                 UniverseLod::Local => true,
             };
 
-        let next_visibility = if should_show {
+        *visibility = if should_show {
             Visibility::Visible
         } else {
             Visibility::Hidden
         };
-        if *visibility != next_visibility {
-            *visibility = next_visibility;
-        }
     }
 }
 
@@ -4028,19 +3791,14 @@ fn update_sector_labels(
     let should_show = matches!(navigation.mode, StrategicViewMode::Universe)
         && navigation.lod == UniverseLod::Overview;
     for (label, mut transform, mut visibility) in &mut query {
-        let next = projected_universe_position(label.position, navigation.projection_mix)
-            + Vec3::new(0.0, 4.2, 0.0);
-        if transform.translation != next {
-            transform.translation = next;
-        }
-        let next_visibility = if should_show {
+        transform.translation =
+            projected_universe_position(label.position, navigation.projection_mix)
+                + Vec3::new(0.0, 4.2, 0.0);
+        *visibility = if should_show {
             Visibility::Visible
         } else {
             Visibility::Hidden
         };
-        if *visibility != next_visibility {
-            *visibility = next_visibility;
-        }
     }
 }
 
@@ -4058,10 +3816,8 @@ fn update_pointer_halo_positions(
             continue;
         };
         if let Some(system) = simulation.simulation().universe().system(system_id) {
-            let next = projected_universe_position(system.position, navigation.projection_mix);
-            if transform.translation != next {
-                transform.translation = next;
-            }
+            transform.translation =
+                projected_universe_position(system.position, navigation.projection_mix);
         }
     }
 }
@@ -4214,7 +3970,7 @@ fn update_ui(
         }
     };
 
-    let next = format!(
+    text.0 = format!(
         "Galactic MVP | échelle {} ({}) | graphique {:?} | {} | tick {} | vitesse {} | cible {}\nSystèmes {}/{} | Secteurs connus {}/{} | Routes {}/{} | Détectés/Sondés/Analysés/Colonisés {}/{}/{}/{} | debug {} | {}\n{}",
         navigation.scale_preset.label(),
         navigation.scale_preset.system_count(),
@@ -4237,9 +3993,6 @@ fn update_ui(
         last_event,
         mission_status,
     );
-    if text.0 != next {
-        text.0 = next;
-    }
 }
 
 fn mission_status_line(simulation: &Simulation) -> String {
@@ -4311,14 +4064,8 @@ fn update_info_panel(
         return;
     };
     let content = information_panel_content(simulation.simulation());
-    let next_text = content.render();
-    if text.0 != next_text {
-        text.0 = next_text;
-    }
-    let next_color = knowledge_color(content.level);
-    if color.0 != next_color {
-        color.0 = next_color;
-    }
+    text.0 = content.render();
+    color.0 = knowledge_color(content.level);
 }
 
 fn information_panel_content(simulation: &Simulation) -> InspectorContent {
@@ -4948,47 +4695,7 @@ fn mission_error_text(error: galactic_sim::MissionError) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::any::TypeId;
-
     use super::*;
-    use bevy::camera::{ComputedCameraValues, RenderTargetInfo, visibility::VisibleEntities};
-    use bevy::sprite::update_text2d_layout;
-    use bevy::text::{
-        LayoutCx, RemSize, ScaleCx, TextIterScratch, TextPipeline, detect_text_needs_rerender,
-    };
-
-    #[test]
-    fn renderer_favors_bounded_memory_allocations() {
-        let RenderCreation::Automatic(settings) = low_memory_render_plugin().render_creation else {
-            panic!("the client renderer must use automatic creation");
-        };
-
-        assert!(matches!(settings.memory_hints, MemoryHints::MemoryUsage));
-    }
-
-    #[test]
-    fn linux_memory_status_parser_extracts_process_counters() {
-        let snapshot = parse_linux_process_status(
-            "\
-VmRSS:\t  512000 kB
-RssAnon:\t  480000 kB
-RssFile:\t   12000 kB
-RssShmem:\t   4000 kB
-VmSwap:\t      2048 kB
-",
-        );
-
-        assert_eq!(
-            snapshot,
-            ProcessMemorySnapshot {
-                rss_kib: 512_000,
-                anonymous_kib: 480_000,
-                file_kib: 12_000,
-                shared_kib: 4_000,
-                swap_kib: 2_048,
-            }
-        );
-    }
 
     #[test]
     fn scale_cli_defaults_to_mvp_and_accepts_all_presets() {
@@ -5332,91 +5039,8 @@ VmSwap:\t      2048 kB
     }
 
     #[test]
-    fn ui_font_uses_the_stable_default_asset() {
-        assert!(matches!(
-            ui_text_font(14.0).font,
-            FontSource::Handle(handle) if handle == Handle::default()
-        ));
-    }
-
-    #[test]
-    fn changing_french_text_reuses_its_font_atlas() {
-        let mut app = App::new();
-        app.init_resource::<Assets<Font>>()
-            .init_resource::<Assets<Image>>()
-            .init_resource::<Assets<TextureAtlasLayout>>()
-            .init_resource::<FontAtlasSet>()
-            .init_resource::<TextPipeline>()
-            .init_resource::<FontCx>()
-            .init_resource::<LayoutCx>()
-            .init_resource::<ScaleCx>()
-            .init_resource::<TextIterScratch>()
-            .init_resource::<RemSize>()
-            .add_systems(
-                Update,
-                (detect_text_needs_rerender, update_text2d_layout).chain(),
-            );
-
-        let font_data = {
-            let mut font_cx = app.world_mut().resource_mut::<FontCx>();
-            stable_system_sans_serif_data(&mut font_cx)
-                .unwrap_or_else(|| bevy::text::DEFAULT_FONT_DATA.to_vec())
-        };
-        app.world_mut()
-            .resource_mut::<Assets<Font>>()
-            .insert(AssetId::default(), Font::from_bytes(font_data))
-            .expect("default font handle should be available");
-        let stable_font_data = {
-            let mut fonts = app.world_mut().resource_mut::<Assets<Font>>();
-            let mut font = fonts
-                .get_mut(AssetId::default())
-                .expect("the stable font was just inserted");
-            font.alias = "Galactic Stable Sans".into();
-            font.data.clone()
-        };
-        app.world_mut()
-            .resource_mut::<FontCx>()
-            .collection
-            .register_fonts(stable_font_data, None);
-
-        let mut visible_entities = VisibleEntities::default();
-        visible_entities.push(Entity::PLACEHOLDER, TypeId::of::<Sprite>());
-        app.world_mut().spawn((
-            Camera {
-                computed: ComputedCameraValues {
-                    target_info: Some(RenderTargetInfo {
-                        physical_size: UVec2::splat(1_000),
-                        scale_factor: 1.0,
-                    }),
-                    ..default()
-                },
-                ..default()
-            },
-            visible_entities,
-        ));
-        let text_entity = app
-            .world_mut()
-            .spawn((Text2d::new("Hélianthe 0"), ui_text_font(18.0)))
-            .id();
-
-        app.update();
-        let initial_images = app.world().resource::<Assets<Image>>().len();
-        assert!(initial_images > 0);
-
-        for sample in 1..120 {
-            app.world_mut()
-                .entity_mut(text_entity)
-                .get_mut::<Text2d>()
-                .expect("text entity should still exist")
-                .0 = format!("Hélianthe {}", sample % 10);
-            app.update();
-        }
-
-        let final_images = app.world().resource::<Assets<Image>>().len();
-        assert!(
-            final_images <= initial_images + 1,
-            "font atlas images grew from {initial_images} to {final_images}",
-        );
+    fn ui_font_uses_a_system_sans_serif() {
+        assert!(matches!(ui_text_font(14.0).font, FontSource::SansSerif));
     }
 
     #[test]

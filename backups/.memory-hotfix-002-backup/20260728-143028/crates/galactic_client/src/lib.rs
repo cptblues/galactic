@@ -12,7 +12,7 @@ use bevy::render::{
     RenderPlugin,
     settings::{MemoryHints, RenderCreation, WgpuSettings},
 };
-use bevy::text::{FontAtlasSet, FontCx, FontSource};
+use bevy::text::FontSource;
 use bevy::window::{PresentMode, PrimaryWindow};
 use galactic_domain::{
     PlanetId, PlanetKind, ResourceStock, StarClass, SystemId, UniverseConfig, UniverseScalePreset,
@@ -150,13 +150,7 @@ impl Plugin for PresentationPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             Startup,
-            (
-                install_stable_ui_font,
-                spawn_scene,
-                spawn_strategic_view,
-                spawn_ui,
-            )
-                .chain(),
+            (spawn_scene, spawn_strategic_view, spawn_ui).chain(),
         )
         .configure_sets(
             Update,
@@ -281,7 +275,6 @@ struct MemoryDiagnosticSources<'w, 's> {
     meshes: Res<'w, Assets<Mesh>>,
     materials: Res<'w, Assets<StandardMaterial>>,
     images: Res<'w, Assets<Image>>,
-    font_atlases: Res<'w, FontAtlasSet>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -791,27 +784,6 @@ fn log_startup() {
     info!("Galactic MVP client starting on Bevy 0.19");
 }
 
-fn install_stable_ui_font(mut fonts: ResMut<Assets<Font>>, mut font_cx: ResMut<FontCx>) {
-    let Some(font_data) = stable_system_sans_serif_data(&mut font_cx) else {
-        warn!(
-            "No system sans-serif font could be frozen; using Bevy's ASCII fallback font instead"
-        );
-        return;
-    };
-
-    fonts
-        .insert(AssetId::default(), Font::from_bytes(font_data))
-        .expect("Bevy's default font asset should already be reserved");
-}
-
-fn stable_system_sans_serif_data(font_cx: &mut FontCx) -> Option<Vec<u8>> {
-    let family_name = font_cx.get_family(&FontSource::SansSerif)?.to_owned();
-    let family = font_cx.context.collection.family_by_name(&family_name)?;
-    let font = family.default_font()?;
-    let data = font.load(Some(&mut font_cx.context.source_cache))?;
-    Some(data.as_ref().to_vec())
-}
-
 fn log_memory_diagnostics(
     time: Res<Time>,
     mut diagnostics: ResMut<MemoryDiagnostics>,
@@ -825,7 +797,7 @@ fn log_memory_diagnostics(
     let process = process_memory_snapshot();
     info!(
         target: "galactic_memory",
-        "rss={} MiB anon={} MiB file={} MiB shmem={} MiB swap={} MiB | entities={} strategic={} meshes={} materials={} images={} font_atlas={} MiB pending_events={} missions={} reports={}",
+        "rss={} MiB anon={} MiB file={} MiB shmem={} MiB swap={} MiB | entities={} strategic={} meshes={} materials={} images={} pending_events={} missions={} reports={}",
         kib_to_mib(process.rss_kib),
         kib_to_mib(process.anonymous_kib),
         kib_to_mib(process.file_kib),
@@ -836,7 +808,6 @@ fn log_memory_diagnostics(
         sources.meshes.len(),
         sources.materials.len(),
         sources.images.len(),
-        kib_to_mib(sources.font_atlases.total_bytes(&sources.images) / 1024),
         sources.simulation.pending_events.len(),
         state.missions.len(),
         state.mission_reports.len(),
@@ -1947,6 +1918,7 @@ fn spawn_action_button(
 
 fn ui_text_font(size: f32) -> TextFont {
     TextFont {
+        font: FontSource::SansSerif,
         font_size: FontSize::Px(size),
         ..default()
     }
@@ -4948,14 +4920,7 @@ fn mission_error_text(error: galactic_sim::MissionError) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::any::TypeId;
-
     use super::*;
-    use bevy::camera::{ComputedCameraValues, RenderTargetInfo, visibility::VisibleEntities};
-    use bevy::sprite::update_text2d_layout;
-    use bevy::text::{
-        LayoutCx, RemSize, ScaleCx, TextIterScratch, TextPipeline, detect_text_needs_rerender,
-    };
 
     #[test]
     fn renderer_favors_bounded_memory_allocations() {
@@ -5332,91 +5297,8 @@ VmSwap:\t      2048 kB
     }
 
     #[test]
-    fn ui_font_uses_the_stable_default_asset() {
-        assert!(matches!(
-            ui_text_font(14.0).font,
-            FontSource::Handle(handle) if handle == Handle::default()
-        ));
-    }
-
-    #[test]
-    fn changing_french_text_reuses_its_font_atlas() {
-        let mut app = App::new();
-        app.init_resource::<Assets<Font>>()
-            .init_resource::<Assets<Image>>()
-            .init_resource::<Assets<TextureAtlasLayout>>()
-            .init_resource::<FontAtlasSet>()
-            .init_resource::<TextPipeline>()
-            .init_resource::<FontCx>()
-            .init_resource::<LayoutCx>()
-            .init_resource::<ScaleCx>()
-            .init_resource::<TextIterScratch>()
-            .init_resource::<RemSize>()
-            .add_systems(
-                Update,
-                (detect_text_needs_rerender, update_text2d_layout).chain(),
-            );
-
-        let font_data = {
-            let mut font_cx = app.world_mut().resource_mut::<FontCx>();
-            stable_system_sans_serif_data(&mut font_cx)
-                .unwrap_or_else(|| bevy::text::DEFAULT_FONT_DATA.to_vec())
-        };
-        app.world_mut()
-            .resource_mut::<Assets<Font>>()
-            .insert(AssetId::default(), Font::from_bytes(font_data))
-            .expect("default font handle should be available");
-        let stable_font_data = {
-            let mut fonts = app.world_mut().resource_mut::<Assets<Font>>();
-            let mut font = fonts
-                .get_mut(AssetId::default())
-                .expect("the stable font was just inserted");
-            font.alias = "Galactic Stable Sans".into();
-            font.data.clone()
-        };
-        app.world_mut()
-            .resource_mut::<FontCx>()
-            .collection
-            .register_fonts(stable_font_data, None);
-
-        let mut visible_entities = VisibleEntities::default();
-        visible_entities.push(Entity::PLACEHOLDER, TypeId::of::<Sprite>());
-        app.world_mut().spawn((
-            Camera {
-                computed: ComputedCameraValues {
-                    target_info: Some(RenderTargetInfo {
-                        physical_size: UVec2::splat(1_000),
-                        scale_factor: 1.0,
-                    }),
-                    ..default()
-                },
-                ..default()
-            },
-            visible_entities,
-        ));
-        let text_entity = app
-            .world_mut()
-            .spawn((Text2d::new("Hélianthe 0"), ui_text_font(18.0)))
-            .id();
-
-        app.update();
-        let initial_images = app.world().resource::<Assets<Image>>().len();
-        assert!(initial_images > 0);
-
-        for sample in 1..120 {
-            app.world_mut()
-                .entity_mut(text_entity)
-                .get_mut::<Text2d>()
-                .expect("text entity should still exist")
-                .0 = format!("Hélianthe {}", sample % 10);
-            app.update();
-        }
-
-        let final_images = app.world().resource::<Assets<Image>>().len();
-        assert!(
-            final_images <= initial_images + 1,
-            "font atlas images grew from {initial_images} to {final_images}",
-        );
+    fn ui_font_uses_a_system_sans_serif() {
+        assert!(matches!(ui_text_font(14.0).font, FontSource::SansSerif));
     }
 
     #[test]
