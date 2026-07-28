@@ -57,7 +57,9 @@ Le monde doit évoquer :
 
 ## Systèmes et planètes
 
-Les seize systèmes du preset MVP ont un nom propre fixe :
+Les seize premiers systèmes, qui constituent le preset Test, ont un nom propre
+fixe. Les presets MVP et Stress réemploient ensuite cette liste avec un suffixe
+de cycle stable :
 
 1. Hélianthe
 2. Vespera

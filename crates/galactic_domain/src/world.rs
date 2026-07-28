@@ -7,11 +7,58 @@ use rand_chacha::ChaCha8Rng;
 use crate::{PlanetId, SectorId, StarId, SystemId, UniverseId, WorldPosition};
 
 pub const MVP_UNIVERSE_SEED: u64 = 42;
-pub const MVP_SYSTEM_COUNT: usize = 16;
+pub const TEST_SYSTEM_COUNT: usize = 16;
+pub const MVP_SYSTEM_COUNT: usize = 64;
+pub const STRESS_SYSTEM_COUNT: usize = 128;
 pub const GENERATION_VERSION: u32 = 4;
-pub const MVP_REFERENCE_FINGERPRINT: u64 = 15733294683163488985;
+pub const TEST_REFERENCE_FINGERPRINT: u64 = 15733294683163488985;
 
 const MAX_SYSTEM_COUNT: usize = 256;
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum UniverseScalePreset {
+    Test,
+    #[default]
+    Mvp,
+    Stress,
+}
+
+impl UniverseScalePreset {
+    pub const ALL: [Self; 3] = [Self::Test, Self::Mvp, Self::Stress];
+
+    pub const fn system_count(self) -> usize {
+        match self {
+            Self::Test => TEST_SYSTEM_COUNT,
+            Self::Mvp => MVP_SYSTEM_COUNT,
+            Self::Stress => STRESS_SYSTEM_COUNT,
+        }
+    }
+
+    pub const fn slug(self) -> &'static str {
+        match self {
+            Self::Test => "test",
+            Self::Mvp => "mvp",
+            Self::Stress => "stress",
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Test => "Test",
+            Self::Mvp => "MVP",
+            Self::Stress => "Stress",
+        }
+    }
+
+    pub fn from_slug(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "test" | "16" => Some(Self::Test),
+            "mvp" | "64" => Some(Self::Mvp),
+            "stress" | "128" => Some(Self::Stress),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UniverseConfig {
@@ -24,8 +71,20 @@ impl UniverseConfig {
         Self { seed, system_count }
     }
 
+    pub const fn for_preset(seed: u64, preset: UniverseScalePreset) -> Self {
+        Self::new(seed, preset.system_count())
+    }
+
+    pub const fn test() -> Self {
+        Self::for_preset(MVP_UNIVERSE_SEED, UniverseScalePreset::Test)
+    }
+
     pub const fn mvp() -> Self {
-        Self::new(MVP_UNIVERSE_SEED, MVP_SYSTEM_COUNT)
+        Self::for_preset(MVP_UNIVERSE_SEED, UniverseScalePreset::Mvp)
+    }
+
+    pub const fn stress() -> Self {
+        Self::for_preset(MVP_UNIVERSE_SEED, UniverseScalePreset::Stress)
     }
 
     pub fn sanitized(self) -> Self {
@@ -774,9 +833,23 @@ mod tests {
         let universe = generate_universe(UniverseConfig::default());
         assert_eq!(universe.seed, MVP_UNIVERSE_SEED);
         assert_eq!(universe.generation_version, GENERATION_VERSION);
-        assert!((12..=20).contains(&universe.systems.len()));
+        assert_eq!(universe.systems.len(), MVP_SYSTEM_COUNT);
+        assert_eq!(universe.sectors.len(), 8);
         assert!(!universe.routes.is_empty());
         assert_ne!(universe.generation_fingerprint, 0);
+    }
+
+    #[test]
+    fn scale_presets_have_stable_distinct_sizes() {
+        assert_eq!(UniverseScalePreset::default(), UniverseScalePreset::Mvp);
+        assert_eq!(UniverseConfig::test().system_count, TEST_SYSTEM_COUNT);
+        assert_eq!(UniverseConfig::mvp().system_count, MVP_SYSTEM_COUNT);
+        assert_eq!(UniverseConfig::stress().system_count, STRESS_SYSTEM_COUNT);
+        assert_eq!(
+            UniverseScalePreset::from_slug("128"),
+            Some(UniverseScalePreset::Stress),
+        );
+        assert_eq!(UniverseScalePreset::from_slug("unknown"), None);
     }
 
     #[test]
@@ -793,8 +866,8 @@ mod tests {
     }
 
     #[test]
-    fn canonical_mvp_names_are_stable_and_unique() {
-        let universe = generate_universe(UniverseConfig::mvp());
+    fn canonical_test_names_are_stable_and_unique() {
+        let universe = generate_universe(UniverseConfig::test());
         let system_names = universe
             .systems
             .iter()
@@ -857,7 +930,7 @@ mod tests {
 
     #[test]
     fn route_graph_is_connected_from_home() {
-        let universe = generate_universe(UniverseConfig::mvp());
+        let universe = generate_universe(UniverseConfig::test());
         let mut visited = BTreeSet::new();
         let mut frontier = vec![SystemId::from_index(0)];
 
@@ -878,8 +951,8 @@ mod tests {
 
     #[test]
     fn routes_are_unique_canonical_and_deterministic() {
-        let first = generate_universe(UniverseConfig::mvp());
-        let second = generate_universe(UniverseConfig::mvp());
+        let first = generate_universe(UniverseConfig::test());
+        let second = generate_universe(UniverseConfig::test());
         let mut unique = BTreeSet::new();
 
         assert_eq!(first.routes, second.routes);
@@ -891,8 +964,8 @@ mod tests {
 
     #[test]
     fn sectors_are_deterministic_complete_and_disjoint() {
-        let first = generate_universe(UniverseConfig::mvp());
-        let second = generate_universe(UniverseConfig::mvp());
+        let first = generate_universe(UniverseConfig::test());
+        let second = generate_universe(UniverseConfig::test());
         let mut memberships = BTreeMap::<SystemId, SectorId>::new();
 
         assert_eq!(first.sectors, second.sectors);
@@ -933,7 +1006,7 @@ mod tests {
 
     #[test]
     fn sector_gateway_routes_are_exactly_the_intersector_edges() {
-        let universe = generate_universe(UniverseConfig::mvp());
+        let universe = generate_universe(UniverseConfig::test());
 
         for route in &universe.routes {
             let from_sector = universe
@@ -962,29 +1035,41 @@ mod tests {
 
     #[test]
     fn extended_mvp_scale_targets_six_to_ten_sectors() {
-        let universe = generate_universe(UniverseConfig::new(MVP_UNIVERSE_SEED, 64));
+        let universe = generate_universe(UniverseConfig::mvp());
 
+        assert_eq!(universe.systems.len(), MVP_SYSTEM_COUNT);
         assert!((6..=10).contains(&universe.sectors.len()));
         assert_eq!(universe.sectors.len(), 8);
     }
 
     #[test]
-    fn reference_seed_fingerprint_is_stable() {
+    fn stress_scale_is_available_without_becoming_the_default() {
+        let universe = generate_universe(UniverseConfig::stress());
+
+        assert_eq!(universe.systems.len(), STRESS_SYSTEM_COUNT);
         assert_ne!(
-            MVP_REFERENCE_FINGERPRINT, 0,
+            UniverseConfig::default().system_count,
+            UniverseConfig::stress().system_count,
+        );
+    }
+
+    #[test]
+    fn test_seed_fingerprint_is_stable() {
+        assert_ne!(
+            TEST_REFERENCE_FINGERPRINT, 0,
             "run tools/apply_mvp_003.py once to bootstrap the reference fingerprint"
         );
-        let universe = generate_universe(UniverseConfig::mvp());
+        let universe = generate_universe(UniverseConfig::test());
         assert_eq!(
-            universe.generation_fingerprint, MVP_REFERENCE_FINGERPRINT,
-            "the generated MVP universe changed; increment GENERATION_VERSION only if intentional"
+            universe.generation_fingerprint, TEST_REFERENCE_FINGERPRINT,
+            "the generated reference universe changed; increment GENERATION_VERSION only if intentional"
         );
     }
 
     #[test]
     #[ignore = "used by tools/apply_mvp_003.py to bootstrap the snapshot"]
     fn print_reference_seed_fingerprint() {
-        let universe = generate_universe(UniverseConfig::mvp());
-        println!("MVP_FINGERPRINT={}", universe.generation_fingerprint);
+        let universe = generate_universe(UniverseConfig::test());
+        println!("TEST_FINGERPRINT={}", universe.generation_fingerprint);
     }
 }

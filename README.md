@@ -11,7 +11,11 @@ simulation, persistance et client Bevy.
 
 ```bash
 cargo run --release
+cargo run --release -- --scale test    # 16 systèmes
+cargo run --release -- --scale stress  # 128 systèmes
 ```
+
+Sans option, le client utilise le preset jouable **MVP 64 systèmes**.
 
 ## Commandes Qualite
 
@@ -65,6 +69,7 @@ Référence éditoriale : `docs/universe_bible.md`.
 | Recherche | `T` |
 | Chantier orbital | `Y` |
 | Lancer une reconnaissance | `K` |
+| Basculer projection 3D / 2,5D | `P` |
 | Reconstruire les vues Bevy | `R` |
 
 ## Baseline
@@ -72,5 +77,16 @@ Référence éditoriale : `docs/universe_bible.md`.
 - POC valide: `docs/poc_archive/poc_02`
 - Performance POC constatee localement: environ 10 FPS en debug, 60 FPS en
   release.
-- Base MVP active: scene minimale de 16 systemes pour valider le decouplage avant
-  de rebrancher les workflows de gameplay.
+- Base MVP active : 64 systèmes ; les presets Test 16 et Stress 128 restent
+  disponibles au lancement.
+
+## MVP-023-C — Projection 2,5D et échelles galactiques
+
+Le client démarre par défaut sur une galaxie reproductible de 64 systèmes.
+`--scale test` conserve la carte de 16 systèmes pour les itérations rapides et
+`--scale stress` charge 128 systèmes pour les mesures manuelles.
+
+Dans la vue Univers, `P` anime le passage entre les positions 3D et leur
+projection aplatie. Cette interpolation ne modifie jamais la définition de
+l'univers, les routes, les distances ou les durées de mission. Étoiles, labels,
+halos, routes et picking utilisent à chaque frame les mêmes positions affichées.

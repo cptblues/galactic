@@ -138,7 +138,8 @@ Voisinages / chemin minimal / distance en sauts
 
 Règles :
 
-- la seed MVP contient toujours 16 systèmes, dans la fourchette cible 12–20 ;
+- la seed et l'algorithme sont communs aux presets Test 16, MVP 64 et
+  Stress 128 systèmes ;
 - un arbre couvrant minimal garantit que tous les systèmes sont accessibles
   depuis `SystemId(0)` ;
 - des routes locales supplémentaires évitent un graphe réduit à un simple arbre ;
@@ -1007,8 +1008,9 @@ Les identifiants techniques restent inchangés. Les nouveaux libellés du rulese
 n'altèrent donc ni les coûts, ni les capacités, ni son empreinte structurelle.
 `content_version` passe à 6.
 
-Le générateur utilise seize noms de systèmes fixes pour le preset MVP. Les
-planètes non baptisées suivent la convention astronomique `Système b`,
+Le générateur utilise seize noms de systèmes fixes pour le preset Test et les
+réemploie avec un suffixe de cycle aux échelles supérieures. Les planètes non
+baptisées suivent la convention astronomique `Système b`,
 `Système c`, tandis que la planète mère devient `Nacre` et la colonie initiale
 `Port-Sillage`. Les tirages aléatoires historiques sont consommés à l'identique
 afin que cette passe éditoriale ne modifie pas les propriétés physiques de
@@ -1124,8 +1126,8 @@ appartenances manquantes, multiples ou incohérentes.
 La génération choisit environ `sqrt(nombre de systèmes)` centres, répartis par
 éloignement et départagés avec la seed. Une propagation multi-source sur le
 graphe affecte ensuite chaque système exactement une fois. Chaque secteur est
-donc connexe, reproductible et cohérent avec les routes. Le preset actuel de
-16 systèmes produit 4 secteurs ; la future échelle MVP de 64 systèmes en
+donc connexe, reproductible et cohérent avec les routes. Le preset Test de
+16 systèmes produit 4 secteurs ; l'échelle MVP active de 64 systèmes en
 produit 8, dans la cible de 6 à 10.
 
 En vue globale, le client affiche les noms sectoriels uniquement au niveau
@@ -1142,3 +1144,30 @@ mutables restent inchangés :
 - `GAME_STATE_VERSION = 17` ;
 - `SAVE_VERSION = 18` ;
 - `RULESET_SCHEMA_VERSION = 5`.
+
+
+## MVP-023-C — Projection aplatie et presets d'échelle
+
+`UniverseScalePreset` expose trois configurations déterministes partageant la
+seed MVP :
+
+- `Test` : 16 systèmes pour les tests et itérations rapides ;
+- `Mvp` : 64 systèmes, configuration jouable et valeur par défaut ;
+- `Stress` : 128 systèmes, réservé aux mesures.
+
+Le client accepte `--scale test|mvp|stress` uniquement au démarrage. Le nombre
+de systèmes reste enregistré dans `UniverseReference`, donc une sauvegarde
+reconstruit toujours son univers d'origine indépendamment du preset choisi lors
+d'un lancement ultérieur.
+
+La touche `P` alterne entre la disposition 3D et une projection sur le plan
+galactique. `projection_mix` progresse sur 0,65 seconde et atteint exactement
+`0` ou `1`, sans accumulation de dérive. Cette valeur commune positionne les
+systèmes, labels, halos, routes et repères sectoriels avant le calcul du
+picking écran. Les coordonnées `WorldPosition`, le graphe, les distances et les
+durées de mission ne sont jamais modifiés.
+
+Le preset graphique reste `Low`. Un test de budget vérifie que la scène MVP
+reste à 64 systèmes, 8 secteurs et au plus trois routes par système généré.
+Le changement de preset ne modifiant pas l'algorithme pour une taille donnée,
+`GENERATION_VERSION = 4` reste inchangée.

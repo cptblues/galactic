@@ -11,7 +11,8 @@ use bevy::prelude::*;
 use bevy::text::FontSource;
 use bevy::window::{PresentMode, PrimaryWindow};
 use galactic_domain::{
-    PlanetId, PlanetKind, ResourceStock, StarClass, SystemId, UniverseConfig, WorldPosition,
+    PlanetId, PlanetKind, ResourceStock, StarClass, SystemId, UniverseConfig, UniverseScalePreset,
+    WorldPosition,
 };
 use galactic_sim::{
     GameAction, GameEvent, GameEventKind, KnowledgeLevel, KnowledgeTarget, MVP_HOME_SYSTEM_ID,
@@ -20,13 +21,43 @@ use galactic_sim::{
 };
 
 pub fn run() {
-    App::new().add_plugins(ClientPlugin).run();
+    let scale_preset = match universe_scale_preset_from_args(std::env::args().skip(1)) {
+        Ok(preset) => preset,
+        Err(message) => {
+            eprintln!("{message}");
+            return;
+        }
+    };
+    App::new()
+        .add_plugins(ClientPlugin::new(scale_preset))
+        .run();
 }
 
-pub struct ClientPlugin;
+pub struct ClientPlugin {
+    scale_preset: UniverseScalePreset,
+}
+
+impl ClientPlugin {
+    pub const fn new(scale_preset: UniverseScalePreset) -> Self {
+        Self { scale_preset }
+    }
+}
+
+impl Default for ClientPlugin {
+    fn default() -> Self {
+        Self::new(UniverseScalePreset::default())
+    }
+}
 
 impl Plugin for ClientPlugin {
     fn build(&self, app: &mut App) {
+        let simulation = Simulation::new(UniverseConfig::for_preset(
+            galactic_domain::MVP_UNIVERSE_SEED,
+            self.scale_preset,
+        ));
+        let navigation =
+            StrategicNavigation::for_universe(self.scale_preset, simulation.universe());
+
         app.add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "Galactic MVP".to_string(),
@@ -39,12 +70,12 @@ impl Plugin for ClientPlugin {
         }))
         .insert_resource(ClearColor(Color::srgb(0.006, 0.008, 0.014)))
         .insert_resource(SimulationResource {
-            simulation: Simulation::new(UniverseConfig::default()),
+            simulation,
             pending_events: Vec::new(),
         })
         .init_resource::<PresentationLog>()
         .init_resource::<VisualAssets>()
-        .init_resource::<StrategicNavigation>()
+        .insert_resource(navigation)
         .init_resource::<ViewRebuildRequest>()
         .init_resource::<PointerSelectionState>()
         .init_resource::<ColonyManagementState>()
@@ -54,6 +85,32 @@ impl Plugin for ClientPlugin {
         .add_plugins(CraftUiPlugin)
         .add_systems(Startup, log_startup);
     }
+}
+
+fn universe_scale_preset_from_args(
+    args: impl IntoIterator<Item = String>,
+) -> Result<UniverseScalePreset, String> {
+    let mut args = args.into_iter();
+    let mut preset = UniverseScalePreset::default();
+
+    while let Some(argument) = args.next() {
+        let value = if argument == "--scale" {
+            args.next()
+                .ok_or_else(|| "Option --scale sans valeur (test, mvp ou stress).".to_string())?
+        } else if let Some(value) = argument.strip_prefix("--scale=") {
+            value.to_string()
+        } else {
+            return Err(format!(
+                "Option inconnue « {argument} ». Utiliser --scale test|mvp|stress."
+            ));
+        };
+
+        preset = UniverseScalePreset::from_slug(&value).ok_or_else(|| {
+            format!("Preset inconnu « {value} ». Valeurs acceptées : test, mvp, stress.")
+        })?;
+    }
+
+    Ok(preset)
 }
 
 pub struct SimulationBridgePlugin;
@@ -89,15 +146,17 @@ impl Plugin for PresentationPlugin {
             Update,
             (
                 rebuild_strategic_view_if_requested,
+                update_projection_transition,
+                update_system_visuals,
+                update_system_labels,
+                update_sector_labels,
+                update_pointer_halo_positions,
                 update_strategic_camera,
                 update_pointer_candidates,
                 handle_pointer_selection,
                 capture_colony_management_feedback,
                 collect_presentation_events,
-                update_system_visuals,
                 update_pointer_halos,
-                update_system_labels,
-                update_sector_labels,
                 draw_strategic_overlays,
             )
                 .chain()
@@ -240,11 +299,36 @@ impl UniverseLod {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum UniverseProjection {
+    #[default]
+    Spatial,
+    Flattened,
+}
+
+impl UniverseProjection {
+    const fn target_mix(self) -> f32 {
+        match self {
+            Self::Spatial => 0.0,
+            Self::Flattened => 1.0,
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Spatial => "3D",
+            Self::Flattened => "2,5D",
+        }
+    }
+}
+
 #[derive(Resource)]
 struct StrategicNavigation {
     mode: StrategicViewMode,
+    scale_preset: UniverseScalePreset,
     universe_focus: Vec3,
     universe_distance: f32,
+    universe_max_distance: f32,
     universe_yaw: f32,
     universe_pitch: f32,
     system_focus: Vec3,
@@ -254,15 +338,41 @@ struct StrategicNavigation {
     lod: UniverseLod,
     debug_full_graph: bool,
     preset: GraphicsPreset,
+    projection: UniverseProjection,
+    projection_mix: f32,
 }
 
 impl Default for StrategicNavigation {
     fn default() -> Self {
-        let universe_distance = 108.0;
+        Self::new(UniverseScalePreset::default(), 108.0)
+    }
+}
+
+impl StrategicNavigation {
+    fn for_universe(
+        scale_preset: UniverseScalePreset,
+        universe: &galactic_domain::UniverseDefinition,
+    ) -> Self {
+        let extent = universe
+            .systems
+            .iter()
+            .map(|system| {
+                let position = to_vec3(system.position);
+                Vec2::new(position.x, position.z).length()
+            })
+            .fold(0.0_f32, f32::max);
+        let mut navigation = Self::new(scale_preset, 108.0);
+        navigation.universe_max_distance = (extent * 1.8 + 80.0).max(150.0);
+        navigation
+    }
+
+    fn new(scale_preset: UniverseScalePreset, universe_distance: f32) -> Self {
         Self {
             mode: StrategicViewMode::System(MVP_HOME_SYSTEM_ID),
+            scale_preset,
             universe_focus: Vec3::ZERO,
             universe_distance,
+            universe_max_distance: (universe_distance * 1.8).max(150.0),
             universe_yaw: 0.0,
             universe_pitch: -0.62,
             system_focus: Vec3::ZERO,
@@ -272,17 +382,24 @@ impl Default for StrategicNavigation {
             lod: UniverseLod::from_distance(universe_distance),
             debug_full_graph: false,
             preset: GraphicsPreset::Low,
+            projection: UniverseProjection::Spatial,
+            projection_mix: 0.0,
         }
     }
-}
 
-impl StrategicNavigation {
     fn enter_system(&mut self, system_id: SystemId) {
         self.mode = StrategicViewMode::System(system_id);
     }
 
     fn exit_system(&mut self) {
         self.mode = StrategicViewMode::Universe;
+    }
+
+    fn toggle_projection(&mut self) {
+        self.projection = match self.projection {
+            UniverseProjection::Spatial => UniverseProjection::Flattened,
+            UniverseProjection::Flattened => UniverseProjection::Spatial,
+        };
     }
 }
 
@@ -309,7 +426,9 @@ struct SystemLabel {
 }
 
 #[derive(Component)]
-struct SectorLabel;
+struct SectorLabel {
+    position: WorldPosition,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 struct KnownSectorLabel {
@@ -565,6 +684,7 @@ enum UiAction {
     EnterSystem,
     ExitSystem,
     LaunchProbe,
+    ToggleProjection,
     ToggleDebugGraph,
     RebuildView,
 }
@@ -703,7 +823,7 @@ fn spawn_universe_view(
             SystemVisibility::Detected => 0.72,
         };
         let scale = Vec3::splat((0.72 + system.star.luminosity.min(2.4) * 0.16) * visibility_scale);
-        let position = to_vec3(system.position);
+        let position = projected_universe_position(system.position, navigation.projection_mix);
 
         commands.spawn((
             Mesh3d(assets.system_mesh.clone()),
@@ -752,13 +872,17 @@ fn spawn_universe_view(
     }
 
     for sector_label in known_sector_labels(simulation) {
+        let position =
+            projected_universe_position(sector_label.position, navigation.projection_mix);
         commands.spawn((
             Text2d::new(sector_label.text),
             ui_text_font(18.0),
             TextColor(Color::srgba(0.96, 0.74, 0.36, 0.88)),
-            Transform::from_translation(to_vec3(sector_label.position) + Vec3::new(0.0, 4.2, 0.0))
+            Transform::from_translation(position + Vec3::new(0.0, 4.2, 0.0))
                 .with_scale(Vec3::splat(0.36)),
-            SectorLabel,
+            SectorLabel {
+                position: sector_label.position,
+            },
             StrategicViewEntity,
         ));
     }
@@ -1072,6 +1196,12 @@ fn spawn_ui(mut commands: Commands) {
             spawn_action_button(parent, UiAction::EnterSystem, "Entrer système", "Enter");
             spawn_action_button(parent, UiAction::ExitSystem, "Retour univers", "Esc");
             spawn_action_button(parent, UiAction::LaunchProbe, "Lancer reconnaissance", "K");
+            spawn_action_button(
+                parent,
+                UiAction::ToggleProjection,
+                "Projection 3D / 2,5D",
+                "P",
+            );
             spawn_action_button(parent, UiAction::ToggleDebugGraph, "Debug graphe", "G");
             spawn_action_button(parent, UiAction::RebuildView, "Reconstruire", "R");
             spawn_colony_management_toggle(parent);
@@ -1112,7 +1242,7 @@ fn spawn_ui(mut commands: Commands) {
 
     commands.spawn((
         Text::new(
-            "Clic sélectionner | Double-clic ouvrir/recentrer | Tab ambiguïtés | droit orbite | milieu déplacer | molette zoom",
+            "Clic sélectionner | Double-clic ouvrir/recentrer | P projection | droit orbite | milieu déplacer | molette zoom",
         ),
         ui_text_font(12.0),
         TextColor(Color::srgb(0.76, 0.84, 0.90)),
@@ -3099,7 +3229,9 @@ fn simulation_shortcut(keyboard: &ButtonInput<KeyCode>) -> Option<UiAction> {
 }
 
 fn view_shortcut(keyboard: &ButtonInput<KeyCode>) -> Option<UiAction> {
-    if keyboard.just_pressed(KeyCode::KeyR) {
+    if keyboard.just_pressed(KeyCode::KeyP) {
+        Some(UiAction::ToggleProjection)
+    } else if keyboard.just_pressed(KeyCode::KeyR) {
         Some(UiAction::RebuildView)
     } else if keyboard.just_pressed(KeyCode::KeyG) {
         Some(UiAction::ToggleDebugGraph)
@@ -3159,6 +3291,9 @@ fn apply_ui_action(
                 apply_simulation_command(simulation, GameAction::LaunchProbe { colony_id, target });
             }
         }
+        UiAction::ToggleProjection => {
+            navigation.toggle_projection();
+        }
         UiAction::ToggleDebugGraph => {
             navigation.debug_full_graph = !navigation.debug_full_graph;
             rebuild.0 = true;
@@ -3184,6 +3319,9 @@ fn action_available(
         | UiAction::SetSpeed(_)
         | UiAction::ToggleDebugGraph
         | UiAction::RebuildView => true,
+        UiAction::ToggleProjection => {
+            matches!(navigation.mode, StrategicViewMode::Universe)
+        }
         UiAction::CycleTarget => match navigation.mode {
             StrategicViewMode::Universe => {
                 !systems_for_universe_view(simulation.simulation(), navigation.debug_full_graph)
@@ -3217,6 +3355,7 @@ fn action_active(
         UiAction::TogglePause => simulation.simulation.state().clock.speed().is_paused(),
         UiAction::SetSpeed(speed) => simulation.simulation.state().clock.speed() == speed,
         UiAction::ToggleDebugGraph => navigation.debug_full_graph,
+        UiAction::ToggleProjection => navigation.projection == UniverseProjection::Flattened,
         UiAction::ExitSystem => matches!(navigation.mode, StrategicViewMode::System(_)),
         _ => false,
     }
@@ -3243,7 +3382,8 @@ fn focus_selected_system(simulation: &SimulationResource, navigation: &mut Strat
         return;
     };
 
-    navigation.universe_focus = to_vec3(system.position);
+    navigation.universe_focus =
+        projected_universe_position(system.position, navigation.projection_mix);
 }
 
 fn enterable_selected_system(
@@ -3402,14 +3542,20 @@ fn update_strategic_camera(
                 navigation.universe_focus += keyboard_pan.normalize() * pan_speed * delta_seconds;
             }
 
+            let maximum = navigation.universe_max_distance;
             apply_keyboard_zoom(
                 &input.keyboard,
                 delta_seconds,
                 &mut navigation.universe_distance,
                 20.0,
-                150.0,
+                maximum,
             );
-            apply_scroll_zoom(&mut navigation.universe_distance, scroll_lines, 20.0, 150.0);
+            apply_scroll_zoom(
+                &mut navigation.universe_distance,
+                scroll_lines,
+                20.0,
+                maximum,
+            );
             navigation.lod = UniverseLod::from_distance(navigation.universe_distance);
 
             *transform = orbit_transform(
@@ -3544,6 +3690,24 @@ fn collect_presentation_events(
     }
 }
 
+fn update_projection_transition(time: Res<Time>, mut navigation: ResMut<StrategicNavigation>) {
+    const TRANSITION_SECONDS: f32 = 0.65;
+    let current = navigation.projection_mix;
+    let target = navigation.projection.target_mix();
+    let step = time.delta_secs() / TRANSITION_SECONDS;
+    navigation.projection_mix = advance_projection_mix(current, target, step);
+}
+
+fn advance_projection_mix(current: f32, target: f32, maximum_step: f32) -> f32 {
+    let maximum_step = maximum_step.max(0.0);
+    if current < target {
+        (current + maximum_step).min(target)
+    } else {
+        (current - maximum_step).max(target)
+    }
+    .clamp(0.0, 1.0)
+}
+
 fn update_system_visuals(
     simulation: Res<SimulationResource>,
     navigation: Res<StrategicNavigation>,
@@ -3556,6 +3720,10 @@ fn update_system_visuals(
     let selected_system = selected_system(simulation.simulation().state().selected);
 
     for (visual, mut transform) in &mut query {
+        if let Some(system) = simulation.simulation().universe().system(visual.id) {
+            transform.translation =
+                projected_universe_position(system.position, navigation.projection_mix);
+        }
         let selected_multiplier = if Some(visual.id) == selected_system {
             1.55
         } else {
@@ -3579,7 +3747,7 @@ fn update_system_visuals(
 fn update_system_labels(
     simulation: Res<SimulationResource>,
     navigation: Res<StrategicNavigation>,
-    mut query: Query<(&SystemLabel, &mut Visibility)>,
+    mut query: Query<(&SystemLabel, &mut Transform, &mut Visibility)>,
 ) {
     if !matches!(navigation.mode, StrategicViewMode::Universe) {
         return;
@@ -3588,7 +3756,12 @@ fn update_system_labels(
     let state = simulation.simulation().state();
     let selected = selected_system(state.selected);
 
-    for (label, mut visibility) in &mut query {
+    for (label, mut transform, mut visibility) in &mut query {
+        if let Some(system) = simulation.simulation().universe().system(label.id) {
+            transform.translation =
+                projected_universe_position(system.position, navigation.projection_mix)
+                    + Vec3::new(0.0, 1.8, 0.0);
+        }
         let is_selected = Some(label.id) == selected;
         let is_colony = state
             .colonies
@@ -3613,16 +3786,39 @@ fn update_system_labels(
 
 fn update_sector_labels(
     navigation: Res<StrategicNavigation>,
-    mut query: Query<&mut Visibility, With<SectorLabel>>,
+    mut query: Query<(&SectorLabel, &mut Transform, &mut Visibility)>,
 ) {
     let should_show = matches!(navigation.mode, StrategicViewMode::Universe)
         && navigation.lod == UniverseLod::Overview;
-    for mut visibility in &mut query {
+    for (label, mut transform, mut visibility) in &mut query {
+        transform.translation =
+            projected_universe_position(label.position, navigation.projection_mix)
+                + Vec3::new(0.0, 4.2, 0.0);
         *visibility = if should_show {
             Visibility::Visible
         } else {
             Visibility::Hidden
         };
+    }
+}
+
+fn update_pointer_halo_positions(
+    simulation: Res<SimulationResource>,
+    navigation: Res<StrategicNavigation>,
+    mut halos: Query<(&PointerHalo, &mut Transform)>,
+) {
+    if !matches!(navigation.mode, StrategicViewMode::Universe) {
+        return;
+    }
+
+    for (halo, mut transform) in &mut halos {
+        let PickTarget::System(system_id) = halo.target else {
+            continue;
+        };
+        if let Some(system) = simulation.simulation().universe().system(system_id) {
+            transform.translation =
+                projected_universe_position(system.position, navigation.projection_mix);
+        }
     }
 }
 
@@ -3656,6 +3852,7 @@ fn draw_universe_routes(
                 universe,
                 route.from,
                 route.to,
+                navigation.projection_mix,
                 Color::srgba(0.42, 0.24, 0.62, 0.28),
             );
         }
@@ -3678,7 +3875,14 @@ fn draw_universe_routes(
         } else {
             Color::srgba(0.30, 0.48, 0.66, 0.38)
         };
-        draw_route(gizmos, universe, route.from, route.to, color);
+        draw_route(
+            gizmos,
+            universe,
+            route.from,
+            route.to,
+            navigation.projection_mix,
+            color,
+        );
     }
 }
 
@@ -3687,6 +3891,7 @@ fn draw_route(
     universe: &galactic_domain::UniverseDefinition,
     from_id: SystemId,
     to_id: SystemId,
+    projection_mix: f32,
     color: Color,
 ) {
     let Some(from) = universe.system(from_id) else {
@@ -3695,7 +3900,11 @@ fn draw_route(
     let Some(to) = universe.system(to_id) else {
         return;
     };
-    gizmos.line(to_vec3(from.position), to_vec3(to.position), color);
+    gizmos.line(
+        projected_universe_position(from.position, projection_mix),
+        projected_universe_position(to.position, projection_mix),
+        color,
+    );
 }
 
 fn draw_system_orbits(gizmos: &mut Gizmos, simulation: &Simulation, system_id: SystemId) {
@@ -3751,14 +3960,20 @@ fn update_ui(
     let knowledge = state.system_knowledge_counts();
     let mission_status = mission_status_line(simulation);
     let view_label = match navigation.mode {
-        StrategicViewMode::Universe => format!("univers {:?}", navigation.lod),
+        StrategicViewMode::Universe => format!(
+            "univers {:?} | projection {}",
+            navigation.lod,
+            navigation.projection.label(),
+        ),
         StrategicViewMode::System(system_id) => {
             format!("système {}", system_id.index())
         }
     };
 
     text.0 = format!(
-        "Galactic MVP | preset {:?} | {} | tick {} | vitesse {} | cible {}\nSystèmes {}/{} | Secteurs connus {}/{} | Routes {}/{} | Détectés/Sondés/Analysés/Colonisés {}/{}/{}/{} | debug {} | {}\n{}",
+        "Galactic MVP | échelle {} ({}) | graphique {:?} | {} | tick {} | vitesse {} | cible {}\nSystèmes {}/{} | Secteurs connus {}/{} | Routes {}/{} | Détectés/Sondés/Analysés/Colonisés {}/{}/{}/{} | debug {} | {}\n{}",
+        navigation.scale_preset.label(),
+        navigation.scale_preset.system_count(),
         navigation.preset,
         view_label,
         state.clock.current_tick(),
@@ -4281,6 +4496,12 @@ fn to_vec3(position: WorldPosition) -> Vec3 {
     Vec3::new(position.x, position.y, position.z)
 }
 
+fn projected_universe_position(position: WorldPosition, projection_mix: f32) -> Vec3 {
+    let spatial = to_vec3(position);
+    let flattened = Vec3::new(position.x, 0.0, position.z);
+    spatial.lerp(flattened, projection_mix.clamp(0.0, 1.0))
+}
+
 fn star_material(class: StarClass) -> StandardMaterial {
     StandardMaterial {
         base_color: star_color(class),
@@ -4475,6 +4696,59 @@ fn mission_error_text(error: galactic_sim::MissionError) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scale_cli_defaults_to_mvp_and_accepts_all_presets() {
+        assert_eq!(
+            universe_scale_preset_from_args(Vec::<String>::new()),
+            Ok(UniverseScalePreset::Mvp),
+        );
+        assert_eq!(
+            universe_scale_preset_from_args(["--scale", "test"].map(str::to_string)),
+            Ok(UniverseScalePreset::Test),
+        );
+        assert_eq!(
+            universe_scale_preset_from_args(["--scale=stress"].map(str::to_string)),
+            Ok(UniverseScalePreset::Stress),
+        );
+        assert!(universe_scale_preset_from_args(["--scale=huge"].map(str::to_string)).is_err());
+    }
+
+    #[test]
+    fn flattened_projection_is_interpolated_and_round_trips_without_drift() {
+        let position = WorldPosition::new(12.0, 4.0, -7.0);
+        let spatial = projected_universe_position(position, 0.0);
+        let halfway = projected_universe_position(position, 0.5);
+        let flattened = projected_universe_position(position, 1.0);
+
+        assert_eq!(spatial, Vec3::new(12.0, 4.0, -7.0));
+        assert_eq!(halfway, Vec3::new(12.0, 2.0, -7.0));
+        assert_eq!(flattened, Vec3::new(12.0, 0.0, -7.0));
+        assert_eq!(projected_universe_position(position, 0.0), spatial);
+    }
+
+    #[test]
+    fn projection_transition_reaches_exact_endpoints() {
+        let flattened = (0..10).fold(0.0, |mix, _| advance_projection_mix(mix, 1.0, 0.17));
+        let spatial = (0..10).fold(flattened, |mix, _| advance_projection_mix(mix, 0.0, 0.17));
+
+        assert_eq!(flattened, 1.0);
+        assert_eq!(spatial, 0.0);
+    }
+
+    #[test]
+    fn low_graphics_mvp_scale_stays_inside_the_render_budget() {
+        let simulation = Simulation::new(UniverseConfig::mvp());
+        let universe = simulation.universe();
+
+        assert_eq!(GraphicsPreset::default(), GraphicsPreset::Low);
+        assert_eq!(
+            universe.systems.len(),
+            UniverseScalePreset::Mvp.system_count(),
+        );
+        assert_eq!(universe.sectors.len(), 8);
+        assert!(universe.routes.len() <= universe.systems.len() * 3);
+    }
 
     #[test]
     fn screen_space_radius_is_constant_in_pixels() {
@@ -4951,6 +5225,14 @@ mod tests {
         keyboard.press(KeyCode::F3);
 
         assert_eq!(view_shortcut(&keyboard), None);
+    }
+
+    #[test]
+    fn projection_shortcut_uses_p() {
+        let mut keyboard = ButtonInput::<KeyCode>::default();
+        keyboard.press(KeyCode::KeyP);
+
+        assert_eq!(view_shortcut(&keyboard), Some(UiAction::ToggleProjection));
     }
 
     #[test]
