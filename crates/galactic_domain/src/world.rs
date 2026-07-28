@@ -1,15 +1,15 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::f32::consts::TAU;
 
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
-use crate::{PlanetId, StarId, SystemId, UniverseId, WorldPosition};
+use crate::{PlanetId, SectorId, StarId, SystemId, UniverseId, WorldPosition};
 
 pub const MVP_UNIVERSE_SEED: u64 = 42;
 pub const MVP_SYSTEM_COUNT: usize = 16;
-pub const GENERATION_VERSION: u32 = 3;
-pub const MVP_REFERENCE_FINGERPRINT: u64 = 202568768259003109;
+pub const GENERATION_VERSION: u32 = 4;
+pub const MVP_REFERENCE_FINGERPRINT: u64 = 15733294683163488985;
 
 const MAX_SYSTEM_COUNT: usize = 256;
 
@@ -50,6 +50,7 @@ pub struct UniverseDefinition {
     pub generation_fingerprint: u64,
     pub systems: Vec<StarSystem>,
     pub routes: Vec<Route>,
+    pub sectors: Vec<SectorDefinition>,
 }
 
 impl UniverseDefinition {
@@ -63,6 +64,25 @@ impl UniverseDefinition {
             .filter_map(|route| route.other(id))
             .collect()
     }
+
+    pub fn sector(&self, id: SectorId) -> Option<&SectorDefinition> {
+        self.sectors.iter().find(|sector| sector.id == id)
+    }
+
+    pub fn sector_for_system(&self, id: SystemId) -> Option<&SectorDefinition> {
+        self.sectors
+            .iter()
+            .find(|sector| sector.systems.binary_search(&id).is_ok())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SectorDefinition {
+    pub id: SectorId,
+    pub name: String,
+    pub center: WorldPosition,
+    pub systems: Vec<SystemId>,
+    pub gateway_routes: Vec<Route>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -189,6 +209,7 @@ pub fn generate_universe(config: UniverseConfig) -> UniverseDefinition {
         .map(|index| generate_system(index, &mut rng))
         .collect::<Vec<_>>();
     let routes = generate_routes(&systems);
+    let sectors = generate_sectors(config.seed, &systems, &routes);
 
     let mut universe = UniverseDefinition {
         id: UniverseId::MVP,
@@ -197,6 +218,7 @@ pub fn generate_universe(config: UniverseConfig) -> UniverseDefinition {
         generation_fingerprint: 0,
         systems,
         routes,
+        sectors,
     };
     universe.generation_fingerprint = fingerprint_universe(&universe);
     universe
@@ -408,6 +430,226 @@ fn generate_routes(systems: &[StarSystem]) -> Vec<Route> {
         .collect()
 }
 
+fn generate_sectors(seed: u64, systems: &[StarSystem], routes: &[Route]) -> Vec<SectorDefinition> {
+    if systems.is_empty() {
+        return Vec::new();
+    }
+
+    let sector_count = sector_count_for(systems.len());
+    let centers = select_sector_centers(seed, systems, sector_count);
+    let adjacency = sector_adjacency(systems, routes);
+    let mut assignments = BTreeMap::<SystemId, usize>::new();
+    let mut frontier = VecDeque::<(SystemId, usize)>::new();
+
+    for (sector_index, center) in centers.iter().copied().enumerate() {
+        assignments.insert(center, sector_index);
+        frontier.push_back((center, sector_index));
+    }
+
+    // Multi-source BFS produces graph-connected sectors. Center order and
+    // sorted adjacency provide stable tie-breaking at equal hop distance.
+    while let Some((system_id, sector_index)) = frontier.pop_front() {
+        let Some(neighbors) = adjacency.get(&system_id) else {
+            continue;
+        };
+        for neighbor in neighbors {
+            if assignments.contains_key(neighbor) {
+                continue;
+            }
+            assignments.insert(*neighbor, sector_index);
+            frontier.push_back((*neighbor, sector_index));
+        }
+    }
+
+    // The generated route graph is connected, but keep a deterministic
+    // geometric fallback so this pure generator remains total for custom data.
+    for system in systems {
+        assignments.entry(system.id).or_insert_with(|| {
+            centers
+                .iter()
+                .enumerate()
+                .min_by(|(_, left), (_, right)| {
+                    let left_position = systems
+                        .iter()
+                        .find(|candidate| candidate.id == **left)
+                        .expect("sector center belongs to the universe")
+                        .position;
+                    let right_position = systems
+                        .iter()
+                        .find(|candidate| candidate.id == **right)
+                        .expect("sector center belongs to the universe")
+                        .position;
+                    system
+                        .position
+                        .distance_squared(left_position)
+                        .total_cmp(&system.position.distance_squared(right_position))
+                        .then_with(|| left.cmp(right))
+                })
+                .map(|(index, _)| index)
+                .expect("at least one sector center exists")
+        });
+    }
+
+    let mut members = vec![Vec::<SystemId>::new(); sector_count];
+    for (system_id, sector_index) in &assignments {
+        members[*sector_index].push(*system_id);
+    }
+
+    let mut gateways = vec![Vec::<Route>::new(); sector_count];
+    for route in routes {
+        let from_sector = assignments[&route.from];
+        let to_sector = assignments[&route.to];
+        if from_sector == to_sector {
+            continue;
+        }
+        gateways[from_sector].push(*route);
+        gateways[to_sector].push(*route);
+    }
+
+    members
+        .into_iter()
+        .zip(gateways)
+        .enumerate()
+        .map(|(index, (mut systems_in_sector, mut gateway_routes))| {
+            systems_in_sector.sort();
+            gateway_routes.sort_by_key(|route| (route.from, route.to));
+            let center = sector_center(systems, &systems_in_sector);
+
+            SectorDefinition {
+                id: SectorId::from_index(index as u32),
+                name: sector_name(seed, index),
+                center,
+                systems: systems_in_sector,
+                gateway_routes,
+            }
+        })
+        .collect()
+}
+
+fn sector_count_for(system_count: usize) -> usize {
+    (system_count as f64)
+        .sqrt()
+        .round()
+        .max(1.0)
+        .min(system_count as f64) as usize
+}
+
+fn select_sector_centers(seed: u64, systems: &[StarSystem], sector_count: usize) -> Vec<SystemId> {
+    let first_index = (splitmix64(seed ^ 0x5345_4354_4f52_5331) as usize) % systems.len();
+    let mut centers = vec![systems[first_index].id];
+
+    while centers.len() < sector_count {
+        let next = systems
+            .iter()
+            .filter(|system| !centers.contains(&system.id))
+            .max_by(|left, right| {
+                let left_distance = minimum_center_distance(left, systems, &centers);
+                let right_distance = minimum_center_distance(right, systems, &centers);
+                left_distance
+                    .total_cmp(&right_distance)
+                    .then_with(|| {
+                        seeded_system_rank(seed, right.id).cmp(&seeded_system_rank(seed, left.id))
+                    })
+                    .then_with(|| right.id.cmp(&left.id))
+            })
+            .expect("sector count cannot exceed system count");
+        centers.push(next.id);
+    }
+
+    centers
+}
+
+fn minimum_center_distance(
+    system: &StarSystem,
+    systems: &[StarSystem],
+    centers: &[SystemId],
+) -> f32 {
+    centers
+        .iter()
+        .map(|center_id| {
+            let center = systems
+                .iter()
+                .find(|candidate| candidate.id == *center_id)
+                .expect("selected sector center belongs to the universe");
+            system.position.distance_squared(center.position)
+        })
+        .min_by(f32::total_cmp)
+        .expect("at least one sector center exists")
+}
+
+fn sector_adjacency(systems: &[StarSystem], routes: &[Route]) -> BTreeMap<SystemId, Vec<SystemId>> {
+    let mut adjacency = systems
+        .iter()
+        .map(|system| (system.id, Vec::<SystemId>::new()))
+        .collect::<BTreeMap<_, _>>();
+
+    for route in routes {
+        if let Some(neighbors) = adjacency.get_mut(&route.from) {
+            neighbors.push(route.to);
+        }
+        if let Some(neighbors) = adjacency.get_mut(&route.to) {
+            neighbors.push(route.from);
+        }
+    }
+    for neighbors in adjacency.values_mut() {
+        neighbors.sort();
+        neighbors.dedup();
+    }
+    adjacency
+}
+
+fn sector_center(systems: &[StarSystem], members: &[SystemId]) -> WorldPosition {
+    let mut x = 0.0;
+    let mut y = 0.0;
+    let mut z = 0.0;
+    for member in members {
+        let position = systems
+            .iter()
+            .find(|system| system.id == *member)
+            .expect("sector member belongs to the universe")
+            .position;
+        x += position.x;
+        y += position.y;
+        z += position.z;
+    }
+    let divisor = members.len() as f32;
+    WorldPosition::new(x / divisor, y / divisor, z / divisor)
+}
+
+fn sector_name(seed: u64, index: usize) -> String {
+    const NAMES: &[&str] = &[
+        "Marche d’Orphée",
+        "Voile de Nérée",
+        "Couronne d’Aster",
+        "Étendue de Vesper",
+        "Lisière de Cyrène",
+        "Détroit de Talos",
+        "Arc de Sélène",
+        "Front d’Ilyr",
+        "Brèche d’Ophira",
+        "Dérive de Praxia",
+        "Cadran de Thémis",
+        "Sillage de Méroé",
+        "Confins d’Eidolon",
+        "Veille d’Arkan",
+        "Traverse de Calder",
+        "Lointains de Nacréon",
+    ];
+    let offset = (splitmix64(seed ^ 0x4e4f_4d53_5345_4354) as usize) % NAMES.len();
+    NAMES[(offset + index) % NAMES.len()].to_string()
+}
+
+fn seeded_system_rank(seed: u64, system_id: SystemId) -> u64 {
+    splitmix64(seed ^ system_id.raw().wrapping_mul(0x9e37_79b9_7f4a_7c15))
+}
+
+fn splitmix64(mut value: u64) -> u64 {
+    value = value.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^ (value >> 31)
+}
+
 fn system_name(index: usize, rng: &mut ChaCha8Rng) -> String {
     const NAMES: &[&str] = &[
         "Hélianthe",
@@ -482,6 +724,23 @@ pub fn fingerprint_universe(universe: &UniverseDefinition) -> u64 {
     for route in &universe.routes {
         mix_u64(&mut hash, route.from.raw());
         mix_u64(&mut hash, route.to.raw());
+    }
+
+    for sector in &universe.sectors {
+        mix_u64(&mut hash, sector.id.raw());
+        mix_bytes(&mut hash, sector.name.as_bytes());
+        mix_u64(&mut hash, sector.center.x.to_bits() as u64);
+        mix_u64(&mut hash, sector.center.y.to_bits() as u64);
+        mix_u64(&mut hash, sector.center.z.to_bits() as u64);
+        mix_u64(&mut hash, sector.systems.len() as u64);
+        for system_id in &sector.systems {
+            mix_u64(&mut hash, system_id.raw());
+        }
+        mix_u64(&mut hash, sector.gateway_routes.len() as u64);
+        for route in &sector.gateway_routes {
+            mix_u64(&mut hash, route.from.raw());
+            mix_u64(&mut hash, route.to.raw());
+        }
     }
 
     hash
@@ -628,6 +887,85 @@ mod tests {
             assert!(route.from < route.to);
             assert!(unique.insert((route.from, route.to)));
         }
+    }
+
+    #[test]
+    fn sectors_are_deterministic_complete_and_disjoint() {
+        let first = generate_universe(UniverseConfig::mvp());
+        let second = generate_universe(UniverseConfig::mvp());
+        let mut memberships = BTreeMap::<SystemId, SectorId>::new();
+
+        assert_eq!(first.sectors, second.sectors);
+        assert_eq!(first.sectors.len(), 4);
+        for sector in &first.sectors {
+            assert!(!sector.systems.is_empty());
+            assert!(sector.center.x.is_finite());
+            assert!(sector.center.y.is_finite());
+            assert!(sector.center.z.is_finite());
+
+            let members = sector.systems.iter().copied().collect::<BTreeSet<_>>();
+            let mut connected_members = BTreeSet::new();
+            let mut frontier = vec![sector.systems[0]];
+            while let Some(system_id) = frontier.pop() {
+                if !connected_members.insert(system_id) {
+                    continue;
+                }
+                frontier.extend(
+                    first
+                        .neighboring_systems(system_id)
+                        .into_iter()
+                        .filter(|neighbor| members.contains(neighbor)),
+                );
+            }
+            assert_eq!(connected_members, members);
+
+            for system_id in &sector.systems {
+                assert!(first.system(*system_id).is_some());
+                assert_eq!(memberships.insert(*system_id, sector.id), None);
+                assert_eq!(
+                    first.sector_for_system(*system_id).map(|found| found.id),
+                    Some(sector.id),
+                );
+            }
+        }
+        assert_eq!(memberships.len(), first.systems.len());
+    }
+
+    #[test]
+    fn sector_gateway_routes_are_exactly_the_intersector_edges() {
+        let universe = generate_universe(UniverseConfig::mvp());
+
+        for route in &universe.routes {
+            let from_sector = universe
+                .sector_for_system(route.from)
+                .expect("route origin belongs to a sector");
+            let to_sector = universe
+                .sector_for_system(route.to)
+                .expect("route destination belongs to a sector");
+            let gateway_owners = universe
+                .sectors
+                .iter()
+                .filter(|sector| sector.gateway_routes.contains(route))
+                .map(|sector| sector.id)
+                .collect::<BTreeSet<_>>();
+
+            if from_sector.id == to_sector.id {
+                assert!(gateway_owners.is_empty());
+            } else {
+                assert_eq!(
+                    gateway_owners,
+                    BTreeSet::from([from_sector.id, to_sector.id]),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn extended_mvp_scale_targets_six_to_ten_sectors() {
+        let universe = generate_universe(UniverseConfig::new(MVP_UNIVERSE_SEED, 64));
+
+        assert!((6..=10).contains(&universe.sectors.len()));
+        assert_eq!(universe.sectors.len(), 8);
     }
 
     #[test]

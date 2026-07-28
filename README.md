@@ -36,7 +36,10 @@ peuvent etre recreees depuis l'etat metier sans conserver d'`Entity`. Le moteur
 de mission calcule les trajets, verrouille les flottes et progresse uniquement
 sur les ticks stratégiques. Une Sonde Luciole construite au chantier peut être
 envoyée vers le système détecté sélectionné : son arrivée révèle la cible,
-ses routes directes et exactement le prochain anneau de signaux.
+ses routes directes et exactement le prochain anneau de signaux. La définition
+immuable de l'univers regroupe aussi les systèmes en secteurs déterministes ;
+la vue globale affiche uniquement les secteurs dont au moins un membre est
+connu.
 
 Documentation courte: `docs/mvp_architecture.md`.
 

@@ -26,6 +26,7 @@ macro_rules! stable_id {
 }
 
 stable_id!(UniverseId);
+stable_id!(SectorId);
 stable_id!(SystemId);
 stable_id!(StarId);
 stable_id!(PlanetId);
@@ -40,6 +41,12 @@ impl UniverseId {
 }
 
 impl SystemId {
+    pub const fn from_index(index: u32) -> Self {
+        Self::new(index as u64)
+    }
+}
+
+impl SectorId {
     pub const fn from_index(index: u32) -> Self {
         Self::new(index as u64)
     }

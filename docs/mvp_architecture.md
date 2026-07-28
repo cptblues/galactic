@@ -1111,3 +1111,34 @@ Versions après migration :
 - `GAME_STATE_VERSION = 17` ;
 - `SAVE_VERSION = 18` ;
 - `RULESET_SCHEMA_VERSION = 5` (inchangé).
+
+
+## MVP-023-B — Secteurs galactiques déterministes
+
+`UniverseDefinition` contient désormais des `SectorDefinition` immuables. Un
+secteur possède un `SectorId`, un nom, un centre géométrique, la liste triée de
+ses systèmes et les routes passerelles qui le relient aux autres secteurs.
+`UniverseRepository` indexe ces données sans dépendance à Bevy et refuse les
+appartenances manquantes, multiples ou incohérentes.
+
+La génération choisit environ `sqrt(nombre de systèmes)` centres, répartis par
+éloignement et départagés avec la seed. Une propagation multi-source sur le
+graphe affecte ensuite chaque système exactement une fois. Chaque secteur est
+donc connexe, reproductible et cohérent avec les routes. Le preset actuel de
+16 systèmes produit 4 secteurs ; la future échelle MVP de 64 systèmes en
+produit 8, dans la cible de 6 à 10.
+
+En vue globale, le client affiche les noms sectoriels uniquement au niveau
+`Overview`. Un secteur n'apparaît que si au moins un de ses systèmes est connu,
+et son repère est calculé depuis les seuls membres connus : la position ou le
+nombre des systèmes inconnus ne fuitent pas. Les routes passerelles déjà
+visibles utilisent une couleur distincte.
+
+Les secteurs font partie de la définition générée et de son fingerprint.
+`GENERATION_VERSION` passe donc à 4 et le fingerprint de référence change. Les
+sauvegardes de développement précédentes sont incompatibles. Les contrats
+mutables restent inchangés :
+
+- `GAME_STATE_VERSION = 17` ;
+- `SAVE_VERSION = 18` ;
+- `RULESET_SCHEMA_VERSION = 5`.

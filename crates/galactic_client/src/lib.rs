@@ -97,6 +97,7 @@ impl Plugin for PresentationPlugin {
                 update_system_visuals,
                 update_pointer_halos,
                 update_system_labels,
+                update_sector_labels,
                 draw_strategic_overlays,
             )
                 .chain()
@@ -305,6 +306,15 @@ struct SystemVisual {
 struct SystemLabel {
     id: SystemId,
     visibility: SystemVisibility,
+}
+
+#[derive(Component)]
+struct SectorLabel;
+
+#[derive(Debug, Clone, PartialEq)]
+struct KnownSectorLabel {
+    text: String,
+    position: WorldPosition,
 }
 
 #[derive(Component)]
@@ -741,6 +751,18 @@ fn spawn_universe_view(
         ));
     }
 
+    for sector_label in known_sector_labels(simulation) {
+        commands.spawn((
+            Text2d::new(sector_label.text),
+            ui_text_font(18.0),
+            TextColor(Color::srgba(0.96, 0.74, 0.36, 0.88)),
+            Transform::from_translation(to_vec3(sector_label.position) + Vec3::new(0.0, 4.2, 0.0))
+                .with_scale(Vec3::splat(0.36)),
+            SectorLabel,
+            StrategicViewEntity,
+        ));
+    }
+
     debug_assert!(
         navigation.debug_full_graph
             || state
@@ -748,6 +770,48 @@ fn spawn_universe_view(
                 .iter()
                 .all(|(system_id, _)| { state.is_system_visible(*system_id) })
     );
+}
+
+fn known_sector_labels(simulation: &Simulation) -> Vec<KnownSectorLabel> {
+    let universe = simulation.universe();
+    let state = simulation.state();
+
+    universe
+        .sectors
+        .iter()
+        .filter_map(|sector| {
+            let known_positions = sector
+                .systems
+                .iter()
+                .filter(|system_id| state.is_system_known(**system_id))
+                .filter_map(|system_id| universe.system(*system_id).map(|system| system.position))
+                .collect::<Vec<_>>();
+            if known_positions.is_empty() {
+                return None;
+            }
+
+            let divisor = known_positions.len() as f32;
+            let position =
+                known_positions
+                    .iter()
+                    .fold(WorldPosition::ZERO, |accumulator, position| {
+                        WorldPosition::new(
+                            accumulator.x + position.x,
+                            accumulator.y + position.y,
+                            accumulator.z + position.z,
+                        )
+                    });
+
+            Some(KnownSectorLabel {
+                text: sector.name.clone(),
+                position: WorldPosition::new(
+                    position.x / divisor,
+                    position.y / divisor,
+                    position.z / divisor,
+                ),
+            })
+        })
+        .collect()
 }
 
 fn systems_for_universe_view(
@@ -3547,6 +3611,21 @@ fn update_system_labels(
     }
 }
 
+fn update_sector_labels(
+    navigation: Res<StrategicNavigation>,
+    mut query: Query<&mut Visibility, With<SectorLabel>>,
+) {
+    let should_show = matches!(navigation.mode, StrategicViewMode::Universe)
+        && navigation.lod == UniverseLod::Overview;
+    for mut visibility in &mut query {
+        *visibility = if should_show {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+    }
+}
+
 fn draw_strategic_overlays(
     mut gizmos: Gizmos,
     simulation: Res<SimulationResource>,
@@ -3585,7 +3664,16 @@ fn draw_universe_routes(
 
     for route in state.visible_routes(simulation.universe_repository()) {
         let both_known = state.is_system_known(route.from) && state.is_system_known(route.to);
-        let color = if both_known {
+        let crosses_sector = simulation
+            .universe_repository()
+            .sector_for_system(route.from)
+            .zip(simulation.universe_repository().sector_for_system(route.to))
+            .is_some_and(|(from, to)| from.id != to.id);
+        let color = if crosses_sector && both_known {
+            Color::srgba(0.96, 0.66, 0.26, 0.72)
+        } else if crosses_sector {
+            Color::srgba(0.72, 0.48, 0.24, 0.46)
+        } else if both_known {
             Color::srgba(0.28, 0.62, 0.94, 0.58)
         } else {
             Color::srgba(0.30, 0.48, 0.66, 0.38)
@@ -3659,6 +3747,7 @@ fn update_ui(
     } else {
         state.visible_systems().len()
     };
+    let known_sector_count = known_sector_labels(simulation).len();
     let knowledge = state.system_knowledge_counts();
     let mission_status = mission_status_line(simulation);
     let view_label = match navigation.mode {
@@ -3669,7 +3758,7 @@ fn update_ui(
     };
 
     text.0 = format!(
-        "Galactic MVP | preset {:?} | {} | tick {} | vitesse {} | cible {}\nSystèmes {}/{} | Routes {}/{} | Détectés/Sondés/Analysés/Colonisés {}/{}/{}/{} | debug {} | {}\n{}",
+        "Galactic MVP | preset {:?} | {} | tick {} | vitesse {} | cible {}\nSystèmes {}/{} | Secteurs connus {}/{} | Routes {}/{} | Détectés/Sondés/Analysés/Colonisés {}/{}/{}/{} | debug {} | {}\n{}",
         navigation.preset,
         view_label,
         state.clock.current_tick(),
@@ -3677,6 +3766,8 @@ fn update_ui(
         selected,
         visible_system_count,
         universe.systems.len(),
+        known_sector_count,
+        universe.sectors.len(),
         visible_route_count,
         universe.routes.len(),
         knowledge.detected,
@@ -4761,6 +4852,32 @@ mod tests {
         assert_eq!(UniverseLod::from_distance(120.0), UniverseLod::Overview);
         assert_eq!(UniverseLod::from_distance(64.0), UniverseLod::Regional);
         assert_eq!(UniverseLod::from_distance(32.0), UniverseLod::Local);
+    }
+
+    #[test]
+    fn overview_sector_labels_only_use_known_members() {
+        let simulation = Simulation::new(UniverseConfig::mvp());
+        let labels = known_sector_labels(&simulation);
+        let home_sector = simulation
+            .universe_repository()
+            .sector_for_system(MVP_HOME_SYSTEM_ID)
+            .expect("home system belongs to a sector");
+        let hidden_names = simulation
+            .universe()
+            .sectors
+            .iter()
+            .filter(|sector| sector.id != home_sector.id)
+            .map(|sector| sector.name.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(labels.len(), 1);
+        assert_eq!(labels[0].text, home_sector.name);
+        assert_eq!(labels[0].position, WorldPosition::ZERO);
+        assert!(
+            hidden_names
+                .iter()
+                .all(|name| labels.iter().all(|label| label.text != *name))
+        );
     }
 
     #[test]

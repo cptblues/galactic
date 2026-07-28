@@ -2,8 +2,8 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use galactic_domain::{
-    Planet, PlanetId, Route, StarSystem, SystemId, UniverseConfig, UniverseDefinition,
-    generate_universe,
+    Planet, PlanetId, Route, SectorDefinition, SectorId, StarSystem, SystemId, UniverseConfig,
+    UniverseDefinition, generate_universe,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -13,6 +13,25 @@ pub enum UniverseIndexError {
     UnknownRouteEndpoint(SystemId),
     SelfRoute(SystemId),
     DuplicateRoute(Route),
+    DuplicateSector(SectorId),
+    UnknownSectorSystem {
+        sector_id: SectorId,
+        system_id: SystemId,
+    },
+    DuplicateSectorMembership(SystemId),
+    MissingSectorMembership(SystemId),
+    DuplicateSectorGateway {
+        sector_id: SectorId,
+        route: Route,
+    },
+    InvalidSectorGateway {
+        sector_id: SectorId,
+        route: Route,
+    },
+    MissingSectorGateway {
+        sector_id: SectorId,
+        route: Route,
+    },
 }
 
 /// Read-only repository around a generated universe.
@@ -24,6 +43,8 @@ pub struct UniverseRepository {
     definition: UniverseDefinition,
     system_indices: HashMap<SystemId, usize>,
     planet_indices: HashMap<PlanetId, (usize, usize)>,
+    sector_indices: HashMap<SectorId, usize>,
+    system_sectors: HashMap<SystemId, SectorId>,
     adjacency: HashMap<SystemId, Vec<SystemId>>,
 }
 
@@ -90,10 +111,74 @@ impl UniverseRepository {
             neighbors.dedup();
         }
 
+        let mut sector_indices = HashMap::with_capacity(definition.sectors.len());
+        let mut system_sectors = HashMap::with_capacity(definition.systems.len());
+        for (sector_index, sector) in definition.sectors.iter().enumerate() {
+            if sector_indices.insert(sector.id, sector_index).is_some() {
+                return Err(UniverseIndexError::DuplicateSector(sector.id));
+            }
+            for system_id in &sector.systems {
+                if !system_indices.contains_key(system_id) {
+                    return Err(UniverseIndexError::UnknownSectorSystem {
+                        sector_id: sector.id,
+                        system_id: *system_id,
+                    });
+                }
+                if system_sectors.insert(*system_id, sector.id).is_some() {
+                    return Err(UniverseIndexError::DuplicateSectorMembership(*system_id));
+                }
+            }
+        }
+
+        for system_id in system_indices.keys() {
+            if !system_sectors.contains_key(system_id) {
+                return Err(UniverseIndexError::MissingSectorMembership(*system_id));
+            }
+        }
+
+        for sector in &definition.sectors {
+            let mut gateways = HashSet::with_capacity(sector.gateway_routes.len());
+            for route in &sector.gateway_routes {
+                let canonical = Route::new(route.from, route.to);
+                if !gateways.insert(canonical) {
+                    return Err(UniverseIndexError::DuplicateSectorGateway {
+                        sector_id: sector.id,
+                        route: canonical,
+                    });
+                }
+                let from_sector = system_sectors.get(&canonical.from);
+                let to_sector = system_sectors.get(&canonical.to);
+                let is_valid = route_set.contains(&canonical)
+                    && from_sector != to_sector
+                    && (from_sector == Some(&sector.id) || to_sector == Some(&sector.id));
+                if !is_valid {
+                    return Err(UniverseIndexError::InvalidSectorGateway {
+                        sector_id: sector.id,
+                        route: canonical,
+                    });
+                }
+            }
+
+            for route in &definition.routes {
+                let from_sector = system_sectors[&route.from];
+                let to_sector = system_sectors[&route.to];
+                let expected = from_sector != to_sector
+                    && (from_sector == sector.id || to_sector == sector.id);
+                if expected && !gateways.contains(route) {
+                    return Err(UniverseIndexError::MissingSectorGateway {
+                        sector_id: sector.id,
+                        route: *route,
+                    });
+                }
+            }
+        }
+
         Ok(Self {
             definition,
             system_indices,
             planet_indices,
+            sector_indices,
+            system_sectors,
             adjacency,
         })
     }
@@ -121,6 +206,17 @@ impl UniverseRepository {
         let system = self.definition.systems.get(system_index)?;
         let planet = system.planets.get(planet_index)?;
         Some((system.id, planet))
+    }
+
+    pub fn sector(&self, id: SectorId) -> Option<&SectorDefinition> {
+        let index = *self.sector_indices.get(&id)?;
+        self.definition.sectors.get(index)
+    }
+
+    pub fn sector_for_system(&self, id: SystemId) -> Option<&SectorDefinition> {
+        self.system_sectors
+            .get(&id)
+            .and_then(|sector_id| self.sector(*sector_id))
     }
 
     pub fn neighboring_systems(&self, id: SystemId) -> Vec<SystemId> {
@@ -217,7 +313,7 @@ fn reconstruct_path(
 
 #[cfg(test)]
 mod tests {
-    use galactic_domain::{PlanetId, Route, SystemId, UniverseConfig};
+    use galactic_domain::{PlanetId, Route, SectorId, SystemId, UniverseConfig};
 
     use super::*;
 
@@ -241,6 +337,10 @@ mod tests {
         assert_eq!(planet.id, home_planet_id);
         assert_eq!(located_system_id, home_system_id);
         assert_eq!(located_planet.id, home_planet_id);
+        let sector = repository
+            .sector_for_system(home_system_id)
+            .expect("home system sector is indexed");
+        assert_eq!(repository.sector(sector.id), Some(sector));
     }
 
     #[test]
@@ -296,6 +396,59 @@ mod tests {
         assert!(matches!(
             UniverseRepository::new(definition),
             Err(UniverseIndexError::DuplicateRoute(route)) if route == duplicate
+        ));
+    }
+
+    #[test]
+    fn duplicate_sector_membership_is_rejected() {
+        let mut definition = generate_universe(UniverseConfig::mvp());
+        let system_id = definition.sectors[0].systems[0];
+        definition.sectors[1].systems.push(system_id);
+
+        assert!(matches!(
+            UniverseRepository::new(definition),
+            Err(UniverseIndexError::DuplicateSectorMembership(found)) if found == system_id
+        ));
+    }
+
+    #[test]
+    fn missing_sector_gateway_is_rejected() {
+        let mut definition = generate_universe(UniverseConfig::mvp());
+        let (sector_index, gateway) = definition
+            .sectors
+            .iter()
+            .enumerate()
+            .find_map(|(index, sector)| {
+                sector
+                    .gateway_routes
+                    .first()
+                    .copied()
+                    .map(|route| (index, route))
+            })
+            .expect("MVP sectors include gateway routes");
+        let sector_id = definition.sectors[sector_index].id;
+        definition.sectors[sector_index]
+            .gateway_routes
+            .retain(|route| *route != gateway);
+
+        assert!(matches!(
+            UniverseRepository::new(definition),
+            Err(UniverseIndexError::MissingSectorGateway {
+                sector_id: found_sector,
+                route: found_route,
+            }) if found_sector == sector_id && found_route == gateway
+        ));
+    }
+
+    #[test]
+    fn duplicate_sector_ids_are_rejected() {
+        let mut definition = generate_universe(UniverseConfig::mvp());
+        definition.sectors[1].id = SectorId::from_index(0);
+
+        assert!(matches!(
+            UniverseRepository::new(definition),
+            Err(UniverseIndexError::DuplicateSector(found))
+                if found == SectorId::from_index(0)
         ));
     }
 }
