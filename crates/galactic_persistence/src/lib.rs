@@ -1,4 +1,4 @@
-// MVP-020: persist fleet ownership, composition, location, cargo and allocation.
+// MVP-021: persist fleets, active missions, timelines and reports.
 use galactic_domain::{
     ColonyId, EnergyGrid, FactionId, FleetId, Owner, PlanetId, ResourceLedger, ResourceLedgerError,
     ResourceReservation, ResourceStock, SystemId, UniverseConfig, UniverseId, generate_universe,
@@ -6,13 +6,13 @@ use galactic_domain::{
 use galactic_sim::{
     BuildingLevels, ColonyState, ConstructionQueue, CraftInventory, CraftQueue, DiplomacyState,
     FactionData, FactionKind, FleetAssignment, FleetComposition, FleetLocation, FleetState,
-    GameState, PlanetKnowledge, PlanetResourceProfile, ProductionRemainder,
-    ProductionRemainderError, ResearchState, SelectionTarget, Simulation, SimulationBuildError,
-    StrategicClock, StrategicClockError, StrategicTick, SystemKnowledge, TimeSpeed,
-    default_ruleset, production_refresh_ticks,
+    GameState, MissionReport, MissionState, PlanetKnowledge, PlanetResourceProfile,
+    ProductionRemainder, ProductionRemainderError, ResearchState, SelectionTarget, Simulation,
+    SimulationBuildError, StrategicClock, StrategicClockError, StrategicTick, SystemKnowledge,
+    TimeSpeed, default_ruleset, production_refresh_ticks,
 };
 
-pub const SAVE_VERSION: u32 = 15;
+pub const SAVE_VERSION: u32 = 16;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SaveGame {
@@ -47,6 +47,9 @@ pub struct MutableGameSave {
     pub colonies: Vec<ColonySave>,
     pub fleets: Vec<FleetSave>,
     pub next_fleet_id: u64,
+    pub missions: Vec<MissionState>,
+    pub next_mission_id: u64,
+    pub mission_reports: Vec<MissionReport>,
     pub research: ResearchState,
 }
 
@@ -218,6 +221,9 @@ pub fn snapshot_from_simulation(simulation: &Simulation) -> SaveGame {
                 })
                 .collect(),
             next_fleet_id: state.next_fleet_id,
+            missions: state.missions.clone(),
+            next_mission_id: state.next_mission_id,
+            mission_reports: state.mission_reports.clone(),
             research: state.research.clone(),
         },
     }
@@ -355,6 +361,9 @@ pub fn restore_from_snapshot(save: &SaveGame) -> Result<Simulation, SaveError> {
             })
             .collect(),
         next_fleet_id: save.state.next_fleet_id,
+        missions: save.state.missions.clone(),
+        next_mission_id: save.state.next_mission_id,
+        mission_reports: save.state.mission_reports.clone(),
         research: save.state.research.clone(),
         system_knowledge: save.state.system_knowledge.clone(),
         planet_knowledge: save.state.planet_knowledge.clone(),
@@ -371,8 +380,8 @@ mod tests {
 
     use galactic_domain::UniverseConfig;
     use galactic_sim::{
-        BuildingKind, CraftableId, FleetComposition, GAME_STATE_VERSION, GameAction, ShipStack,
-        TechnologyId, default_building_catalog,
+        BuildingKind, CraftableId, FleetComposition, GAME_STATE_VERSION, GameAction, MissionKind,
+        MissionOrder, MissionPhase, ShipStack, TechnologyId, default_building_catalog,
     };
 
     use super::*;
@@ -561,7 +570,67 @@ mod tests {
     }
 
     #[test]
-    fn state_and_save_versions_match_mvp_020() {
+    fn active_mission_resumes_and_completes_at_the_same_tick() {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+        let colony_id = simulation.state().colonies[0].id;
+        let origin = simulation.state().colonies[0].system_id;
+        let target = simulation.universe_repository().neighboring_systems(origin)[0];
+        let colony = &mut simulation.state_mut().colonies[0];
+        colony
+            .buildings
+            .set_level(BuildingKind::CONSTRUCTION_CENTER, 2);
+        colony.buildings.set_level(BuildingKind::METAL_MINE, 2);
+        colony
+            .buildings
+            .set_level(BuildingKind::CRYSTAL_EXTRACTOR, 2);
+        colony.buildings.set_level(BuildingKind::SHIPYARD, 1);
+        colony.energy = default_building_catalog().energy_grid_for_levels(colony.buildings);
+        colony
+            .resources
+            .credit(ResourceStock::new(1_000, 1_000, 1_000))
+            .expect("test funding fits");
+        simulation.state_mut().research =
+            ResearchState::from_completed([TechnologyId::SPATIAL_DETECTION]);
+        simulation.apply_player_action(GameAction::QueueCraft {
+            colony_id,
+            craftable: CraftableId::LIGHT_PROBE,
+        });
+        simulation.advance(Duration::from_secs(50));
+        let composition =
+            FleetComposition::from_stacks([ShipStack::new(CraftableId::LIGHT_PROBE, 1)])
+                .expect("probe composition is valid");
+        let actor = simulation.state().player_faction;
+        let created =
+            galactic_sim::form_fleet(simulation.state_mut(), actor, colony_id, composition)
+                .expect("probe fleet can be formed");
+        let departure_at = simulation.state().clock.current_tick();
+        simulation.apply_player_action(GameAction::LaunchMission(MissionOrder {
+            fleet_id: created.fleet_id,
+            origin,
+            target,
+            kind: MissionKind::Probe,
+            departure_at,
+        }));
+        simulation.advance(Duration::from_secs(5));
+        assert_eq!(simulation.state().missions[0].phase, MissionPhase::Outbound);
+
+        let save = snapshot_from_simulation(&simulation);
+        let mut restored = restore_from_snapshot(&save).expect("active mission save is compatible");
+        assert_eq!(restored.state(), simulation.state());
+
+        simulation.advance(Duration::from_secs(16));
+        restored.advance(Duration::from_secs(16));
+
+        assert_eq!(restored.state(), simulation.state());
+        assert_eq!(restored.state().missions[0].phase, MissionPhase::Completed);
+        assert_eq!(
+            restored.state().mission_reports[0].occurred_at,
+            StrategicTick::new(701),
+        );
+    }
+
+    #[test]
+    fn state_and_save_versions_match_mvp_021() {
         let simulation = Simulation::new(UniverseConfig::mvp());
         let save = snapshot_from_simulation(&simulation);
 

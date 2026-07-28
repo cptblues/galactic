@@ -1,21 +1,21 @@
 // MVP-019: faction-owned state, deterministic relations and authorization.
 use galactic_domain::{
-    ColonyId, EnergyGrid, FactionId, FleetId, Owned, Owner, PlanetId, ResourceLedger, Route,
-    SystemId,
+    ColonyId, EnergyGrid, FactionId, FleetId, MissionId, Owned, Owner, PlanetId, ResourceLedger,
+    Route, SystemId,
 };
 
 use crate::{
     BuildingLevels, ConstructionQueue, CraftInventory, CraftQueue, DiplomacyError, DiplomacyState,
     DiplomaticRelation, FleetState, KnowledgeChange, KnowledgeCounts, KnowledgeLevel,
-    KnowledgeTarget, PlanetKnowledge, PlanetResourceProfile, ProductionRemainder, ResearchState,
-    SelectionTarget, StartingScenario, StartingScenarioError, StrategicClock, SystemKnowledge,
-    UniverseRepository,
+    KnowledgeTarget, MissionReport, MissionState, PlanetKnowledge, PlanetResourceProfile,
+    ProductionRemainder, ResearchState, SelectionTarget, StartingScenario, StartingScenarioError,
+    StrategicClock, SystemKnowledge, UniverseRepository,
 };
 
 /// Version of the mutable in-memory state contract.
 ///
-/// Version 14 adds faction-owned fleets and docked ship allocation.
-pub const GAME_STATE_VERSION: u32 = 14;
+/// Version 15 adds generic missions, deterministic travel and reports.
+pub const GAME_STATE_VERSION: u32 = 15;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemVisibility {
@@ -56,6 +56,9 @@ pub struct GameState {
     pub colonies: Vec<ColonyState>,
     pub fleets: Vec<FleetState>,
     pub next_fleet_id: u64,
+    pub missions: Vec<MissionState>,
+    pub next_mission_id: u64,
+    pub mission_reports: Vec<MissionReport>,
     pub research: ResearchState,
     pub system_knowledge: Vec<SystemKnowledge>,
     pub planet_knowledge: Vec<PlanetKnowledge>,
@@ -114,6 +117,9 @@ impl GameState {
             }],
             fleets: Vec::new(),
             next_fleet_id: 0,
+            missions: Vec::new(),
+            next_mission_id: 0,
+            mission_reports: Vec::new(),
             research: ResearchState::from_completed(scenario.initial_technologies.iter().copied()),
             system_knowledge: Vec::new(),
             planet_knowledge: Vec::new(),
@@ -237,6 +243,20 @@ impl GameState {
         self.fleets
             .iter()
             .filter(|fleet| self.can_manage(self.player_faction, fleet.owner))
+    }
+
+    pub fn mission(&self, id: MissionId) -> Option<&MissionState> {
+        self.missions.iter().find(|mission| mission.id == id)
+    }
+
+    pub fn mission_mut(&mut self, id: MissionId) -> Option<&mut MissionState> {
+        self.missions.iter_mut().find(|mission| mission.id == id)
+    }
+
+    pub fn player_missions(&self) -> impl Iterator<Item = &MissionState> {
+        self.missions
+            .iter()
+            .filter(|mission| self.can_manage(self.player_faction, mission.owner))
     }
 
     pub fn system_knowledge_level(&self, system_id: SystemId) -> KnowledgeLevel {

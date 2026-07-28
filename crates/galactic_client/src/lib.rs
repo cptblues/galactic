@@ -4243,6 +4243,24 @@ fn event_label(event: GameEvent) -> String {
         GameEventKind::FleetCreationRejected(rejected) => {
             format!("formation de flotte refusée : {:?}", rejected.error)
         }
+        GameEventKind::MissionLaunched(launched) => format!(
+            "mission {:?} lancée vers {:?}",
+            launched.kind, launched.target,
+        ),
+        GameEventKind::MissionLaunchRejected(rejected) => {
+            format!("mission refusée : {:?}", rejected.error)
+        }
+        GameEventKind::MissionTransitioned(transition) => format!(
+            "mission {:?} : {:?} -> {:?}",
+            transition.mission_id, transition.from, transition.to,
+        ),
+        GameEventKind::MissionReported(report) => format!(
+            "rapport mission {:?} : {:?}",
+            report.mission_id, report.outcome,
+        ),
+        GameEventKind::MissionCancellationRejected(rejected) => {
+            format!("annulation de mission refusée : {:?}", rejected.error)
+        }
     }
 }
 

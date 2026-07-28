@@ -32,7 +32,9 @@ cargo build --release
 - Persistance: `crates/galactic_persistence`
 
 Le domaine, la simulation et la persistance ne dependent pas de Bevy. Les vues
-peuvent etre recreees depuis l'etat metier sans conserver d'`Entity`.
+peuvent etre recreees depuis l'etat metier sans conserver d'`Entity`. Le moteur
+de mission calcule les trajets, verrouille les flottes et progresse uniquement
+sur les ticks stratégiques.
 
 Documentation courte: `docs/mvp_architecture.md`.
 

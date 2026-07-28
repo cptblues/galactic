@@ -1,6 +1,9 @@
-use galactic_domain::{ColonyId, FactionId, PlanetId, SystemId};
+use galactic_domain::{ColonyId, FactionId, MissionId, PlanetId, SystemId};
 
-use crate::{BuildingKind, CraftableId, FleetComposition, StrategicTick, TechnologyId, TimeSpeed};
+use crate::{
+    BuildingKind, CraftableId, FleetComposition, MissionOrder, StrategicTick, TechnologyId,
+    TimeSpeed,
+};
 
 /// An action requested from the deterministic simulation.
 ///
@@ -31,6 +34,10 @@ pub enum GameAction {
     FormFleet {
         colony_id: ColonyId,
         composition: FleetComposition,
+    },
+    LaunchMission(MissionOrder),
+    CancelMission {
+        mission_id: MissionId,
     },
     /// Temporary validation action until the probe mission loop is added.
     DebugAdvanceSelectedKnowledge,

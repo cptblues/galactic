@@ -1,22 +1,23 @@
-// MVP-019: faction-addressed commands, events and deterministic diplomacy.
+// MVP-021: deterministic simulation with faction commands and generic missions.
 use std::collections::HashSet;
 use std::time::Duration;
 
 use galactic_domain::{
-    ColonyId, FactionId, FleetId, Owner, PlanetId, ResourceLedgerError, ResourceStock, SystemId,
-    UniverseConfig, UniverseDefinition,
+    ColonyId, FactionId, FleetId, MissionId, Owner, PlanetId, ResourceLedgerError, ResourceStock,
+    SystemId, UniverseConfig, UniverseDefinition,
 };
 
 use crate::{
     BuildingCatalogError, CommandRejection, ConstructionQueueError, CraftStateError,
-    DiplomacyError, DiplomacyState, FactionKind, FleetStateError, GAME_STATE_VERSION, GameAction,
-    GameCommand, GameEvent, GameEventKind, GameState, KnowledgeLevel, ResearchStateError,
+    DiplomacyError, DiplomacyState, FactionKind, FleetAssignment, FleetStateError,
+    GAME_STATE_VERSION, GameAction, GameCommand, GameEvent, GameEventKind, GameState,
+    KnowledgeLevel, MissionEngineEvent, MissionPhase, MissionStateError, ResearchStateError,
     SelectionTarget, StartingScenario, StartingScenarioError, StrategicDuration, TimeSpeed,
     UniverseIndexError, UniverseRepository, advance_colony_construction, advance_colony_craft,
-    advance_research, default_building_catalog, enqueue_building_upgrade, enqueue_craft,
-    enqueue_research, form_fleet, queue_colony_production, storage_capacity,
-    validate_construction_queue, validate_craft_state, validate_fleet_state,
-    validate_research_state,
+    advance_missions, advance_research, cancel_mission, default_building_catalog,
+    enqueue_building_upgrade, enqueue_craft, enqueue_research, form_fleet, launch_mission,
+    queue_colony_production, storage_capacity, validate_construction_queue, validate_craft_state,
+    validate_fleet_state, validate_mission_state, validate_research_state,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,6 +92,61 @@ pub enum SimulationBuildError {
         fleet_id: FleetId,
         colony_id: ColonyId,
     },
+    DuplicateMission(MissionId),
+    InvalidMissionState {
+        mission_id: MissionId,
+        error: MissionStateError,
+    },
+    InvalidNextMissionId {
+        next_mission_id: u64,
+        existing_mission_id: MissionId,
+    },
+    UnknownMissionFaction {
+        mission_id: MissionId,
+        faction_id: FactionId,
+    },
+    UnownedMission(MissionId),
+    UnknownMissionFleet {
+        mission_id: MissionId,
+        fleet_id: FleetId,
+    },
+    MissionFleetOwnerMismatch {
+        mission_id: MissionId,
+        fleet_id: FleetId,
+    },
+    MissionFleetAssignmentMismatch {
+        mission_id: MissionId,
+        fleet_id: FleetId,
+    },
+    MissionFleetLocationMismatch {
+        mission_id: MissionId,
+        fleet_id: FleetId,
+    },
+    UnknownMissionOriginColony {
+        mission_id: MissionId,
+        colony_id: ColonyId,
+    },
+    MissionOriginMismatch {
+        mission_id: MissionId,
+        colony_id: ColonyId,
+        system_id: SystemId,
+    },
+    MissingMissionFuelReservation {
+        mission_id: MissionId,
+    },
+    MissionFuelReservationMismatch {
+        mission_id: MissionId,
+    },
+    FleetAssignedToUnknownMission {
+        fleet_id: FleetId,
+        mission_id: MissionId,
+    },
+    FleetAssignedToDifferentMission {
+        fleet_id: FleetId,
+        mission_id: MissionId,
+    },
+    DuplicateMissionReport(MissionId),
+    MissionReportWithoutMission(MissionId),
     DuplicateSystemKnowledge(SystemId),
     DuplicatePlanetKnowledge(PlanetId),
     ExplicitUnknownSystemKnowledge(SystemId),
@@ -257,6 +313,28 @@ impl Simulation {
                     crate::FleetCreationRejected { colony_id, error },
                 )],
             },
+            GameAction::LaunchMission(order) => {
+                match launch_mission(&mut self.state, &self.universe, issuer, order) {
+                    Ok(launched) => vec![GameEventKind::MissionLaunched(launched)],
+                    Err(error) => vec![GameEventKind::MissionLaunchRejected(
+                        crate::MissionLaunchRejected {
+                            fleet_id: order.fleet_id,
+                            error,
+                        },
+                    )],
+                }
+            }
+            GameAction::CancelMission { mission_id } => {
+                match cancel_mission(&mut self.state, issuer, mission_id) {
+                    Ok((transition, report)) => vec![
+                        GameEventKind::MissionTransitioned(transition),
+                        GameEventKind::MissionReported(report),
+                    ],
+                    Err(error) => vec![GameEventKind::MissionCancellationRejected(
+                        crate::MissionCancellationRejected { mission_id, error },
+                    )],
+                }
+            }
             GameAction::DebugAdvanceSelectedKnowledge => self.debug_advance_selected_knowledge(),
         };
         let occurred_at = self.state.clock.current_tick();
@@ -329,6 +407,23 @@ impl Simulation {
                         )
                     }),
             );
+        }
+        for mission_event in advance_missions(&mut self.state, advance.current_tick) {
+            match mission_event {
+                MissionEngineEvent::Transition {
+                    recipient,
+                    transition,
+                } => events.push(GameEvent::new(
+                    recipient,
+                    transition.transitioned_at,
+                    GameEventKind::MissionTransitioned(transition),
+                )),
+                MissionEngineEvent::Report { recipient, report } => events.push(GameEvent::new(
+                    recipient,
+                    report.occurred_at,
+                    GameEventKind::MissionReported(report),
+                )),
+            }
         }
         events
     }
@@ -650,6 +745,139 @@ fn validate_state(
                     });
                 }
             }
+        }
+    }
+
+    let mut mission_ids = HashSet::with_capacity(state.missions.len());
+    for mission in &state.missions {
+        if !mission_ids.insert(mission.id) {
+            return Err(SimulationBuildError::DuplicateMission(mission.id));
+        }
+        if mission.id.raw() >= state.next_mission_id {
+            return Err(SimulationBuildError::InvalidNextMissionId {
+                next_mission_id: state.next_mission_id,
+                existing_mission_id: mission.id,
+            });
+        }
+        if let Err(error) = validate_mission_state(mission, universe) {
+            return Err(SimulationBuildError::InvalidMissionState {
+                mission_id: mission.id,
+                error,
+            });
+        }
+        match mission.owner {
+            Owner::Unowned => {
+                return Err(SimulationBuildError::UnownedMission(mission.id));
+            }
+            Owner::Faction(faction_id) if state.faction(faction_id).is_none() => {
+                return Err(SimulationBuildError::UnknownMissionFaction {
+                    mission_id: mission.id,
+                    faction_id,
+                });
+            }
+            Owner::Faction(_) => {}
+        }
+        let Some(fleet) = state.fleet(mission.order.fleet_id) else {
+            return Err(SimulationBuildError::UnknownMissionFleet {
+                mission_id: mission.id,
+                fleet_id: mission.order.fleet_id,
+            });
+        };
+        if fleet.owner != mission.owner {
+            return Err(SimulationBuildError::MissionFleetOwnerMismatch {
+                mission_id: mission.id,
+                fleet_id: fleet.id,
+            });
+        }
+        if !mission.phase.is_terminal() && fleet.assignment != FleetAssignment::Mission(mission.id)
+        {
+            return Err(SimulationBuildError::MissionFleetAssignmentMismatch {
+                mission_id: mission.id,
+                fleet_id: fleet.id,
+            });
+        }
+        let expected_location = match mission.phase {
+            MissionPhase::Preparation => {
+                Some(crate::FleetLocation::Docked(mission.origin_colony_id))
+            }
+            MissionPhase::Outbound => Some(crate::FleetLocation::InSystem(mission.order.origin)),
+            MissionPhase::OnSite | MissionPhase::Returning => {
+                Some(crate::FleetLocation::InSystem(mission.order.target))
+            }
+            MissionPhase::Completed | MissionPhase::Cancelled | MissionPhase::Failed => None,
+        };
+        if expected_location.is_some_and(|expected| fleet.location != expected) {
+            return Err(SimulationBuildError::MissionFleetLocationMismatch {
+                mission_id: mission.id,
+                fleet_id: fleet.id,
+            });
+        }
+        let Some(origin_colony) = state.colony(mission.origin_colony_id) else {
+            return Err(SimulationBuildError::UnknownMissionOriginColony {
+                mission_id: mission.id,
+                colony_id: mission.origin_colony_id,
+            });
+        };
+        if origin_colony.system_id != mission.order.origin {
+            return Err(SimulationBuildError::MissionOriginMismatch {
+                mission_id: mission.id,
+                colony_id: mission.origin_colony_id,
+                system_id: mission.order.origin,
+            });
+        }
+        if mission.phase == MissionPhase::Preparation {
+            let Some(reservation_id) = mission.fuel_reservation else {
+                return Err(SimulationBuildError::MissingMissionFuelReservation {
+                    mission_id: mission.id,
+                });
+            };
+            let Some(reservation) = origin_colony
+                .resources
+                .reservations()
+                .iter()
+                .find(|reservation| reservation.id == reservation_id)
+            else {
+                return Err(SimulationBuildError::MissingMissionFuelReservation {
+                    mission_id: mission.id,
+                });
+            };
+            if reservation.cost != mission.plan.fuel_cost {
+                return Err(SimulationBuildError::MissionFuelReservationMismatch {
+                    mission_id: mission.id,
+                });
+            }
+        }
+    }
+
+    for fleet in &state.fleets {
+        let FleetAssignment::Mission(mission_id) = fleet.assignment else {
+            continue;
+        };
+        let Some(mission) = state.mission(mission_id) else {
+            return Err(SimulationBuildError::FleetAssignedToUnknownMission {
+                fleet_id: fleet.id,
+                mission_id,
+            });
+        };
+        if mission.order.fleet_id != fleet.id || mission.phase.is_terminal() {
+            return Err(SimulationBuildError::FleetAssignedToDifferentMission {
+                fleet_id: fleet.id,
+                mission_id,
+            });
+        }
+    }
+
+    let mut reported_missions = HashSet::with_capacity(state.mission_reports.len());
+    for report in &state.mission_reports {
+        if !reported_missions.insert(report.mission_id) {
+            return Err(SimulationBuildError::DuplicateMissionReport(
+                report.mission_id,
+            ));
+        }
+        if state.mission(report.mission_id).is_none() {
+            return Err(SimulationBuildError::MissionReportWithoutMission(
+                report.mission_id,
+            ));
         }
     }
 

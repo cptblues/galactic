@@ -1019,3 +1019,40 @@ volontaire porte `GENERATION_VERSION` à 3 et renouvelle le fingerprint de
 référence. Les anciennes sauvegardes de développement sont incompatibles.
 `GAME_STATE_VERSION`, `SAVE_VERSION` et `RULESET_SCHEMA_VERSION` restent
 respectivement à 14, 15 et 5.
+
+
+## MVP-021 — Moteur de trajet et machine d'état des missions
+
+Le moteur commun accepte les types `Probe`, `Transport`, `Harvest` et
+`Colonize`, sans encore exécuter leur résolution propre. Un ordre contient la
+flotte, l'origine, la cible, le type de mission et le tick de départ.
+
+La planification utilise un BFS déterministe limité aux routes actuellement
+accessibles dans l’état de partie. Elle refuse une cible cachée, une route absente, une
+portée insuffisante, une flotte étrangère ou déjà affectée. La durée aller est
+calculée par `ceil(16_000 × sauts / vitesse_de_croisière)`. Le coût de
+carburant couvre l'aller-retour.
+
+Au lancement, le carburant est réservé atomiquement dans la colonie d'origine
+et la flotte est verrouillée. Une annulation pendant la préparation libère les
+deux. Au départ, la réservation est débitée puis la mission suit exclusivement
+les ticks stratégiques :
+
+`Preparation → Outbound → OnSite → Returning → Completed`
+
+Les transitions `Cancelled` et `Failed` sont terminales et les transitions
+invalides sont refusées explicitement. Chaque transition produit un événement ;
+la fin ou l'annulation produit aussi un rapport conservé dans l'état mutable.
+La route, les échéances, la phase, la réservation, les missions et leurs
+rapports sont sauvegardés. Une reprise termine donc au même tick que
+l'exécution originale.
+
+La reconnaissance, les transports de ressources, la récolte et la colonisation
+restent hors de cette étape : leurs effets se brancheront sur la phase
+`OnSite` dans les checkpoints suivants.
+
+Versions après migration :
+
+- `GAME_STATE_VERSION = 15` ;
+- `SAVE_VERSION = 16` ;
+- `RULESET_SCHEMA_VERSION = 5` (inchangé).
