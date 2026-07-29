@@ -90,3 +90,20 @@ Dans la vue Univers, `P` anime le passage entre les positions 3D et leur
 projection aplatie. Cette interpolation ne modifie jamais la définition de
 l'univers, les routes, les distances ou les durées de mission. Étoiles, labels,
 halos, routes et picking utilisent à chaque frame les mêmes positions affichées.
+
+## MVP-023-D — Socle visuel Univers et Système
+
+La projection 3D amplifie uniquement la hauteur affichée de la galaxie, sans
+modifier les coordonnées métier. Au départ, la carte complète les systèmes
+réellement connus ou détectés par une bulle bornée de signaux observés proches
+de Port-Sillage. Ces signaux faibles n'ont ni nom, ni sélection, ni route :
+ils ne constituent pas une connaissance de gameplay. Les routes révélées sont
+tracées en pointillés, avec une cadence distincte pour les liaisons connues,
+partielles et inter-secteurs.
+
+Dans la vue Système, les six types de planète utilisent des textures
+procédurales partagées de 64×32 pixels sur un mesh UV commun. Les planètes
+identifiées tournent lentement sur elles-mêmes et suivent une orbite visuelle
+indépendante des ticks de simulation. Atmosphères, anneaux et halos réutilisent
+des meshes et matériaux partagés ; les corps seulement détectés restent des
+silhouettes et ne révèlent aucune donnée cachée.

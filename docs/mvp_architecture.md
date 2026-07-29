@@ -1171,3 +1171,34 @@ Le preset graphique reste `Low`. Un test de budget vérifie que la scène MVP
 reste à 64 systèmes, 8 secteurs et au plus trois routes par système généré.
 Le changement de preset ne modifiant pas l'algorithme pour une taille donnée,
 `GENERATION_VERSION = 4` reste inchangée.
+
+## MVP-023-D — Socle visuel Univers et Système
+
+Ce checkpoint reste entièrement dans `galactic_client`. Il ne modifie ni
+`UniverseDefinition`, ni `GameState`, ni les versions de génération, de
+sauvegarde ou de ruleset.
+
+La vue Univers sépare désormais trois niveaux de présentation :
+
+1. `Known` : identité et classe stellaire révélées ;
+2. `Detected` : signal sélectionnable ouvert par la frontière de découverte ;
+3. `Observed` : étoile inconnue proche, visible mais non sélectionnable.
+
+`Observed` n'est pas un niveau de `KnowledgeLevel`. La bulle initiale retient
+au plus 14 systèmes proches de `MVP_HOME_SYSTEM_ID`, de façon déterministe.
+Elle n'ajoute aucune entrée à `system_knowledge` et `visible_routes()` continue
+donc d'ignorer ses systèmes. Le mode debug peut toujours afficher et
+sélectionner le graphe complet explicitement.
+
+La position spatiale affichée applique un facteur vertical de `3,4` à l'axe Y.
+La projection aplatie conserve exactement Y=0 et l'interpolation existante
+reste commune aux étoiles, labels, halos, routes et picking. Les routes sont
+découpées en tirets ; leur couleur et leur cadence distinguent les liaisons
+connues, partielles et inter-secteurs.
+
+La vue Système utilise un seul mesh UV pour les planètes et six textures
+procédurales déterministes de 64×32 pixels. Les matériaux, halos, atmosphères et
+anneaux restent partagés. La rotation axiale et l'orbite sont uniquement
+visuelles, lentes et calculées avec le temps Bevy : elles ne changent ni la
+position métier, ni les durées de mission. Un corps `Detected` conserve le mesh
+simple et le matériau de silhouette afin de ne pas révéler son type.

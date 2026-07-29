@@ -5,11 +5,13 @@ use craft_ui::CraftUiPlugin;
 use research_ui::ResearchUiPlugin;
 use std::{collections::HashMap, time::Duration};
 
+use bevy::asset::RenderAssetUsages;
 use bevy::ecs::system::SystemParam;
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit};
 use bevy::prelude::*;
 use bevy::render::{
     RenderPlugin,
+    render_resource::{Extent3d, TextureDimension, TextureFormat},
     settings::{MemoryHints, RenderCreation, WgpuSettings},
 };
 use bevy::text::{FontAtlasSet, FontCx, FontSource};
@@ -23,6 +25,11 @@ use galactic_sim::{
     MissionKind, MissionPhase, MissionResult, SelectionTarget, Simulation, SystemVisibility,
     TimeSpeed,
 };
+
+const UNIVERSE_VERTICAL_EXAGGERATION: f32 = 3.4;
+const INITIAL_OBSERVATION_SYSTEM_LIMIT: usize = 14;
+const PLANET_TEXTURE_WIDTH: u32 = 64;
+const PLANET_TEXTURE_HEIGHT: u32 = 32;
 
 pub fn run() {
     let scale_preset = match universe_scale_preset_from_args(std::env::args().skip(1)) {
@@ -174,6 +181,8 @@ impl Plugin for PresentationPlugin {
                 rebuild_strategic_view_if_requested,
                 update_projection_transition,
                 update_system_visuals,
+                update_orbiting_visuals,
+                update_planet_spins,
                 update_system_labels,
                 update_sector_labels,
                 update_pointer_halo_positions,
@@ -293,24 +302,45 @@ enum GraphicsPreset {
 #[derive(Resource)]
 struct VisualAssets {
     system_mesh: Handle<Mesh>,
+    planet_mesh: Handle<Mesh>,
+    ring_mesh: Handle<Mesh>,
     known_star_materials: HashMap<StarClass, Handle<StandardMaterial>>,
+    star_halo_materials: HashMap<StarClass, Handle<StandardMaterial>>,
     detected_material: Handle<StandardMaterial>,
+    observed_material: Handle<StandardMaterial>,
     planet_materials: HashMap<PlanetKind, Handle<StandardMaterial>>,
+    atmosphere_materials: HashMap<PlanetKind, Handle<StandardMaterial>>,
+    ring_material: Handle<StandardMaterial>,
     hover_material: Handle<StandardMaterial>,
 }
 
 impl FromWorld for VisualAssets {
     fn from_world(world: &mut World) -> Self {
-        // Low preset: a very small shared mesh is sufficient at universe scale.
-        let system_mesh = {
+        // Low preset: every geometry and material is shared by all matching bodies.
+        let (system_mesh, planet_mesh, ring_mesh) = {
             let mut meshes = world.resource_mut::<Assets<Mesh>>();
-            meshes.add(Sphere::default().mesh().ico(1).unwrap())
+            (
+                meshes.add(Sphere::default().mesh().ico(1).unwrap()),
+                meshes.add(Sphere::default().mesh().uv(32, 18)),
+                meshes.add(Annulus::new(1.55, 2.25)),
+            )
+        };
+        let planet_textures = {
+            let mut images = world.resource_mut::<Assets<Image>>();
+            PlanetKind::ALL
+                .into_iter()
+                .map(|kind| (kind, images.add(procedural_planet_texture(kind))))
+                .collect::<HashMap<_, _>>()
         };
 
         let mut materials = world.resource_mut::<Assets<StandardMaterial>>();
         let known_star_materials = StarClass::ALL
             .into_iter()
             .map(|class| (class, materials.add(star_material(class))))
+            .collect();
+        let star_halo_materials = StarClass::ALL
+            .into_iter()
+            .map(|class| (class, materials.add(star_halo_material(class))))
             .collect();
         let detected_material = materials.add(StandardMaterial {
             base_color: Color::srgba(0.34, 0.48, 0.62, 0.75),
@@ -319,10 +349,36 @@ impl FromWorld for VisualAssets {
             alpha_mode: AlphaMode::Blend,
             ..default()
         });
+        let observed_material = materials.add(StandardMaterial {
+            base_color: Color::srgba(0.24, 0.30, 0.42, 0.30),
+            emissive: LinearRgba::rgb(0.12, 0.18, 0.30),
+            unlit: true,
+            alpha_mode: AlphaMode::Blend,
+            ..default()
+        });
         let planet_materials = PlanetKind::ALL
             .into_iter()
-            .map(|kind| (kind, materials.add(planet_material(kind))))
+            .map(|kind| {
+                let texture = planet_textures
+                    .get(&kind)
+                    .expect("planet texture exists")
+                    .clone();
+                (kind, materials.add(planet_material(kind, texture)))
+            })
             .collect();
+        let atmosphere_materials = [PlanetKind::Ocean, PlanetKind::Ice, PlanetKind::GasGiant]
+            .into_iter()
+            .map(|kind| (kind, materials.add(atmosphere_material(kind))))
+            .collect();
+        let ring_material = materials.add(StandardMaterial {
+            base_color: Color::srgba(0.66, 0.56, 0.48, 0.54),
+            emissive: LinearRgba::rgb(0.12, 0.09, 0.07),
+            unlit: true,
+            alpha_mode: AlphaMode::Blend,
+            double_sided: true,
+            cull_mode: None,
+            ..default()
+        });
         let hover_material = materials.add(StandardMaterial {
             base_color: Color::srgba(0.28, 0.92, 0.82, 0.18),
             emissive: LinearRgba::rgb(0.18, 1.2, 0.92),
@@ -333,12 +389,48 @@ impl FromWorld for VisualAssets {
 
         Self {
             system_mesh,
+            planet_mesh,
+            ring_mesh,
             known_star_materials,
+            star_halo_materials,
             detected_material,
+            observed_material,
             planet_materials,
+            atmosphere_materials,
+            ring_material,
             hover_material,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UniverseSystemTier {
+    Known,
+    Detected,
+    Observed,
+}
+
+impl UniverseSystemTier {
+    const fn from_visibility(visibility: SystemVisibility) -> Self {
+        match visibility {
+            SystemVisibility::Known => Self::Known,
+            SystemVisibility::Detected => Self::Detected,
+        }
+    }
+
+    const fn visibility(self) -> Option<SystemVisibility> {
+        match self {
+            Self::Known => Some(SystemVisibility::Known),
+            Self::Detected => Some(SystemVisibility::Detected),
+            Self::Observed => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UniverseSystemEntry {
+    id: SystemId,
+    tier: UniverseSystemTier,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -482,7 +574,7 @@ struct StrategicCamera;
 #[derive(Component)]
 struct SystemVisual {
     id: SystemId,
-    visibility: SystemVisibility,
+    tier: UniverseSystemTier,
     base_scale: Vec3,
 }
 
@@ -495,6 +587,37 @@ struct SystemLabel {
 #[derive(Component)]
 struct SectorLabel {
     position: WorldPosition,
+}
+
+#[derive(Component, Debug, Clone, Copy)]
+struct OrbitingVisual {
+    radius: f32,
+    phase: f32,
+    angular_speed: f32,
+    vertical_offset: f32,
+}
+
+impl OrbitingVisual {
+    fn translation_at(self, elapsed_seconds: f32) -> Vec3 {
+        let angle = self.phase + elapsed_seconds * self.angular_speed;
+        Vec3::new(
+            angle.cos() * self.radius,
+            self.vertical_offset,
+            angle.sin() * self.radius,
+        )
+    }
+}
+
+#[derive(Component, Debug, Clone, Copy)]
+struct AxialSpin {
+    radians_per_second: f32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RouteVisualStyle {
+    color: Color,
+    dash_length: f32,
+    gap_length: f32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -964,70 +1087,94 @@ fn spawn_universe_view(
 
     let visible_systems = systems_for_universe_view(simulation, navigation.debug_full_graph);
 
-    for (system_id, visibility) in visible_systems {
-        let Some(system) = universe.system(system_id) else {
+    for entry in visible_systems {
+        let Some(system) = universe.system(entry.id) else {
             continue;
         };
 
-        let material = match visibility {
-            SystemVisibility::Known => assets
+        let material = match entry.tier {
+            UniverseSystemTier::Known => assets
                 .known_star_materials
                 .get(&system.star.class)
                 .expect("star material exists")
                 .clone(),
-            SystemVisibility::Detected => assets.detected_material.clone(),
+            UniverseSystemTier::Detected => assets.detected_material.clone(),
+            UniverseSystemTier::Observed => assets.observed_material.clone(),
         };
-        let visibility_scale = match visibility {
-            SystemVisibility::Known => 1.0,
-            SystemVisibility::Detected => 0.72,
+        let visibility_scale = match entry.tier {
+            UniverseSystemTier::Known => 1.0,
+            UniverseSystemTier::Detected => 0.72,
+            UniverseSystemTier::Observed => 0.44,
         };
         let scale = Vec3::splat((0.72 + system.star.luminosity.min(2.4) * 0.16) * visibility_scale);
         let position = projected_universe_position(system.position, navigation.projection_mix);
 
-        commands.spawn((
+        let mut entity = commands.spawn((
             Mesh3d(assets.system_mesh.clone()),
             MeshMaterial3d(material),
             Transform::from_translation(position).with_scale(scale),
             SystemVisual {
                 id: system.id,
-                visibility,
+                tier: entry.tier,
                 base_scale: scale,
             },
-            SelectableVisual {
+            StrategicViewEntity,
+        ));
+        let selectable_visibility = entry.tier.visibility().or_else(|| {
+            navigation
+                .debug_full_graph
+                .then_some(SystemVisibility::Detected)
+        });
+        if let Some(visibility) = selectable_visibility {
+            entity.insert(SelectableVisual {
                 target: PickTarget::System(system.id),
                 pick_radius_px: 18.0,
                 priority: system_pick_priority(simulation, system.id, visibility),
-            },
-            StrategicViewEntity,
-        ));
-        spawn_pointer_halo(
-            commands,
-            assets,
-            PickTarget::System(system.id),
-            position,
-            scale.x * 1.65,
-        );
+            });
+            spawn_pointer_halo(
+                commands,
+                assets,
+                PickTarget::System(system.id),
+                position,
+                scale.x * 1.65,
+            );
+        }
 
-        let label = match visibility {
-            SystemVisibility::Known => system.name.clone(),
-            SystemVisibility::Detected => format!("Signal {}", system.id.index()),
-        };
+        if entry.tier == UniverseSystemTier::Known {
+            spawn_star_halo(
+                commands,
+                assets,
+                system.id,
+                system.star.class,
+                position,
+                scale.x * 1.8,
+            );
+        }
 
-        commands.spawn((
-            Text2d::new(label),
-            ui_text_font(12.0),
-            TextColor(match visibility {
-                SystemVisibility::Known => Color::srgba(0.76, 0.88, 1.0, 0.90),
-                SystemVisibility::Detected => Color::srgba(0.48, 0.66, 0.82, 0.72),
-            }),
-            Transform::from_translation(position + Vec3::new(0.0, 1.8, 0.0))
-                .with_scale(Vec3::splat(0.28)),
-            SystemLabel {
-                id: system.id,
-                visibility,
-            },
-            StrategicViewEntity,
-        ));
+        if let Some(visibility) = selectable_visibility {
+            let label = match entry.tier {
+                UniverseSystemTier::Known => system.name.clone(),
+                UniverseSystemTier::Detected => format!("Signal {}", system.id.index()),
+                UniverseSystemTier::Observed => format!("Observation {}", system.id.index()),
+            };
+
+            commands.spawn((
+                Text2d::new(label),
+                ui_text_font(12.0),
+                TextColor(match entry.tier {
+                    UniverseSystemTier::Known => Color::srgba(0.76, 0.88, 1.0, 0.90),
+                    UniverseSystemTier::Detected => Color::srgba(0.48, 0.66, 0.82, 0.72),
+                    UniverseSystemTier::Observed => Color::srgba(0.38, 0.44, 0.56, 0.52),
+                }),
+                Transform::from_translation(position + Vec3::new(0.0, 1.8, 0.0))
+                    .with_scale(Vec3::splat(0.28)),
+                SystemLabel {
+                    id: system.id,
+                    visibility,
+                },
+                StrategicViewEntity,
+            ));
+        }
     }
 
     for sector_label in known_sector_labels(simulation) {
@@ -1100,25 +1247,103 @@ fn known_sector_labels(simulation: &Simulation) -> Vec<KnownSectorLabel> {
 fn systems_for_universe_view(
     simulation: &Simulation,
     debug_full_graph: bool,
-) -> Vec<(SystemId, SystemVisibility)> {
+) -> Vec<UniverseSystemEntry> {
     if debug_full_graph {
         return simulation
             .universe()
             .systems
             .iter()
             .map(|system| {
-                (
-                    system.id,
-                    simulation
-                        .state()
-                        .system_visibility(system.id)
-                        .unwrap_or(SystemVisibility::Detected),
-                )
+                let tier = simulation
+                    .state()
+                    .system_visibility(system.id)
+                    .map(UniverseSystemTier::from_visibility)
+                    .unwrap_or(UniverseSystemTier::Observed);
+                UniverseSystemEntry {
+                    id: system.id,
+                    tier,
+                }
             })
             .collect();
     }
 
-    simulation.state().visible_systems()
+    let mut systems = simulation
+        .state()
+        .visible_systems()
+        .into_iter()
+        .map(|(id, visibility)| UniverseSystemEntry {
+            id,
+            tier: UniverseSystemTier::from_visibility(visibility),
+        })
+        .collect::<Vec<_>>();
+    let observation_ids = initial_observation_systems(
+        simulation.universe(),
+        MVP_HOME_SYSTEM_ID,
+        INITIAL_OBSERVATION_SYSTEM_LIMIT,
+    );
+    for id in observation_ids {
+        if simulation.state().system_visibility(id).is_none() {
+            systems.push(UniverseSystemEntry {
+                id,
+                tier: UniverseSystemTier::Observed,
+            });
+        }
+    }
+    systems.sort_by_key(|entry| entry.id);
+    systems
+}
+
+fn initial_observation_systems(
+    universe: &galactic_domain::UniverseDefinition,
+    origin_id: SystemId,
+    limit: usize,
+) -> Vec<SystemId> {
+    let Some(origin) = universe.system(origin_id) else {
+        return Vec::new();
+    };
+    let origin = to_vec3(origin.position);
+    let mut candidates = universe
+        .systems
+        .iter()
+        .map(|system| (system.id, to_vec3(system.position).distance_squared(origin)))
+        .collect::<Vec<_>>();
+    candidates.sort_by(|(left_id, left_distance), (right_id, right_distance)| {
+        left_distance
+            .total_cmp(right_distance)
+            .then_with(|| left_id.cmp(right_id))
+    });
+    candidates
+        .into_iter()
+        .take(limit.min(universe.systems.len()))
+        .map(|(id, _)| id)
+        .collect()
+}
+
+fn spawn_star_halo(
+    commands: &mut Commands,
+    assets: &VisualAssets,
+    system_id: SystemId,
+    class: StarClass,
+    position: Vec3,
+    scale: f32,
+) {
+    let material = assets
+        .star_halo_materials
+        .get(&class)
+        .expect("star halo material exists")
+        .clone();
+    let base_scale = Vec3::splat(scale);
+    commands.spawn((
+        Mesh3d(assets.system_mesh.clone()),
+        MeshMaterial3d(material),
+        Transform::from_translation(position).with_scale(base_scale),
+        SystemVisual {
+            id: system_id,
+            tier: UniverseSystemTier::Known,
+            base_scale,
+        },
+        StrategicViewEntity,
+    ));
 }
 
 fn spawn_system_view(
@@ -1150,6 +1375,28 @@ fn spawn_system_view(
         },
         StrategicViewEntity,
     ));
+    let star_halo_material = assets
+        .star_halo_materials
+        .get(&system.star.class)
+        .expect("star halo material exists")
+        .clone();
+    commands.spawn((
+        Mesh3d(assets.system_mesh.clone()),
+        MeshMaterial3d(star_halo_material),
+        Transform::from_scale(Vec3::splat(4.4)),
+        StrategicViewEntity,
+    ));
+    commands.spawn((
+        PointLight {
+            color: star_color(system.star.class),
+            intensity: 11_000.0,
+            range: 90.0,
+            shadow_maps_enabled: false,
+            ..default()
+        },
+        Transform::from_xyz(0.0, 1.5, 0.0),
+        StrategicViewEntity,
+    ));
     spawn_pointer_halo(
         commands,
         assets,
@@ -1173,8 +1420,8 @@ fn spawn_system_view(
         }
 
         let radius = 6.0 + index as f32 * 4.8;
-        let angle = index as f32 * 1.37;
-        let position = Vec3::new(angle.cos() * radius, 0.0, angle.sin() * radius);
+        let orbit = planet_orbit(index, radius, 0.0);
+        let position = orbit.translation_at(0.0);
         let colony = state.colony_on_planet(planet.id);
         let material = if level.reveals_identity() {
             assets
@@ -1185,8 +1432,8 @@ fn spawn_system_view(
         } else {
             assets.detected_material.clone()
         };
-        let scale = if level.reveals_identity() && planet.kind == PlanetKind::GasGiant {
-            1.25
+        let scale = if level.reveals_identity() {
+            planet_visual_scale(planet.kind)
         } else {
             0.72
         };
@@ -1214,9 +1461,17 @@ fn spawn_system_view(
         };
 
         commands.spawn((
-            Mesh3d(assets.system_mesh.clone()),
+            Mesh3d(if level.reveals_identity() {
+                assets.planet_mesh.clone()
+            } else {
+                assets.system_mesh.clone()
+            }),
             MeshMaterial3d(material),
             Transform::from_translation(position).with_scale(Vec3::splat(scale)),
+            orbit,
+            AxialSpin {
+                radians_per_second: planet_spin_speed(planet.id, planet.kind),
+            },
             SelectableVisual {
                 target: PickTarget::Planet {
                     system_id,
@@ -1231,7 +1486,7 @@ fn spawn_system_view(
             },
             StrategicViewEntity,
         ));
-        spawn_pointer_halo(
+        let halo = spawn_pointer_halo(
             commands,
             assets,
             PickTarget::Planet {
@@ -1241,6 +1496,35 @@ fn spawn_system_view(
             position,
             scale * 1.65,
         );
+        commands.entity(halo).insert(orbit);
+
+        if level.reveals_identity() {
+            if let Some(atmosphere) = assets.atmosphere_materials.get(&planet.kind) {
+                commands.spawn((
+                    Mesh3d(assets.planet_mesh.clone()),
+                    MeshMaterial3d(atmosphere.clone()),
+                    Transform::from_translation(position).with_scale(Vec3::splat(scale * 1.07)),
+                    orbit,
+                    StrategicViewEntity,
+                ));
+            }
+            if planet.kind == PlanetKind::GasGiant {
+                let ring_orbit = OrbitingVisual {
+                    vertical_offset: -0.02,
+                    ..orbit
+                };
+                commands.spawn((
+                    Mesh3d(assets.ring_mesh.clone()),
+                    MeshMaterial3d(assets.ring_material.clone()),
+                    Transform::from_translation(ring_orbit.translation_at(0.0)).with_rotation(
+                        Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)
+                            * Quat::from_rotation_z(0.22),
+                    ),
+                    ring_orbit,
+                    StrategicViewEntity,
+                ));
+            }
+        }
 
         commands.spawn((
             Text2d::new(label),
@@ -1248,6 +1532,10 @@ fn spawn_system_view(
             TextColor(Color::srgba(0.72, 0.82, 0.92, 0.86)),
             Transform::from_translation(position + Vec3::new(0.0, 1.35, 0.0))
                 .with_scale(Vec3::splat(0.25)),
+            OrbitingVisual {
+                vertical_offset: 1.35,
+                ..orbit
+            },
             StrategicViewEntity,
         ));
     }
@@ -1259,15 +1547,46 @@ fn spawn_pointer_halo(
     target: PickTarget,
     position: Vec3,
     scale: f32,
-) {
-    commands.spawn((
-        Mesh3d(assets.system_mesh.clone()),
-        MeshMaterial3d(assets.hover_material.clone()),
-        Transform::from_translation(position).with_scale(Vec3::splat(scale)),
-        Visibility::Hidden,
-        PointerHalo { target },
-        StrategicViewEntity,
-    ));
+) -> Entity {
+    commands
+        .spawn((
+            Mesh3d(assets.system_mesh.clone()),
+            MeshMaterial3d(assets.hover_material.clone()),
+            Transform::from_translation(position).with_scale(Vec3::splat(scale)),
+            Visibility::Hidden,
+            PointerHalo { target },
+            StrategicViewEntity,
+        ))
+        .id()
+}
+
+fn planet_orbit(index: usize, radius: f32, vertical_offset: f32) -> OrbitingVisual {
+    OrbitingVisual {
+        radius,
+        phase: index as f32 * 1.37,
+        angular_speed: 0.014 / (index as f32 + 1.0).sqrt(),
+        vertical_offset,
+    }
+}
+
+fn planet_visual_scale(kind: PlanetKind) -> f32 {
+    match kind {
+        PlanetKind::Rocky => 0.68,
+        PlanetKind::Ocean => 0.82,
+        PlanetKind::Desert => 0.78,
+        PlanetKind::Ice => 0.74,
+        PlanetKind::GasGiant => 1.32,
+        PlanetKind::Volcanic => 0.70,
+    }
+}
+
+fn planet_spin_speed(planet_id: PlanetId, kind: PlanetKind) -> f32 {
+    let base = match kind {
+        PlanetKind::GasGiant => 0.025,
+        PlanetKind::Ocean | PlanetKind::Ice => 0.040,
+        PlanetKind::Rocky | PlanetKind::Desert | PlanetKind::Volcanic => 0.034,
+    };
+    base + (planet_id.raw() % 5) as f32 * 0.003
 }
 
 fn system_pick_priority(
@@ -3602,21 +3921,21 @@ fn enterable_selected_system(
 }
 
 fn cycle_visible_selection(simulation: &mut SimulationResource, debug_full_graph: bool) {
-    let systems = systems_for_universe_view(simulation.simulation(), debug_full_graph);
+    let systems = systems_for_universe_view(simulation.simulation(), debug_full_graph)
+        .into_iter()
+        .filter(|entry| entry.tier != UniverseSystemTier::Observed || debug_full_graph)
+        .collect::<Vec<_>>();
     if systems.is_empty() {
         return;
     }
 
     let current = selected_system(simulation.simulation.state().selected);
-    let current_index = current.and_then(|current_id| {
-        systems
-            .iter()
-            .position(|(system_id, _)| *system_id == current_id)
-    });
+    let current_index =
+        current.and_then(|current_id| systems.iter().position(|entry| entry.id == current_id));
     let next_index = current_index
         .map(|index| (index + 1) % systems.len())
         .unwrap_or(0);
-    let next_system = systems[next_index].0;
+    let next_system = systems[next_index].id;
 
     apply_simulation_command(simulation, GameAction::SelectSystem(next_system));
 }
@@ -3963,9 +4282,10 @@ fn update_system_visuals(
             UniverseLod::Regional => 0.92,
             UniverseLod::Local => 1.08,
         };
-        let visibility_multiplier = match visual.visibility {
-            SystemVisibility::Known => 1.0,
-            SystemVisibility::Detected => 0.84,
+        let visibility_multiplier = match visual.tier {
+            UniverseSystemTier::Known => 1.0,
+            UniverseSystemTier::Detected => 0.84,
+            UniverseSystemTier::Observed => 0.72,
         };
 
         let next_scale =
@@ -3973,6 +4293,39 @@ fn update_system_visuals(
         if transform.scale != next_scale {
             transform.scale = next_scale;
         }
+    }
+}
+
+fn update_orbiting_visuals(
+    time: Res<Time>,
+    navigation: Res<StrategicNavigation>,
+    mut query: Query<(&OrbitingVisual, &mut Transform)>,
+) {
+    if !matches!(navigation.mode, StrategicViewMode::System(_)) {
+        return;
+    }
+
+    let elapsed = time.elapsed_secs();
+    for (orbit, mut transform) in &mut query {
+        let next = orbit.translation_at(elapsed);
+        if transform.translation != next {
+            transform.translation = next;
+        }
+    }
+}
+
+fn update_planet_spins(
+    time: Res<Time>,
+    navigation: Res<StrategicNavigation>,
+    mut query: Query<(&AxialSpin, &mut Transform)>,
+) {
+    if !matches!(navigation.mode, StrategicViewMode::System(_)) {
+        return;
+    }
+
+    let delta = time.delta_secs().min(0.1);
+    for (spin, mut transform) in &mut query {
+        transform.rotate_y(spin.radians_per_second * delta);
     }
 }
 
@@ -4097,7 +4450,11 @@ fn draw_universe_routes(
                 route.from,
                 route.to,
                 navigation.projection_mix,
-                Color::srgba(0.42, 0.24, 0.62, 0.28),
+                RouteVisualStyle {
+                    color: Color::srgba(0.42, 0.24, 0.62, 0.28),
+                    dash_length: 1.25,
+                    gap_length: 1.10,
+                },
             );
         }
         return;
@@ -4119,13 +4476,24 @@ fn draw_universe_routes(
         } else {
             Color::srgba(0.30, 0.48, 0.66, 0.38)
         };
+        let (dash_length, gap_length) = if crosses_sector {
+            (2.10, 0.90)
+        } else if both_known {
+            (1.60, 0.72)
+        } else {
+            (1.15, 1.00)
+        };
         draw_route(
             gizmos,
             universe,
             route.from,
             route.to,
             navigation.projection_mix,
-            color,
+            RouteVisualStyle {
+                color,
+                dash_length,
+                gap_length,
+            },
         );
     }
 }
@@ -4136,7 +4504,7 @@ fn draw_route(
     from_id: SystemId,
     to_id: SystemId,
     projection_mix: f32,
-    color: Color,
+    style: RouteVisualStyle,
 ) {
     let Some(from) = universe.system(from_id) else {
         return;
@@ -4144,11 +4512,51 @@ fn draw_route(
     let Some(to) = universe.system(to_id) else {
         return;
     };
-    gizmos.line(
+    draw_dashed_line(
+        gizmos,
         projected_universe_position(from.position, projection_mix),
         projected_universe_position(to.position, projection_mix),
-        color,
+        style.dash_length,
+        style.gap_length,
+        style.color,
     );
+}
+
+fn draw_dashed_line(
+    gizmos: &mut Gizmos,
+    start: Vec3,
+    end: Vec3,
+    dash_length: f32,
+    gap_length: f32,
+    color: Color,
+) {
+    let delta = end - start;
+    let length = delta.length();
+    let dash_length = dash_length.max(0.05);
+    let gap_length = gap_length.max(0.0);
+    if length <= f32::EPSILON {
+        return;
+    }
+
+    let direction = delta / length;
+    let step = dash_length + gap_length;
+    let segment_count = dashed_segment_count(length, dash_length, gap_length);
+    for segment in 0..segment_count {
+        let offset = segment as f32 * step;
+        let dash_end = (offset + dash_length).min(length);
+        gizmos.line(
+            start + direction * offset,
+            start + direction * dash_end,
+            color,
+        );
+    }
+}
+
+fn dashed_segment_count(length: f32, dash_length: f32, gap_length: f32) -> usize {
+    if length <= 0.0 || dash_length <= 0.0 {
+        return 0;
+    }
+    (length / (dash_length + gap_length.max(0.0))).ceil() as usize
 }
 
 fn draw_system_orbits(gizmos: &mut Gizmos, simulation: &Simulation, system_id: SystemId) {
@@ -4750,7 +5158,11 @@ fn to_vec3(position: WorldPosition) -> Vec3 {
 }
 
 fn projected_universe_position(position: WorldPosition, projection_mix: f32) -> Vec3 {
-    let spatial = to_vec3(position);
+    let spatial = Vec3::new(
+        position.x,
+        position.y * UNIVERSE_VERTICAL_EXAGGERATION,
+        position.z,
+    );
     let flattened = Vec3::new(position.x, 0.0, position.z);
     spatial.lerp(flattened, projection_mix.clamp(0.0, 1.0))
 }
@@ -4764,18 +5176,165 @@ fn star_material(class: StarClass) -> StandardMaterial {
     }
 }
 
-fn planet_material(kind: PlanetKind) -> StandardMaterial {
+fn star_halo_material(class: StarClass) -> StandardMaterial {
+    let color = star_color(class).with_alpha(0.18);
     StandardMaterial {
-        base_color: match kind {
-            PlanetKind::Rocky => Color::srgb(0.48, 0.42, 0.36),
-            PlanetKind::Ocean => Color::srgb(0.18, 0.46, 0.72),
-            PlanetKind::Desert => Color::srgb(0.72, 0.52, 0.28),
-            PlanetKind::Ice => Color::srgb(0.62, 0.78, 0.90),
-            PlanetKind::GasGiant => Color::srgb(0.62, 0.50, 0.68),
-            PlanetKind::Volcanic => Color::srgb(0.72, 0.24, 0.12),
-        },
+        base_color: color,
+        emissive: star_emissive(class) * 0.22,
         unlit: true,
+        alpha_mode: AlphaMode::Add,
+        double_sided: true,
+        cull_mode: None,
         ..default()
+    }
+}
+
+fn planet_material(kind: PlanetKind, texture: Handle<Image>) -> StandardMaterial {
+    StandardMaterial {
+        base_color: Color::WHITE,
+        base_color_texture: Some(texture),
+        perceptual_roughness: match kind {
+            PlanetKind::Ocean => 0.56,
+            PlanetKind::Ice => 0.48,
+            PlanetKind::GasGiant => 0.72,
+            PlanetKind::Rocky | PlanetKind::Desert | PlanetKind::Volcanic => 0.88,
+        },
+        metallic: 0.0,
+        ..default()
+    }
+}
+
+fn atmosphere_material(kind: PlanetKind) -> StandardMaterial {
+    let base_color = match kind {
+        PlanetKind::Ocean => Color::srgba(0.20, 0.66, 1.0, 0.16),
+        PlanetKind::Ice => Color::srgba(0.64, 0.86, 1.0, 0.12),
+        PlanetKind::GasGiant => Color::srgba(0.84, 0.72, 0.94, 0.10),
+        PlanetKind::Rocky | PlanetKind::Desert | PlanetKind::Volcanic => Color::NONE,
+    };
+    StandardMaterial {
+        base_color,
+        emissive: LinearRgba::from(base_color) * 0.34,
+        unlit: true,
+        alpha_mode: AlphaMode::Add,
+        double_sided: true,
+        cull_mode: None,
+        ..default()
+    }
+}
+
+fn procedural_planet_texture(kind: PlanetKind) -> Image {
+    let mut texture =
+        Vec::with_capacity((PLANET_TEXTURE_WIDTH * PLANET_TEXTURE_HEIGHT * 4) as usize);
+    for y in 0..PLANET_TEXTURE_HEIGHT {
+        for x in 0..PLANET_TEXTURE_WIDTH {
+            texture.extend_from_slice(&procedural_planet_pixel(kind, x, y));
+        }
+    }
+
+    Image::new_fill(
+        Extent3d {
+            width: PLANET_TEXTURE_WIDTH,
+            height: PLANET_TEXTURE_HEIGHT,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        &texture,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    )
+}
+
+fn procedural_planet_pixel(kind: PlanetKind, x: u32, y: u32) -> [u8; 4] {
+    let noise = visual_hash(x, y, planet_kind_seed(kind));
+    let color = match kind {
+        PlanetKind::Rocky => {
+            if noise > 205 {
+                [126, 112, 94]
+            } else if noise > 92 {
+                [92, 82, 72]
+            } else {
+                [58, 54, 52]
+            }
+        }
+        PlanetKind::Ocean => {
+            let polar_cap = y < 2 || y + 2 >= PLANET_TEXTURE_HEIGHT;
+            let land = noise > 208 && (x + y * 3).is_multiple_of(2);
+            if polar_cap {
+                [220, 239, 246]
+            } else if land {
+                [54, 126, 88]
+            } else if noise > 118 {
+                [26, 104, 166]
+            } else {
+                [15, 61, 126]
+            }
+        }
+        PlanetKind::Desert => {
+            if (y + x / 9).is_multiple_of(7) {
+                [218, 160, 72]
+            } else if noise > 148 {
+                [184, 118, 51]
+            } else {
+                [128, 74, 38]
+            }
+        }
+        PlanetKind::Ice => {
+            let ridge = (x * 3 + y * 5 + u32::from(noise)).is_multiple_of(19);
+            if ridge {
+                [118, 178, 205]
+            } else if noise > 128 {
+                [218, 239, 244]
+            } else {
+                [164, 207, 224]
+            }
+        }
+        PlanetKind::GasGiant => {
+            let storm_x = x.abs_diff(46);
+            let storm_y = y.abs_diff(20);
+            if storm_x * storm_x + storm_y * storm_y < 18 {
+                [184, 106, 76]
+            } else {
+                match (y / 3 + u32::from(noise > 190)) % 4 {
+                    0 => [188, 154, 176],
+                    1 => [126, 104, 148],
+                    2 => [218, 184, 150],
+                    _ => [154, 124, 166],
+                }
+            }
+        }
+        PlanetKind::Volcanic => {
+            let lava = (x * 7 + y * 11 + u32::from(noise)).is_multiple_of(17);
+            if lava {
+                [246, 101, 24]
+            } else if noise > 150 {
+                [105, 35, 25]
+            } else {
+                [40, 28, 28]
+            }
+        }
+    };
+    [color[0], color[1], color[2], 255]
+}
+
+fn visual_hash(x: u32, y: u32, seed: u32) -> u8 {
+    let mut value = x
+        .wrapping_mul(0x9E37_79B1)
+        .wrapping_add(y.wrapping_mul(0x85EB_CA77))
+        .wrapping_add(seed.wrapping_mul(0xC2B2_AE3D));
+    value ^= value >> 16;
+    value = value.wrapping_mul(0x7FEB_352D);
+    value ^= value >> 15;
+    (value >> 24) as u8
+}
+
+const fn planet_kind_seed(kind: PlanetKind) -> u32 {
+    match kind {
+        PlanetKind::Rocky => 1,
+        PlanetKind::Ocean => 2,
+        PlanetKind::Desert => 3,
+        PlanetKind::Ice => 4,
+        PlanetKind::GasGiant => 5,
+        PlanetKind::Volcanic => 6,
     }
 }
 
@@ -4948,7 +5507,7 @@ fn mission_error_text(error: galactic_sim::MissionError) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::any::TypeId;
+    use std::{any::TypeId, collections::HashSet};
 
     use super::*;
     use bevy::camera::{ComputedCameraValues, RenderTargetInfo, visibility::VisibleEntities};
@@ -5014,8 +5573,8 @@ VmSwap:\t      2048 kB
         let halfway = projected_universe_position(position, 0.5);
         let flattened = projected_universe_position(position, 1.0);
 
-        assert_eq!(spatial, Vec3::new(12.0, 4.0, -7.0));
-        assert_eq!(halfway, Vec3::new(12.0, 2.0, -7.0));
+        assert_eq!(spatial, Vec3::new(12.0, 13.6, -7.0));
+        assert_eq!(halfway, Vec3::new(12.0, 6.8, -7.0));
         assert_eq!(flattened, Vec3::new(12.0, 0.0, -7.0));
         assert_eq!(projected_universe_position(position, 0.0), spatial);
     }
@@ -5502,6 +6061,98 @@ VmSwap:\t      2048 kB
         assert_eq!(UniverseLod::from_distance(120.0), UniverseLod::Overview);
         assert_eq!(UniverseLod::from_distance(64.0), UniverseLod::Regional);
         assert_eq!(UniverseLod::from_distance(32.0), UniverseLod::Local);
+    }
+
+    #[test]
+    fn initial_observation_is_bounded_and_does_not_reveal_gameplay_knowledge() {
+        let simulation = Simulation::new(UniverseConfig::mvp());
+        let routes_before = simulation
+            .state()
+            .visible_routes(simulation.universe_repository())
+            .len();
+        let entries = systems_for_universe_view(&simulation, false);
+        let observed = entries
+            .iter()
+            .filter(|entry| entry.tier == UniverseSystemTier::Observed)
+            .collect::<Vec<_>>();
+
+        assert!(entries.len() < simulation.universe().systems.len());
+        assert!(entries.len() >= INITIAL_OBSERVATION_SYSTEM_LIMIT);
+        assert!(!observed.is_empty());
+        assert!(observed.iter().all(|entry| {
+            simulation.state().system_knowledge_level(entry.id) == KnowledgeLevel::Unknown
+        }));
+        assert_eq!(
+            simulation
+                .state()
+                .visible_routes(simulation.universe_repository())
+                .len(),
+            routes_before
+        );
+    }
+
+    #[test]
+    fn selection_cycle_skips_observed_signals_outside_debug_mode() {
+        let mut simulation = SimulationResource {
+            simulation: Simulation::new(UniverseConfig::mvp()),
+            pending_events: Vec::new(),
+        };
+
+        for _ in 0..24 {
+            cycle_visible_selection(&mut simulation, false);
+            let selected = selected_system(simulation.simulation().state().selected)
+                .expect("the normal cycle selects a system");
+            assert!(
+                simulation
+                    .simulation()
+                    .state()
+                    .system_knowledge_level(selected)
+                    .is_visible()
+            );
+        }
+    }
+
+    #[test]
+    fn dashed_routes_use_multiple_separated_segments() {
+        assert_eq!(dashed_segment_count(0.0, 1.0, 1.0), 0);
+        assert_eq!(dashed_segment_count(0.5, 1.0, 1.0), 1);
+        assert_eq!(dashed_segment_count(10.0, 1.5, 0.5), 5);
+    }
+
+    #[test]
+    fn procedural_planet_textures_are_small_varied_and_deterministic() {
+        for kind in PlanetKind::ALL {
+            let first = procedural_planet_texture(kind);
+            let second = procedural_planet_texture(kind);
+            let first_data = first.data.expect("generated texture keeps its source data");
+            let second_data = second
+                .data
+                .expect("generated texture keeps its source data");
+            let colors = first_data
+                .chunks_exact(4)
+                .map(|pixel| [pixel[0], pixel[1], pixel[2], pixel[3]])
+                .collect::<HashSet<_>>();
+
+            assert_eq!(
+                first_data.len(),
+                (PLANET_TEXTURE_WIDTH * PLANET_TEXTURE_HEIGHT * 4) as usize
+            );
+            assert_eq!(first_data, second_data);
+            assert!(colors.len() >= 3, "{kind:?} texture is not varied");
+        }
+    }
+
+    #[test]
+    fn visual_orbit_is_slow_and_preserves_radius_and_label_height() {
+        let orbit = planet_orbit(2, 15.6, 1.35);
+        let start = orbit.translation_at(0.0);
+        let later = orbit.translation_at(10.0);
+
+        assert!((Vec2::new(start.x, start.z).length() - 15.6).abs() < 0.001);
+        assert!((Vec2::new(later.x, later.z).length() - 15.6).abs() < 0.001);
+        assert_eq!(start.y, 1.35);
+        assert_eq!(later.y, 1.35);
+        assert!(start.distance(later) < 1.5);
     }
 
     #[test]
