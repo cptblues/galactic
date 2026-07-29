@@ -11,17 +11,17 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
 use crate::{
-    BuildingCatalog, BuildingCatalogConfig, BuildingCatalogError, BuildingLevels,
-    CraftCatalogError, CraftableCatalog, CraftableCatalogConfig, DiplomacyState,
-    DiplomaticRelation, FactionKind, FactionRelation, InitialPlanetKnowledge,
-    InitialSystemKnowledge, KnowledgeLevel, PlanetResourceProfile, PlanetaryAnalysisRules,
-    PlanetaryAnalysisRulesConfig, PlanetaryAnalysisRulesError, PlanetaryPresenceRules,
-    PlanetaryPresenceRulesConfig, PlanetaryPresenceRulesError, ResourceValuesConfig,
-    StartingColonyConfig, StartingFactionConfig, StartingScenario, TechnologyCatalog,
-    TechnologyCatalogConfig, TechnologyCatalogError,
+    BuildingCatalog, BuildingCatalogConfig, BuildingCatalogError, BuildingLevels, CombatRules,
+    CombatRulesConfig, CombatRulesError, CraftCatalogError, CraftableCatalog,
+    CraftableCatalogConfig, DiplomacyState, DiplomaticRelation, FactionKind, FactionRelation,
+    InitialPlanetKnowledge, InitialSystemKnowledge, KnowledgeLevel, PlanetResourceProfile,
+    PlanetaryAnalysisRules, PlanetaryAnalysisRulesConfig, PlanetaryAnalysisRulesError,
+    PlanetaryPresenceRules, PlanetaryPresenceRulesConfig, PlanetaryPresenceRulesError,
+    ResourceValuesConfig, StartingColonyConfig, StartingFactionConfig, StartingScenario,
+    TechnologyCatalog, TechnologyCatalogConfig, TechnologyCatalogError,
 };
 
-pub const RULESET_SCHEMA_VERSION: u32 = 7;
+pub const RULESET_SCHEMA_VERSION: u32 = 8;
 pub const RULESET_DIRECTORY_ENV: &str = "GALACTIC_RULESET_DIR";
 pub const DEFAULT_RULESET_DIRECTORY: &str = "assets/rulesets/default";
 
@@ -47,6 +47,7 @@ pub struct Ruleset {
     craftables: CraftableCatalog,
     planetary_analysis: PlanetaryAnalysisRules,
     planetary_presence: PlanetaryPresenceRules,
+    combat: CombatRules,
     starting_scenario: StartingScenario,
 }
 
@@ -90,6 +91,9 @@ impl Ruleset {
             faction_catalog.factions,
         )
         .map_err(RulesetLoadError::PlanetaryPresence)?;
+        let combat_config: CombatRulesConfig = read_ron(directory, "combat.ron")?;
+        let combat = CombatRules::from_config(combat_config, &craftables, &planetary_presence)
+            .map_err(RulesetLoadError::Combat)?;
         let starting_config: StartingScenarioConfig = read_ron(directory, "starting_scenario.ron")?;
         let starting_scenario = starting_config.compile(
             &buildings,
@@ -114,6 +118,7 @@ impl Ruleset {
         craftables.append_structure(&mut structure);
         planetary_analysis.append_structure(&mut structure);
         planetary_presence.append_structure(&mut structure);
+        combat.append_structure(&mut structure);
 
         Ok(Self {
             id: manifest.id,
@@ -126,6 +131,7 @@ impl Ruleset {
             craftables,
             planetary_analysis,
             planetary_presence,
+            combat,
             starting_scenario,
         })
     }
@@ -168,6 +174,10 @@ impl Ruleset {
 
     pub const fn planetary_presence(&self) -> &PlanetaryPresenceRules {
         &self.planetary_presence
+    }
+
+    pub const fn combat(&self) -> &CombatRules {
+        &self.combat
     }
 
     pub const fn starting_scenario(&self) -> StartingScenario {
@@ -239,6 +249,7 @@ pub enum RulesetLoadError {
     Craftables(CraftCatalogError),
     PlanetaryAnalysis(PlanetaryAnalysisRulesError),
     PlanetaryPresence(PlanetaryPresenceRulesError),
+    Combat(CombatRulesError),
     StartingScenario(&'static str),
 }
 
@@ -272,6 +283,7 @@ impl fmt::Display for RulesetLoadError {
             Self::PlanetaryPresence(error) => {
                 write!(formatter, "invalid planetary presence rules: {error:?}")
             }
+            Self::Combat(error) => write!(formatter, "invalid combat rules: {error:?}"),
             Self::StartingScenario(message) => {
                 write!(formatter, "invalid starting scenario: {message}")
             }
@@ -740,10 +752,12 @@ mod tests {
         );
         assert_eq!(ruleset.buildings().definitions().count(), 8);
         assert_eq!(ruleset.technologies().definitions().count(), 6);
-        assert_eq!(ruleset.craftables().definitions().count(), 3);
+        assert_eq!(ruleset.craftables().definitions().count(), 4);
         assert_eq!(ruleset.planetary_analysis().version(), 1,);
-        assert_eq!(ruleset.planetary_presence().version(), 1);
+        assert_eq!(ruleset.planetary_presence().version(), 2);
         assert_eq!(ruleset.planetary_presence().definitions().count(), 5);
+        assert_eq!(ruleset.combat().version(), 1);
+        assert_eq!(ruleset.combat().ships().count(), 1);
     }
 
     #[test]
@@ -766,6 +780,7 @@ mod tests {
         default_ruleset()
             .planetary_presence()
             .append_structure(&mut first);
+        default_ruleset().combat().append_structure(&mut first);
         assert_eq!(
             default_ruleset().structure_fingerprint(),
             fnv1a64(first.as_bytes()),

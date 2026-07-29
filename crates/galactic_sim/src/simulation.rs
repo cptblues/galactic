@@ -8,20 +8,20 @@ use galactic_domain::{
 };
 
 use crate::{
-    BuildingCatalogError, CommandRejection, ConstructionQueueError, CraftStateError,
-    DiplomacyError, DiplomacyState, FactionKind, FleetAssignment, FleetStateError,
-    GAME_STATE_VERSION, GameAction, GameCommand, GameEvent, GameEventKind, GameState,
-    KnowledgeLevel, MissionEngineEvent, MissionPhase, MissionStateError, PlanetAnalysisStateError,
-    PlanetaryIntelPrecision, PlanetaryPresenceStateError, ResearchStateError, SelectionTarget,
-    StartingScenario, StartingScenarioError, StrategicDuration, TimeSpeed, UniverseIndexError,
-    UniverseRepository, advance_colony_construction, advance_colony_craft, advance_missions,
-    advance_research, analyze_planet, build_planet_analysis_report, cancel_mission,
-    default_building_catalog, enqueue_building_upgrade, enqueue_craft, enqueue_research,
-    form_fleet, launch_mission, launch_probe_mission, planetary_analysis_rules,
-    queue_colony_production, refresh_planetary_intelligence, storage_capacity,
-    validate_construction_queue, validate_craft_state, validate_fleet_state,
-    validate_mission_state, validate_planet_analysis_state, validate_planetary_presence_state,
-    validate_research_state,
+    AttackMissionOutcome, BuildingCatalogError, CombatReportStatus, CommandRejection,
+    ConstructionQueueError, CraftStateError, DiplomacyError, DiplomacyState, FactionKind,
+    FleetAssignment, FleetStateError, GAME_STATE_VERSION, GameAction, GameCommand, GameEvent,
+    GameEventKind, GameState, KnowledgeLevel, MissionEngineEvent, MissionKind, MissionPhase,
+    MissionResult, MissionStateError, PlanetAnalysisStateError, PlanetaryIntelPrecision,
+    PlanetaryPresenceStateError, ResearchStateError, SelectionTarget, StartingScenario,
+    StartingScenarioError, StrategicDuration, TimeSpeed, UniverseIndexError, UniverseRepository,
+    advance_colony_construction, advance_colony_craft, advance_missions, advance_research,
+    analyze_planet, build_planet_analysis_report, cancel_mission, default_building_catalog,
+    enqueue_building_upgrade, enqueue_craft, enqueue_research, form_fleet, launch_attack_mission,
+    launch_mission, launch_probe_mission, planetary_analysis_rules, queue_colony_production,
+    refresh_planetary_intelligence, storage_capacity, validate_construction_queue,
+    validate_craft_state, validate_fleet_state, validate_mission_state,
+    validate_planet_analysis_state, validate_planetary_presence_state, validate_research_state,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -153,6 +153,11 @@ pub enum SimulationBuildError {
     },
     DuplicateMissionReport(MissionId),
     MissionReportWithoutMission(MissionId),
+    DuplicateCombatReport(MissionId),
+    CombatReportWithoutMission(MissionId),
+    MissingCombatReport(MissionId),
+    CombatReportMissionMismatch(MissionId),
+    CombatReportInFuture(MissionId),
     DuplicateSystemKnowledge(SystemId),
     DuplicatePlanetKnowledge(PlanetId),
     ExplicitUnknownSystemKnowledge(SystemId),
@@ -321,6 +326,30 @@ impl Simulation {
             },
             GameAction::LaunchProbe { colony_id, target } => {
                 match launch_probe_mission(
+                    &mut self.state,
+                    &self.universe,
+                    issuer,
+                    colony_id,
+                    target,
+                ) {
+                    Ok((created, launched)) => {
+                        let mut events = Vec::with_capacity(2);
+                        if let Some(created) = created {
+                            events.push(GameEventKind::FleetCreated(created));
+                        }
+                        events.push(GameEventKind::MissionLaunched(launched));
+                        events
+                    }
+                    Err(error) => vec![GameEventKind::MissionLaunchRejected(
+                        crate::MissionLaunchRejected {
+                            fleet_id: None,
+                            error,
+                        },
+                    )],
+                }
+            }
+            GameAction::LaunchAttack { colony_id, target } => {
+                match launch_attack_mission(
                     &mut self.state,
                     &self.universe,
                     issuer,
@@ -890,24 +919,35 @@ fn validate_state(
             }
             Owner::Faction(_) => {}
         }
-        let Some(fleet) = state.fleet(mission.order.fleet_id) else {
+        let destroyed_attacker = matches!(
+            mission.result,
+            Some(MissionResult::Attack(crate::AttackMissionResult {
+                attackers_destroyed: true,
+                ..
+            }))
+        ) && mission.phase == MissionPhase::Failed;
+        let fleet = state.fleet(mission.order.fleet_id);
+        if fleet.is_none() && !destroyed_attacker {
             return Err(SimulationBuildError::UnknownMissionFleet {
                 mission_id: mission.id,
                 fleet_id: mission.order.fleet_id,
             });
-        };
-        if fleet.owner != mission.owner {
-            return Err(SimulationBuildError::MissionFleetOwnerMismatch {
-                mission_id: mission.id,
-                fleet_id: fleet.id,
-            });
         }
-        if !mission.phase.is_terminal() && fleet.assignment != FleetAssignment::Mission(mission.id)
-        {
-            return Err(SimulationBuildError::MissionFleetAssignmentMismatch {
-                mission_id: mission.id,
-                fleet_id: fleet.id,
-            });
+        if let Some(fleet) = fleet {
+            if fleet.owner != mission.owner {
+                return Err(SimulationBuildError::MissionFleetOwnerMismatch {
+                    mission_id: mission.id,
+                    fleet_id: fleet.id,
+                });
+            }
+            if !mission.phase.is_terminal()
+                && fleet.assignment != FleetAssignment::Mission(mission.id)
+            {
+                return Err(SimulationBuildError::MissionFleetAssignmentMismatch {
+                    mission_id: mission.id,
+                    fleet_id: fleet.id,
+                });
+            }
         }
         let expected_location = match mission.phase {
             MissionPhase::Preparation => {
@@ -919,10 +959,12 @@ fn validate_state(
             )),
             MissionPhase::Completed | MissionPhase::Cancelled | MissionPhase::Failed => None,
         };
-        if expected_location.is_some_and(|expected| fleet.location != expected) {
+        if expected_location
+            .is_some_and(|expected| fleet.is_none_or(|fleet| fleet.location != expected))
+        {
             return Err(SimulationBuildError::MissionFleetLocationMismatch {
                 mission_id: mission.id,
-                fleet_id: fleet.id,
+                fleet_id: mission.order.fleet_id,
             });
         }
         let Some(origin_colony) = state.colony(mission.origin_colony_id) else {
@@ -991,6 +1033,64 @@ fn validate_state(
             return Err(SimulationBuildError::MissionReportWithoutMission(
                 report.mission_id,
             ));
+        }
+    }
+
+    let mut combat_missions = HashSet::with_capacity(state.combat_reports.len());
+    for report in &state.combat_reports {
+        if !combat_missions.insert(report.mission_id) {
+            return Err(SimulationBuildError::DuplicateCombatReport(
+                report.mission_id,
+            ));
+        }
+        let Some(mission) = state.mission(report.mission_id) else {
+            return Err(SimulationBuildError::CombatReportWithoutMission(
+                report.mission_id,
+            ));
+        };
+        let expected_planet = mission.order.target.planet_id();
+        let Some(MissionResult::Attack(result)) = mission.result else {
+            return Err(SimulationBuildError::CombatReportMissionMismatch(
+                report.mission_id,
+            ));
+        };
+        let summary_matches = match (&report.status, result.outcome) {
+            (CombatReportStatus::Resolved(resolution), AttackMissionOutcome::Resolved(outcome)) => {
+                resolution.outcome == outcome
+                    && result.attackers_destroyed == resolution.attacker_survivors.is_empty()
+                    && result.secured
+                        == matches!(
+                            resolution.control,
+                            crate::CombatControlChange::Secured { .. }
+                        )
+            }
+            (
+                CombatReportStatus::TargetInvalid(found),
+                AttackMissionOutcome::TargetInvalid(expected),
+            ) => found == &expected && !result.attackers_destroyed && !result.secured,
+            _ => false,
+        };
+        if mission.order.kind != MissionKind::Attack
+            || expected_planet != Some(report.planet_id)
+            || result.target != report.planet_id
+            || !summary_matches
+        {
+            return Err(SimulationBuildError::CombatReportMissionMismatch(
+                report.mission_id,
+            ));
+        }
+        if report.resolved_at > state.clock.current_tick() {
+            return Err(SimulationBuildError::CombatReportInFuture(
+                report.mission_id,
+            ));
+        }
+    }
+    for mission in &state.missions {
+        if mission.order.kind == MissionKind::Attack
+            && mission.result.is_some()
+            && !combat_missions.contains(&mission.id)
+        {
+            return Err(SimulationBuildError::MissingCombatReport(mission.id));
         }
     }
 

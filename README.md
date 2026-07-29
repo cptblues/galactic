@@ -149,4 +149,19 @@ ne révèle qu'un contact global et masque l'identité comme les types d'unités
 L'analyse remplace ce contact par un rapport daté avec faction, population et
 effectifs sous forme de fourchettes. Les valeurs exactes restent réservées aux
 colonies possédées. Une présence étrangère non sécurisée bloque explicitement
-la colonisation ; l'attaque et le combat restent dans MVP-025-B.
+la colonisation.
+
+## MVP-025-B — Attaques et combat V1
+
+Une planète analysée et occupée par une faction étrangère peut être attaquée
+avec `M`. Le raccourci réutilise une flotte militaire disponible ou regroupe
+les Frégates Rempart présentes dans la colonie de départ. La mission suit le
+même trajet aller-retour que la reconnaissance puis résout un combat
+déterministe à l'arrivée.
+
+Le rapport persistant détaille les forces engagées, pertes, survivants,
+dommages, récupération et contrôle territorial. Une cible modifiée pendant le
+trajet invalide proprement l'attaque sans appliquer l'ancien instantané. Afin
+que cette boucle soit immédiatement testable, chaque système voisin du départ
+contient au moins une petite patrouille hostile ; les autres planètes
+conservent leur distribution déterministe et peuvent légitimement être vides.

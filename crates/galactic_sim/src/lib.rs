@@ -1,5 +1,6 @@
 pub mod analysis;
 pub mod building_catalog;
+pub mod combat;
 pub mod command;
 pub mod construction;
 pub mod craft;
@@ -20,6 +21,7 @@ pub mod universe;
 
 pub use analysis::*;
 pub use building_catalog::*;
+pub use combat::*;
 pub use command::*;
 pub use construction::*;
 pub use craft::*;

@@ -4,17 +4,17 @@ use galactic_domain::{
     ResourceReservation, ResourceStock, SystemId, UniverseConfig, UniverseId, generate_universe,
 };
 use galactic_sim::{
-    BuildingLevels, ColonyState, ConstructionQueue, CraftInventory, CraftQueue, DiplomacyState,
-    FactionData, FactionKind, FleetAssignment, FleetComposition, FleetLocation, FleetState,
-    GameState, MissionReport, MissionState, PlanetAnalysisReport, PlanetKnowledge,
+    BuildingLevels, ColonyState, CombatReport, ConstructionQueue, CraftInventory, CraftQueue,
+    DiplomacyState, FactionData, FactionKind, FleetAssignment, FleetComposition, FleetLocation,
+    FleetState, GameState, MissionReport, MissionState, PlanetAnalysisReport, PlanetKnowledge,
     PlanetResourceProfile, PlanetaryIntelligenceReport, PlanetaryPresence, ProductionRemainder,
     ProductionRemainderError, ResearchState, SelectionTarget, Simulation, SimulationBuildError,
     StrategicClock, StrategicClockError, StrategicTick, SystemKnowledge, TimeSpeed,
     default_ruleset, production_refresh_ticks,
 };
 
-/// Version 21 persists planetary presences and bounded intelligence reports.
-pub const SAVE_VERSION: u32 = 21;
+/// Version 22 persists attack commitments and detailed combat reports.
+pub const SAVE_VERSION: u32 = 22;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SaveGame {
@@ -52,6 +52,7 @@ pub struct MutableGameSave {
     pub missions: Vec<MissionState>,
     pub next_mission_id: u64,
     pub mission_reports: Vec<MissionReport>,
+    pub combat_reports: Vec<CombatReport>,
     pub planet_analysis_reports: Vec<PlanetAnalysisReport>,
     pub planetary_presences: Vec<PlanetaryPresence>,
     pub planetary_intelligence_reports: Vec<PlanetaryIntelligenceReport>,
@@ -229,6 +230,7 @@ pub fn snapshot_from_simulation(simulation: &Simulation) -> SaveGame {
             missions: state.missions.clone(),
             next_mission_id: state.next_mission_id,
             mission_reports: state.mission_reports.clone(),
+            combat_reports: state.combat_reports.clone(),
             planet_analysis_reports: state.planet_analysis_reports.clone(),
             planetary_presences: state.planetary_presences.clone(),
             planetary_intelligence_reports: state.planetary_intelligence_reports.clone(),
@@ -372,6 +374,7 @@ pub fn restore_from_snapshot(save: &SaveGame) -> Result<Simulation, SaveError> {
         missions: save.state.missions.clone(),
         next_mission_id: save.state.next_mission_id,
         mission_reports: save.state.mission_reports.clone(),
+        combat_reports: save.state.combat_reports.clone(),
         planet_analysis_reports: save.state.planet_analysis_reports.clone(),
         planetary_presences: save.state.planetary_presences.clone(),
         planetary_intelligence_reports: save.state.planetary_intelligence_reports.clone(),
@@ -389,7 +392,7 @@ pub fn restore_from_snapshot(save: &SaveGame) -> Result<Simulation, SaveError> {
 mod tests {
     use std::time::Duration;
 
-    use galactic_domain::UniverseConfig;
+    use galactic_domain::{Owner, PlanetId, UniverseConfig};
     use galactic_sim::{
         BuildingKind, CraftableId, FleetComposition, GAME_STATE_VERSION, GameAction,
         KnowledgeLevel, MissionKind, MissionOrder, MissionPhase, MissionResult, MissionTarget,
@@ -397,6 +400,88 @@ mod tests {
     };
 
     use super::*;
+
+    fn simulation_with_launched_attack() -> (Simulation, PlanetId) {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+        let actor = simulation.state().player_faction;
+        let colony_id = simulation.state().colonies[0].id;
+        let origin = simulation.state().colonies[0].system_id;
+        let neighboring_systems = simulation
+            .universe_repository()
+            .neighboring_systems(origin)
+            .to_vec();
+        let target = simulation
+            .state()
+            .planetary_presences
+            .iter()
+            .find(|presence| {
+                neighboring_systems.contains(&presence.planet_id.system_id())
+                    && presence.occupant != Owner::Faction(actor)
+                    && presence.occupant != Owner::Unowned
+                    && !presence.forces.is_empty()
+            })
+            .expect("the home neighborhood guarantees a hostile outpost")
+            .planet_id;
+        let repository = simulation.universe_repository().clone();
+        simulation.state_mut().advance_system_knowledge(
+            &repository,
+            target.system_id(),
+            KnowledgeLevel::Probed,
+        );
+        simulation.state_mut().advance_planet_knowledge(
+            &repository,
+            target,
+            KnowledgeLevel::Probed,
+        );
+        {
+            let colony = &mut simulation.state_mut().colonies[0];
+            colony
+                .buildings
+                .set_level(BuildingKind::CONSTRUCTION_CENTER, 2);
+            colony.buildings.set_level(BuildingKind::METAL_MINE, 2);
+            colony
+                .buildings
+                .set_level(BuildingKind::CRYSTAL_EXTRACTOR, 2);
+            colony.buildings.set_level(BuildingKind::SHIPYARD, 1);
+            colony.energy = default_building_catalog().energy_grid_for_levels(colony.buildings);
+            colony
+                .resources
+                .credit(ResourceStock::new(1_000, 1_000, 1_000))
+                .expect("the test resources fit the starting storage");
+        }
+        simulation.state_mut().research = ResearchState::from_completed([
+            TechnologyId::SPATIAL_DETECTION,
+            TechnologyId::PROPULSION,
+            TechnologyId::PLANETARY_ANALYSIS,
+        ]);
+        simulation.apply_player_action(GameAction::AnalyzePlanet { planet_id: target });
+        assert_eq!(
+            simulation.state().planet_knowledge_level(target),
+            KnowledgeLevel::Analyzed
+        );
+        for _ in 0..3 {
+            simulation.apply_player_action(GameAction::QueueCraft {
+                colony_id,
+                craftable: CraftableId::FRIGATE_BULWARK,
+            });
+        }
+        simulation.advance(Duration::from_secs(200));
+        assert_eq!(
+            simulation.state().colonies[0]
+                .inventory
+                .quantity(CraftableId::FRIGATE_BULWARK),
+            3
+        );
+        simulation.apply_player_action(GameAction::LaunchAttack {
+            colony_id,
+            target: MissionTarget::Planet {
+                system_id: target.system_id(),
+                planet_id: target,
+            },
+        });
+        assert_eq!(simulation.state().missions.len(), 1);
+        (simulation, target)
+    }
 
     #[test]
     fn construction_queue_survives_round_trip() {
@@ -531,6 +616,31 @@ mod tests {
         assert_eq!(
             restored.state().planetary_intelligence_report(planet_id),
             Some(&intelligence),
+        );
+    }
+
+    #[test]
+    fn attack_resumes_identically_and_keeps_its_combat_report() {
+        let (mut uninterrupted, target) = simulation_with_launched_attack();
+        uninterrupted.advance(Duration::from_secs(3));
+        let in_flight = snapshot_from_simulation(&uninterrupted);
+        let mut restored =
+            restore_from_snapshot(&in_flight).expect("an in-flight attack is compatible");
+
+        assert_eq!(restored.state(), uninterrupted.state());
+        uninterrupted.advance(Duration::from_secs(120));
+        restored.advance(Duration::from_secs(120));
+
+        assert_eq!(restored.state(), uninterrupted.state());
+        assert_eq!(restored.state().combat_reports.len(), 1);
+        assert_eq!(restored.state().combat_reports[0].planet_id, target);
+        let resolved = snapshot_from_simulation(&restored);
+        let reloaded =
+            restore_from_snapshot(&resolved).expect("a resolved combat report is compatible");
+        assert_eq!(reloaded.state(), restored.state());
+        assert_eq!(
+            reloaded.state().combat_reports,
+            restored.state().combat_reports
         );
     }
 
@@ -765,7 +875,7 @@ mod tests {
     }
 
     #[test]
-    fn state_and_save_versions_match_mvp_025() {
+    fn state_and_save_versions_match_mvp_025_b() {
         let simulation = Simulation::new(UniverseConfig::mvp());
         let save = snapshot_from_simulation(&simulation);
 

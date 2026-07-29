@@ -1297,3 +1297,35 @@ Versions après ce checkpoint :
 - `GAME_STATE_VERSION = 20` ;
 - `SAVE_VERSION = 21` ;
 - `RULESET_SCHEMA_VERSION = 7`.
+
+## MVP-025-B — Attaques, combat V1 et rapports
+
+`MissionKind::Attack` réutilise le planificateur et la machine d'état du moteur
+de trajet. Au lancement, la simulation fige un `AttackMissionCommitment`
+contenant la flotte attaquante, la présence défensive réelle, leurs révisions
+et une graine dérivée de l'univers, de la mission et de la planète. La
+résolution ne consulte donc aucune valeur mutable cachée.
+
+`resolve_combat` est une fonction pure paramétrée par `combat.ron`. Elle simule
+des rounds simultanés bornés, puis produit vainqueur, pertes, survivants,
+dommages, récupération et changement de contrôle. L'application travaille sur
+une copie de l'état, revalide propriétaire, forces et flotte, puis publie
+atomiquement le résultat. Un rapport déjà présent interdit toute seconde
+application.
+
+Le dernier renseignement estimatif reste la seule source de l'interface avant
+l'arrivée. Après une résolution effective, un rapport de combat persistant
+rend les valeurs engagées consultables et le renseignement local devient
+exact. Une cible ayant changé pendant le trajet produit au contraire un
+rapport d'invalidation sans révéler l'ancien instantané défensif.
+
+Pour garantir un adversaire de test sans supprimer les mondes vides, les règles
+de présence imposent une patrouille hostile sur une planète de chaque système
+directement voisin du départ. Le reste de la génération garde ses profils
+pondérés.
+
+Versions après ce checkpoint :
+
+- `GAME_STATE_VERSION = 21` ;
+- `SAVE_VERSION = 22` ;
+- `RULESET_SCHEMA_VERSION = 8`.

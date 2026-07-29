@@ -7,10 +7,12 @@ use galactic_domain::{
 };
 
 use crate::{
-    AuthorizationError, CraftableId, FleetAssignment, FleetComposition, FleetCompositionError,
-    FleetCreated, FleetError, FleetLocation, GameState, KnowledgeChange, KnowledgeLevel,
-    KnowledgeTarget, PlanetaryIntelPrecision, ShipStack, StrategicDuration, StrategicTick,
-    UniverseRepository, form_fleet, refresh_planetary_intelligence,
+    AttackMissionCommitment, AttackMissionOutcome, AttackMissionResult, AuthorizationError,
+    CombatApplicationError, CombatSnapshotError, CraftableId, FleetAssignment, FleetComposition,
+    FleetCompositionError, FleetCreated, FleetError, FleetLocation, GameState, KnowledgeChange,
+    KnowledgeLevel, KnowledgeTarget, PlanetaryIntelPrecision, ShipStack, StrategicDuration,
+    StrategicTick, UniverseRepository, combat_rules, form_fleet, prepare_attack_commitment,
+    refresh_planetary_intelligence, resolve_and_apply_attack,
 };
 
 /// Abstract distance crossed by a fleet for one route hop.
@@ -25,6 +27,7 @@ pub const MISSION_RESOLUTION_TICKS: u64 = 1;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MissionKind {
     Probe,
+    Attack,
     Transport,
     Harvest,
     Colonize,
@@ -102,6 +105,7 @@ pub struct MissionState {
     pub phase: MissionPhase,
     pub phase_started_at: StrategicTick,
     pub fuel_reservation: Option<ReservationId>,
+    pub attack: Option<AttackMissionCommitment>,
     pub result: Option<MissionResult>,
 }
 
@@ -151,6 +155,7 @@ pub struct ProbeMissionResult {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MissionResult {
     Probe(ProbeMissionResult),
+    Attack(AttackMissionResult),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -206,6 +211,13 @@ pub enum MissionError {
         target: MissionTarget,
         current: KnowledgeLevel,
     },
+    AttackPlanetTargetRequired,
+    AttackTargetNotAnalyzed {
+        planet_id: PlanetId,
+        current: KnowledgeLevel,
+    },
+    AttackFleetUnavailable(ColonyId),
+    Attack(CombatSnapshotError),
     DepartureInPast {
         current: StrategicTick,
         requested: StrategicTick,
@@ -270,6 +282,21 @@ pub enum MissionStateError {
     ProbeResultTargetMismatch {
         expected: MissionTarget,
         found: MissionTarget,
+    },
+    MissingAttackCommitment,
+    UnexpectedAttackCommitment,
+    AttackCommitmentTargetMismatch {
+        expected: PlanetId,
+        found: PlanetId,
+    },
+    AttackCommitmentFleetMismatch {
+        expected: FleetId,
+        found: FleetId,
+    },
+    MissingAttackResult,
+    AttackResultTargetMismatch {
+        expected: PlanetId,
+        found: PlanetId,
     },
 }
 
@@ -363,6 +390,16 @@ pub fn plan_mission(
         if fleet.composition.quantity(CraftableId::LIGHT_PROBE) == 0 {
             return Err(MissionError::ProbeRequired(fleet.id));
         }
+    }
+    if order.kind == MissionKind::Attack {
+        let Some(planet_id) = order.target.planet_id() else {
+            return Err(MissionError::AttackPlanetTargetRequired);
+        };
+        let current = state.planet_knowledge_level(planet_id);
+        if current < KnowledgeLevel::Analyzed {
+            return Err(MissionError::AttackTargetNotAnalyzed { planet_id, current });
+        }
+        prepare_attack_commitment(state, fleet.id, planet_id, 0).map_err(MissionError::Attack)?;
     }
     let hops = u16::try_from(route.len().saturating_sub(1))
         .map_err(|_| MissionError::TravelDurationOverflow)?;
@@ -488,6 +525,23 @@ pub fn launch_mission(
         .checked_add(1)
         .ok_or(MissionError::MissionIdOverflow)?;
     let mission_id = MissionId::new(state.next_mission_id);
+    let attack = if order.kind == MissionKind::Attack {
+        let planet_id = order
+            .target
+            .planet_id()
+            .expect("a planned attack always targets a planet");
+        Some(
+            prepare_attack_commitment(
+                state,
+                order.fleet_id,
+                planet_id,
+                attack_seed(universe.definition().seed, mission_id, planet_id),
+            )
+            .map_err(MissionError::Attack)?,
+        )
+    } else {
+        None
+    };
     let reservation = state
         .colony_mut(origin_colony_id)
         .expect("mission origin was validated")
@@ -512,6 +566,7 @@ pub fn launch_mission(
         phase: MissionPhase::Preparation,
         phase_started_at: state.clock.current_tick(),
         fuel_reservation: Some(reservation),
+        attack,
         result: None,
     });
     state.missions.sort_by_key(|mission| mission.id);
@@ -525,6 +580,85 @@ pub fn launch_mission(
         return_arrival_at: plan.return_arrival_at,
         fuel_cost: plan.fuel_cost,
     })
+}
+
+/// Launches a player-facing attack with an existing idle combat fleet, or
+/// forms one atomically from every combat ship docked at the origin.
+pub fn launch_attack_mission(
+    state: &mut GameState,
+    universe: &UniverseRepository,
+    actor: FactionId,
+    origin_colony_id: ColonyId,
+    target: MissionTarget,
+) -> Result<(Option<FleetCreated>, MissionLaunched), MissionError> {
+    let origin_colony = state
+        .colony(origin_colony_id)
+        .ok_or(MissionError::UnknownOriginColony(origin_colony_id))?;
+    state
+        .authorize_management(actor, origin_colony.owner)
+        .map_err(MissionError::Access)?;
+    let origin = origin_colony.system_id;
+    let Some(planet_id) = target.planet_id() else {
+        return Err(MissionError::AttackPlanetTargetRequired);
+    };
+    let current = state.planet_knowledge_level(planet_id);
+    if current < KnowledgeLevel::Analyzed {
+        return Err(MissionError::AttackTargetNotAnalyzed { planet_id, current });
+    }
+
+    let mut candidate = state.clone();
+    let existing_fleet = candidate
+        .fleets
+        .iter()
+        .filter(|fleet| {
+            candidate.can_manage(actor, fleet.owner)
+                && fleet.is_idle()
+                && fleet.location == FleetLocation::Docked(origin_colony_id)
+                && combat_rules().is_combat_fleet(fleet)
+        })
+        .map(|fleet| fleet.id)
+        .min();
+
+    let (fleet_id, created) = if let Some(fleet_id) = existing_fleet {
+        (fleet_id, None)
+    } else {
+        let composition = combat_rules()
+            .ships()
+            .filter_map(|definition| {
+                let quantity = candidate
+                    .colony(origin_colony_id)
+                    .expect("the origin colony was validated")
+                    .inventory
+                    .quantity(definition.craftable);
+                (quantity > 0).then_some(ShipStack::new(definition.craftable, quantity))
+            })
+            .collect::<Vec<_>>();
+        if composition.is_empty() {
+            return Err(MissionError::AttackFleetUnavailable(origin_colony_id));
+        }
+        let composition = FleetComposition::from_stacks(composition)
+            .map_err(FleetError::InvalidComposition)
+            .map_err(MissionError::Fleet)?;
+        let created = form_fleet(&mut candidate, actor, origin_colony_id, composition)
+            .map_err(MissionError::Fleet)?;
+        (created.fleet_id, Some(created))
+    };
+
+    let departure_at = candidate.clock.current_tick();
+    let launched = launch_mission(
+        &mut candidate,
+        universe,
+        actor,
+        MissionOrder {
+            fleet_id,
+            origin,
+            target,
+            kind: MissionKind::Attack,
+            departure_at,
+        },
+    )?;
+    *state = candidate;
+    Ok((created, launched))
 }
 
 /// Launches the minimal player-facing reconnaissance loop atomically.
@@ -810,10 +944,62 @@ pub fn validate_mission_state(
                 found: result.target,
             });
         }
-        (MissionKind::Transport | MissionKind::Harvest | MissionKind::Colonize, _, Some(_)) => {
+        (
+            MissionKind::Attack,
+            MissionPhase::OnSite
+            | MissionPhase::Returning
+            | MissionPhase::Completed
+            | MissionPhase::Failed,
+            None,
+        ) => return Err(MissionStateError::MissingAttackResult),
+        (
+            MissionKind::Attack,
+            MissionPhase::Preparation | MissionPhase::Outbound | MissionPhase::Cancelled,
+            Some(_),
+        ) => return Err(MissionStateError::UnexpectedMissionResult),
+        (MissionKind::Attack, _, Some(MissionResult::Attack(result))) => {
+            let expected = mission
+                .order
+                .target
+                .planet_id()
+                .ok_or(MissionStateError::MissingAttackCommitment)?;
+            if result.target != expected {
+                return Err(MissionStateError::AttackResultTargetMismatch {
+                    expected,
+                    found: result.target,
+                });
+            }
+        }
+        (MissionKind::Attack, _, Some(MissionResult::Probe(_)))
+        | (MissionKind::Probe, _, Some(MissionResult::Attack(_)))
+        | (MissionKind::Transport | MissionKind::Harvest | MissionKind::Colonize, _, Some(_)) => {
             return Err(MissionStateError::UnexpectedMissionResult);
         }
         _ => {}
+    }
+    match (mission.order.kind, &mission.attack) {
+        (MissionKind::Attack, Some(commitment)) => {
+            let expected_planet = mission
+                .order
+                .target
+                .planet_id()
+                .ok_or(MissionStateError::MissingAttackCommitment)?;
+            if commitment.defender.planet_id != expected_planet {
+                return Err(MissionStateError::AttackCommitmentTargetMismatch {
+                    expected: expected_planet,
+                    found: commitment.defender.planet_id,
+                });
+            }
+            if commitment.attacker.fleet_id != mission.order.fleet_id {
+                return Err(MissionStateError::AttackCommitmentFleetMismatch {
+                    expected: mission.order.fleet_id,
+                    found: commitment.attacker.fleet_id,
+                });
+            }
+        }
+        (MissionKind::Attack, None) => return Err(MissionStateError::MissingAttackCommitment),
+        (_, Some(_)) => return Err(MissionStateError::UnexpectedAttackCommitment),
+        (_, None) => {}
     }
     Ok(())
 }
@@ -833,6 +1019,17 @@ pub(crate) fn advance_missions(
                 }
                 MissionPhase::Outbound if current_tick >= mission.plan.outbound_arrival_at => {
                     (MissionPhase::OnSite, mission.plan.outbound_arrival_at)
+                }
+                MissionPhase::OnSite
+                    if matches!(
+                        mission.result,
+                        Some(MissionResult::Attack(AttackMissionResult {
+                            attackers_destroyed: true,
+                            ..
+                        }))
+                    ) =>
+                {
+                    (MissionPhase::Failed, mission.phase_started_at)
                 }
                 MissionPhase::OnSite if current_tick >= mission.plan.return_departure_at => {
                     (MissionPhase::Returning, mission.plan.return_departure_at)
@@ -856,6 +1053,7 @@ pub(crate) fn advance_missions(
                 .expect("validated missions always have a faction owner");
             let kind = mission.order.kind;
             let mission_result = mission.result;
+            let attack = mission.attack.clone();
             let mut knowledge_changes = Vec::new();
             let mut resolution = None;
 
@@ -965,6 +1163,26 @@ pub(crate) fn advance_missions(
                             result,
                             occurred_at: transition_at,
                         });
+                    } else if kind == MissionKind::Attack {
+                        let (_, result) = resolve_and_apply_attack(
+                            state,
+                            mission_id,
+                            transition_at,
+                            attack
+                                .as_ref()
+                                .expect("a validated attack has a commitment"),
+                        )
+                        .unwrap_or_else(|error| match error {
+                            CombatApplicationError::AlreadyApplied(_) => {
+                                panic!("a combat mission attempted to apply twice")
+                            }
+                            _ => panic!("validated combat application failed: {error:?}"),
+                        });
+                        resolution = Some(MissionResolution {
+                            mission_id,
+                            result: MissionResult::Attack(result),
+                            occurred_at: transition_at,
+                        });
                     }
                 }
                 MissionPhase::Returning => {}
@@ -975,7 +1193,8 @@ pub(crate) fn advance_missions(
                     fleet.location = FleetLocation::Docked(origin_colony_id);
                     fleet.assignment = FleetAssignment::Idle;
                 }
-                MissionPhase::Preparation | MissionPhase::Cancelled | MissionPhase::Failed => {
+                MissionPhase::Failed => {}
+                MissionPhase::Preparation | MissionPhase::Cancelled => {
                     unreachable!("automatic progression only follows the nominal path")
                 }
             }
@@ -1012,12 +1231,24 @@ pub(crate) fn advance_missions(
                     resolution,
                 });
             }
-            if next_phase == MissionPhase::Completed {
+            if matches!(next_phase, MissionPhase::Completed | MissionPhase::Failed) {
+                let outcome = if next_phase == MissionPhase::Failed
+                    || matches!(
+                        mission_result,
+                        Some(MissionResult::Attack(AttackMissionResult {
+                            outcome: AttackMissionOutcome::TargetInvalid(_),
+                            ..
+                        }))
+                    ) {
+                    MissionReportOutcome::Failed
+                } else {
+                    MissionReportOutcome::Completed
+                };
                 let report = MissionReport {
                     mission_id,
                     fleet_id,
                     kind,
-                    outcome: MissionReportOutcome::Completed,
+                    outcome,
                     occurred_at: transition_at,
                     result: mission_result,
                 };
@@ -1030,6 +1261,22 @@ pub(crate) fn advance_missions(
         }
     }
     events
+}
+
+fn attack_seed(universe_seed: u64, mission_id: MissionId, planet_id: PlanetId) -> u64 {
+    splitmix64(
+        universe_seed
+            ^ mission_id.raw().rotate_left(19)
+            ^ planet_id.raw().rotate_left(37)
+            ^ 0x434f_4d42_4154_5631,
+    )
+}
+
+fn splitmix64(mut value: u64) -> u64 {
+    value = value.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^ (value >> 31)
 }
 
 fn accessible_shortest_path(
@@ -1084,11 +1331,12 @@ fn checked_tick_add(tick: StrategicTick, duration: u64) -> Result<StrategicTick,
 mod tests {
     use std::time::Duration;
 
-    use galactic_domain::{ResourceStock, UniverseConfig};
+    use galactic_domain::{Owner, PlanetId, ResourceStock, UniverseConfig};
 
     use crate::{
-        CraftableId, FleetComposition, GameAction, KnowledgeLevel, ShipStack, Simulation,
-        form_fleet,
+        AttackInvalidReason, AttackMissionOutcome, CombatOutcome, CombatReportStatus, CraftableId,
+        FleetComposition, GameAction, KnowledgeLevel, PlanetaryForceLoss, ShipStack, Simulation,
+        apply_planetary_force_losses, form_fleet,
     };
 
     use super::*;
@@ -1113,6 +1361,43 @@ mod tests {
         simulation.universe_repository().neighboring_systems(origin)[0]
     }
 
+    fn simulation_with_attack_target() -> (Simulation, PlanetId) {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+        let actor = simulation.state().player_faction;
+        let origin = simulation.state().colonies[0].system_id;
+        let neighboring_systems = simulation
+            .universe_repository()
+            .neighboring_systems(origin)
+            .to_vec();
+        let target = simulation
+            .state()
+            .planetary_presences
+            .iter()
+            .find(|presence| {
+                neighboring_systems.contains(&presence.planet_id.system_id())
+                    && presence.occupant != Owner::Faction(actor)
+                    && presence.occupant != Owner::Unowned
+                    && !presence.forces.is_empty()
+            })
+            .expect("the home neighborhood guarantees a hostile outpost")
+            .planet_id;
+        let repository = simulation.universe_repository().clone();
+        simulation.state_mut().advance_system_knowledge(
+            &repository,
+            target.system_id(),
+            KnowledgeLevel::Probed,
+        );
+        simulation.state_mut().advance_planet_knowledge(
+            &repository,
+            target,
+            KnowledgeLevel::Analyzed,
+        );
+        simulation.state_mut().colonies[0]
+            .inventory
+            .add(CraftableId::FRIGATE_BULWARK, 3);
+        (simulation, target)
+    }
+
     fn detected_planets_in_origin(simulation: &Simulation) -> Vec<(usize, PlanetId)> {
         let origin = simulation.state().colonies[0].system_id;
         simulation
@@ -1130,7 +1415,7 @@ mod tests {
     }
 
     #[test]
-    fn all_mvp_mission_kinds_use_the_generic_planner() {
+    fn non_combat_mission_kinds_use_the_generic_planner() {
         for kind in [
             MissionKind::Probe,
             MissionKind::Transport,
@@ -1525,6 +1810,130 @@ mod tests {
                 .is_zero()
         );
         assert!(simulation.state().fleet(fleet_id).unwrap().is_idle());
+    }
+
+    #[test]
+    fn attack_secures_the_guaranteed_neighboring_outpost_once() {
+        let (mut simulation, target) = simulation_with_attack_target();
+        let colony_id = simulation.state().colonies[0].id;
+        let events = simulation.apply_player_action(GameAction::LaunchAttack {
+            colony_id,
+            target: MissionTarget::Planet {
+                system_id: target.system_id(),
+                planet_id: target,
+            },
+        });
+
+        assert!(events.iter().any(|event| matches!(
+            event.kind,
+            crate::GameEventKind::MissionLaunched(MissionLaunched {
+                kind: MissionKind::Attack,
+                ..
+            })
+        )));
+        let mission_id = simulation.state().missions[0].id;
+        simulation.advance(Duration::from_secs(120));
+
+        let presence = simulation
+            .state()
+            .planetary_presence(target)
+            .expect("the target presence remains addressable");
+        assert_eq!(
+            presence.occupant,
+            Owner::Faction(simulation.state().player_faction)
+        );
+        assert!(presence.forces.is_empty());
+        assert!(matches!(
+            simulation
+                .state()
+                .combat_report(mission_id)
+                .expect("combat produces one persistent report")
+                .status,
+            CombatReportStatus::Resolved(crate::CombatResolution {
+                outcome: CombatOutcome::AttackerVictory,
+                control: crate::CombatControlChange::Secured { .. },
+                ..
+            })
+        ));
+        assert!(matches!(
+            simulation.state().missions[0].result,
+            Some(MissionResult::Attack(AttackMissionResult {
+                outcome: AttackMissionOutcome::Resolved(CombatOutcome::AttackerVictory),
+                secured: true,
+                ..
+            }))
+        ));
+        assert_eq!(
+            simulation
+                .state()
+                .combat_reports
+                .iter()
+                .filter(|report| report.mission_id == mission_id)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn changed_target_is_rejected_without_applying_old_defenses() {
+        let (mut simulation, target) = simulation_with_attack_target();
+        let colony_id = simulation.state().colonies[0].id;
+        simulation.apply_player_action(GameAction::LaunchAttack {
+            colony_id,
+            target: MissionTarget::Planet {
+                system_id: target.system_id(),
+                planet_id: target,
+            },
+        });
+        let mission_id = simulation.state().missions[0].id;
+        let loss_target = simulation
+            .state()
+            .planetary_presence(target)
+            .expect("the target presence exists")
+            .forces[0];
+        apply_planetary_force_losses(
+            simulation.state_mut(),
+            target,
+            &[PlanetaryForceLoss {
+                definition_id: loss_target.definition_id,
+                quantity: 1,
+            }],
+        )
+        .expect("an external battle can change the defenses in flight");
+        let changed_presence = simulation
+            .state()
+            .planetary_presence(target)
+            .expect("the changed target still exists")
+            .clone();
+
+        simulation.advance(Duration::from_secs(120));
+
+        assert_eq!(
+            simulation
+                .state()
+                .planetary_presence(target)
+                .expect("the invalid target remains unchanged"),
+            &changed_presence
+        );
+        assert!(matches!(
+            simulation
+                .state()
+                .combat_report(mission_id)
+                .expect("an invalid target still creates a report")
+                .status,
+            CombatReportStatus::TargetInvalid(AttackInvalidReason::TargetPresenceChanged)
+        ));
+        assert!(matches!(
+            simulation.state().missions[0].result,
+            Some(MissionResult::Attack(AttackMissionResult {
+                outcome: AttackMissionOutcome::TargetInvalid(
+                    AttackInvalidReason::TargetPresenceChanged
+                ),
+                secured: false,
+                attackers_destroyed: false,
+                ..
+            }))
+        ));
     }
 
     #[test]

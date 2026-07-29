@@ -128,6 +128,7 @@ Le libellé de déblocage décrit l'action rendue possible.
 | `light_probe` | Sonde Luciole | reconnaissance rapide |
 | `light_cargo` | Caboteur Sillage | fret à courte portée |
 | `colony_ship` | Arche Pionnière | fondation de colonie |
+| `frigate_bulwark` | Frégate Rempart | combat de première ligne |
 
 Formule recommandée :
 
@@ -137,9 +138,9 @@ Formule recommandée :
 - militaire : fonction tactique suivie d'un nom de classe ;
 - soutien : rôle opérationnel immédiatement lisible.
 
-Les classes futures peuvent être introduites sous la forme
-`Frégate Rempart`, `Croiseur Vigie` ou `Ravitailleur Estuaire`. Un même nom de
-classe ne doit pas être réutilisé pour deux rôles.
+Les classes futures peuvent être introduites sous la forme `Croiseur Vigie` ou
+`Ravitailleur Estuaire`. Un même nom de classe ne doit pas être réutilisé pour
+deux rôles.
 
 ## Contrat technique
 

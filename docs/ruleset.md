@@ -4,7 +4,7 @@ Galactic charge son ruleset au démarrage depuis
 `assets/rulesets/default/`. La variable d'environnement
 `GALACTIC_RULESET_DIR` permet de sélectionner un autre dossier.
 
-Le ruleset est composé de neuf fichiers RON :
+Le ruleset est composé de dix fichiers RON :
 
 - `manifest.ron` : identifiant et versions ;
 - `economy.ron` : stockage de base, limites de files et cadence de production ;
@@ -16,6 +16,8 @@ Le ruleset est composé de neuf fichiers RON :
   profils environnementaux par type de planète ;
 - `planetary_presence.ron` : profils d'occupation, population et forces
   terrestres ou orbitales ;
+- `combat.ron` : rounds, variation, récupération et statistiques des
+  vaisseaux militaires ;
 - `starting_scenario.ron` : faction joueur, colonie, ressources et bâtiments initiaux.
 
 Les durées de construction et de fabrication sont exprimées en secondes dans
@@ -68,7 +70,8 @@ catalogue par défaut contient :
 
 - `light_probe` avec `probe_strength` ;
 - `light_cargo` avec 800 unités de capacité cargo ;
-- `colony_ship` avec `colonization_capacity`.
+- `colony_ship` avec `colonization_capacity` ;
+- `frigate_bulwark`, vaisseau militaire de première ligne.
 
 Les classes de vaisseau reconnues sont `Probe`, `Cargo`, `Colony`, `Military`
 et `Support`. Les catégories `Defense`, `Military` et `Support` sont déjà
@@ -109,10 +112,27 @@ décrivant sa population et sa garnison. Les identifiants de force et de faction
 doivent exister, les poids et statistiques doivent être strictement positifs,
 et les bornes doivent rester ordonnées.
 
+`home_neighborhood.guaranteed_profile_id` désigne en outre un profil hostile
+appliqué à une planète de chaque système directement voisin du départ lorsque
+le tirage normal n'y a placé aucune présence équivalente. Cette garantie
+fournit une cible de combat proche sans modifier la distribution du reste de
+l'univers.
+
 Le ruleset configure l'état réel, jamais la précision de l'interface. Une sonde
 ne révèle que le contact ; une analyse transforme les valeurs réelles en
 fourchettes arrondies. Les pertes futures modifient l'état réel sans actualiser
 automatiquement le dernier renseignement connu.
+
+## Combat
+
+`combat.ron` versionne la résolution de combat V1. Il fixe le nombre maximal de
+rounds, l'échelle des dommages, le poids défensif, la variation déterministe et
+la récupération par défense détruite. Chaque vaisseau militaire utilisable
+référence un `CraftableId` existant et définit attaque, défense et durabilité.
+
+Modifier une statistique ou un paramètre exige une nouvelle version de contenu.
+Ajouter ou retirer un identifiant de vaisseau militaire change l'empreinte
+structurelle et rend explicitement incompatibles les sauvegardes précédentes.
 
 ## Validation et sauvegardes
 

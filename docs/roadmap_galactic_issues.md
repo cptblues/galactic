@@ -5,8 +5,8 @@
 ## Vue d’ensemble
 
 - **45 issues** au total
-- **17 terminées**
-- **28 à faire**
+- **20 terminées**
+- **25 à faire**
 
 ## Sommaire de la roadmap
 
@@ -41,7 +41,7 @@
 | ⬜ | [MVP-023-C](#eng-49) — Ajouter la projection aplatie et les presets d'échelle galactique | [ENG-49](https://cadylo.app/galactic/issue/ENG-49) | P1 | 8 |
 | ✅ | [MVP-024](#eng-32) — Ajouter l'analyse planétaire et les règles de colonisabilité | [ENG-32](https://cadylo.app/galactic/issue/ENG-32) | P1 | 8 |
 | ✅ | [MVP-025](#eng-33) — Ajouter les occupants, forces et défenses planétaires | [ENG-33](https://cadylo.app/galactic/issue/ENG-33) | P1 | 5 |
-| ⬜ | [MVP-025-B](#eng-52) — Ajouter les attaques, le combat V1 et les rapports | [ENG-52](https://cadylo.app/galactic/issue/ENG-52) | P1 | — |
+| ✅ | [MVP-025-B](#eng-52) — Ajouter les attaques, le combat V1 et les rapports | [ENG-52](https://cadylo.app/galactic/issue/ENG-52) | P1 | — |
 | ⬜ | [MVP-026](#eng-34) — Implémenter le vaisseau-colonie et la mission de colonisation | [ENG-34](https://cadylo.app/galactic/issue/ENG-34) | P1 | 8 |
 | ⬜ | [MVP-027](#eng-35) — Initialiser une nouvelle colonie jouable | [ENG-35](https://cadylo.app/galactic/issue/ENG-35) | P1 | 8 |
 | ⬜ | [MVP-028](#eng-36) — Ajouter la gestion multi-colonies | [ENG-36](https://cadylo.app/galactic/issue/ENG-36) | P1 | 8 |
@@ -692,11 +692,11 @@ Débloquer progressivement exploration, logistique et colonisation avec un arbre
 | Métadonnée | Valeur |
 |---|---|
 | Issue | [ENG-51](https://cadylo.app/galactic/issue/ENG-51) |
-| Statut | À faire |
+| Statut | Terminée |
 | Priorité | P1 |
 | Estimation | Non estimée |
 | Créée le | 27/07/2026 |
-| Mise à jour le | 27/07/2026 |
+| Mise à jour le | 29/07/2026 |
 
 ### Objectif
 
@@ -1252,11 +1252,11 @@ forces d'une planète, avec un rapport exploitable par la sécurisation future.
 
 ### Critères d'acceptation
 
-- Une même entrée et une même graine produisent exactement le même rapport.
-- L'interface du joueur ne reçoit pas d'informations défensives non observées
+- [x] Une même entrée et une même graine produisent exactement le même rapport.
+- [x] L'interface du joueur ne reçoit pas d'informations défensives non observées
   avant le combat.
-- Les pertes et gains ne peuvent pas être appliqués deux fois.
-- Une planète n'est colonisable après attaque que si les règles la déclarent
+- [x] Les pertes et gains ne peuvent pas être appliqués deux fois.
+- [x] Une planète n'est colonisable après attaque que si les règles la déclarent
   sécurisée.
 
 [↑ Retour au sommaire](#sommaire-de-la-roadmap)

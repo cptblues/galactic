@@ -1,7 +1,10 @@
 (
-    version: 1,
+    version: 2,
     population_estimate_step: 1000,
     strength_estimate_step: 250,
+    home_neighborhood: (
+        guaranteed_profile_id: "vesper_patrol",
+    ),
     home: (
         population: 24000,
         forces: [
@@ -86,6 +89,17 @@
                 (id: "line_garrison", minimum: 12, maximum: 36),
                 (id: "surface_bunker", minimum: 2, maximum: 8),
                 (id: "orbital_sentry", minimum: 1, maximum: 5),
+            ],
+        ),
+        (
+            id: "vesper_patrol",
+            weight: 2,
+            occupant_faction_id: Some(2),
+            minimum_population: 2500,
+            maximum_population: 6500,
+            forces: [
+                (id: "line_garrison", minimum: 5, maximum: 10),
+                (id: "orbital_sentry", minimum: 1, maximum: 2),
             ],
         ),
         (

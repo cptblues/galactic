@@ -21,7 +21,8 @@ use galactic_domain::{
     WorldPosition,
 };
 use galactic_sim::{
-    ColonizationBlocker, DiplomaticRelation, EstimateRange, GameAction, GameEvent, GameEventKind,
+    AttackMissionOutcome, ColonizationBlocker, CombatControlChange, CombatOutcome,
+    CombatReportStatus, DiplomaticRelation, EstimateRange, GameAction, GameEvent, GameEventKind,
     InstallationConstraint, KnowledgeLevel, KnowledgeTarget, MVP_HOME_SYSTEM_ID, MissionKind,
     MissionPhase, MissionResult, MissionTarget, PlanetAnalysisError, PlanetEnvironment,
     PlanetaryForceDomain, PlanetaryIntelPrecision, PlanetaryOccupancyIntel, SelectionTarget,
@@ -877,6 +878,7 @@ enum UiAction {
     EnterSystem,
     ExitSystem,
     LaunchProbe,
+    LaunchAttack,
     AnalyzePlanet,
     ToggleProjection,
     ToggleDebugGraph,
@@ -1677,6 +1679,7 @@ fn spawn_ui(mut commands: Commands) {
             spawn_action_button(parent, UiAction::ExitSystem, "Retour univers", "Esc");
             spawn_action_button(parent, UiAction::LaunchProbe, "Lancer reconnaissance", "K");
             spawn_action_button(parent, UiAction::AnalyzePlanet, "Analyser planète", "L");
+            spawn_action_button(parent, UiAction::LaunchAttack, "Lancer attaque", "M");
             spawn_action_button(
                 parent,
                 UiAction::ToggleProjection,
@@ -1723,7 +1726,7 @@ fn spawn_ui(mut commands: Commands) {
 
     commands.spawn((
         Text::new(
-            "Clic sélectionner | Double-clic ouvrir/recentrer | K sonder | L analyser | P projection | droit orbite | milieu déplacer | molette zoom",
+            "Clic sélectionner | Double-clic ouvrir/recentrer | K sonder | L analyser | M attaquer | P projection | droit orbite | milieu déplacer | molette zoom",
         ),
         ui_text_font(12.0),
         TextColor(Color::srgb(0.76, 0.84, 0.90)),
@@ -3766,6 +3769,8 @@ fn simulation_shortcut(keyboard: &ButtonInput<KeyCode>) -> Option<UiAction> {
         Some(UiAction::LaunchProbe)
     } else if keyboard.just_pressed(KeyCode::KeyL) {
         Some(UiAction::AnalyzePlanet)
+    } else if keyboard.just_pressed(KeyCode::KeyM) {
+        Some(UiAction::LaunchAttack)
     } else {
         None
     }
@@ -3839,6 +3844,14 @@ fn apply_ui_action(
                 apply_simulation_command(simulation, GameAction::AnalyzePlanet { planet_id });
             }
         }
+        UiAction::LaunchAttack => {
+            if let Some((colony_id, target)) = selected_attack_context(simulation.simulation()) {
+                apply_simulation_command(
+                    simulation,
+                    GameAction::LaunchAttack { colony_id, target },
+                );
+            }
+        }
         UiAction::ToggleProjection => {
             navigation.toggle_projection();
         }
@@ -3891,6 +3904,7 @@ fn action_available(
         }
         UiAction::ExitSystem => matches!(navigation.mode, StrategicViewMode::System(_)),
         UiAction::LaunchProbe => selected_probe_context(simulation.simulation()).is_some(),
+        UiAction::LaunchAttack => selected_attack_context(simulation.simulation()).is_some(),
         UiAction::AnalyzePlanet => selected_analysis_target(simulation.simulation()).is_some(),
     }
 }
@@ -3942,6 +3956,36 @@ fn selected_analysis_target(simulation: &Simulation) -> Option<PlanetId> {
         return None;
     };
     (state.planet_knowledge_level(planet_id) == KnowledgeLevel::Probed).then_some(planet_id)
+}
+
+fn selected_attack_context(
+    simulation: &Simulation,
+) -> Option<(galactic_domain::ColonyId, MissionTarget)> {
+    let state = simulation.state();
+    let SelectionTarget::Planet {
+        system_id,
+        planet_id,
+    } = state.selected
+    else {
+        return None;
+    };
+    if state.planet_knowledge_level(planet_id) < KnowledgeLevel::Analyzed {
+        return None;
+    }
+    let report = state.planetary_intelligence_report(planet_id)?;
+    let PlanetaryOccupancyIntel::Occupied(occupant) = report.occupancy else {
+        return None;
+    };
+    if occupant == state.player_faction {
+        return None;
+    }
+    Some((
+        state.player_home_colony()?.id,
+        MissionTarget::Planet {
+            system_id,
+            planet_id,
+        },
+    ))
 }
 
 fn focus_selected_system(simulation: &SimulationResource, navigation: &mut StrategicNavigation) {
@@ -4896,6 +4940,7 @@ fn mission_status_line(simulation: &Simulation) -> String {
         .saturating_sub(state.clock.current_tick().value());
     let kind = match mission.order.kind {
         MissionKind::Probe => "Reconnaissance",
+        MissionKind::Attack => "Attaque",
         MissionKind::Transport => "Transport",
         MissionKind::Harvest => "Récolte",
         MissionKind::Colonize => "Colonisation",
@@ -5388,7 +5433,7 @@ fn planetary_intelligence_text(simulation: &Simulation, planet_id: PlanetId) -> 
     };
 
     let observed = format!("Observation au tick {}", report.observed_at.value());
-    match report.precision {
+    let intelligence = match report.precision {
         PlanetaryIntelPrecision::Contact => {
             let presence = match report.occupancy {
                 PlanetaryOccupancyIntel::Unoccupied => {
@@ -5463,6 +5508,105 @@ fn planetary_intelligence_text(simulation: &Simulation, planet_id: PlanetId) -> 
                 estimate_range_text(report.ground_strength),
                 estimate_range_text(report.orbital_strength),
             )
+        }
+    };
+    state
+        .latest_combat_report_for_planet(planet_id)
+        .map(|combat| format!("{intelligence}\n\n{}", combat_report_text(combat)))
+        .unwrap_or(intelligence)
+}
+
+fn combat_report_text(report: &galactic_sim::CombatReport) -> String {
+    match &report.status {
+        CombatReportStatus::TargetInvalid(reason) => format!(
+            "RAPPORT DE COMBAT — CIBLE INVALIDÉE\nMission {} • tick {}\n{}.\nAucune donnée défensive supplémentaire n'a été révélée.",
+            report.mission_id.raw(),
+            report.resolved_at.value(),
+            attack_invalid_reason_label(*reason),
+        ),
+        CombatReportStatus::Resolved(resolution) => {
+            let control = match resolution.control {
+                CombatControlChange::Unchanged => "contrôle territorial inchangé",
+                CombatControlChange::Secured { .. } => "orbite et surface sécurisées par le joueur",
+            };
+            format!(
+                "RAPPORT DE COMBAT — {}\nMission {} • tick {} • {} round(s)\nAttaquants engagés : {}\nAttaquants survivants : {}\nDéfense engagée : {}\nDéfense survivante : {}\nDommages subis/infligés : {} / {}\nRécupérable : {} métal, {} cristal, {} carburant\nRécupéré : {} métal, {} cristal, {} carburant\nContrôle : {}",
+                combat_outcome_label(resolution.outcome).to_uppercase(),
+                report.mission_id.raw(),
+                report.resolved_at.value(),
+                resolution.rounds,
+                combat_ship_stacks_text(&report.attacker.ships),
+                combat_ship_stacks_text(&resolution.attacker_survivors),
+                planetary_force_stacks_text(&report.defender.forces),
+                planetary_force_stacks_text(&resolution.defender_survivors),
+                resolution.attacker_damage,
+                resolution.defender_damage,
+                resolution.salvage_recoverable.metal,
+                resolution.salvage_recoverable.crystal,
+                resolution.salvage_recoverable.fuel,
+                resolution.salvage_recovered.metal,
+                resolution.salvage_recovered.crystal,
+                resolution.salvage_recovered.fuel,
+                control,
+            )
+        }
+    }
+}
+
+fn combat_ship_stacks_text(stacks: &[galactic_sim::CombatShipStack]) -> String {
+    if stacks.is_empty() {
+        return "aucun".to_string();
+    }
+    stacks
+        .iter()
+        .map(|stack| {
+            format!(
+                "{} × {}",
+                stack.quantity,
+                galactic_sim::craftable_definition(stack.craftable).name,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn planetary_force_stacks_text(stacks: &[galactic_sim::PlanetaryForceStack]) -> String {
+    if stacks.is_empty() {
+        return "aucune".to_string();
+    }
+    let catalog = default_ruleset().planetary_presence();
+    stacks
+        .iter()
+        .map(|stack| {
+            let name = catalog
+                .definition(stack.definition_id)
+                .map(|definition| definition.name)
+                .unwrap_or("unité inconnue");
+            format!("{} × {name}", stack.quantity)
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+const fn combat_outcome_label(outcome: CombatOutcome) -> &'static str {
+    match outcome {
+        CombatOutcome::AttackerVictory => "victoire attaquante",
+        CombatOutcome::DefenderVictory => "victoire défensive",
+        CombatOutcome::Stalemate => "affrontement indécis",
+        CombatOutcome::MutualDestruction => "destruction mutuelle",
+    }
+}
+
+const fn attack_invalid_reason_label(reason: galactic_sim::AttackInvalidReason) -> &'static str {
+    match reason {
+        galactic_sim::AttackInvalidReason::TargetOwnerChanged => {
+            "le contrôle de la planète a changé pendant le trajet"
+        }
+        galactic_sim::AttackInvalidReason::TargetPresenceChanged => {
+            "les forces présentes ont changé pendant le trajet"
+        }
+        galactic_sim::AttackInvalidReason::AttackerFleetChanged => {
+            "la flotte attaquante ne correspond plus à l'engagement"
         }
     }
 }
@@ -5999,6 +6143,22 @@ fn event_label(event: GameEvent) -> String {
                     planet_id.index(),
                 ),
             },
+            MissionResult::Attack(result) => match result.outcome {
+                AttackMissionOutcome::Resolved(outcome) => format!(
+                    "combat terminé sur le corps {} : {}{}",
+                    result.target.index(),
+                    combat_outcome_label(outcome),
+                    if result.secured {
+                        ", planète sécurisée"
+                    } else {
+                        ""
+                    },
+                ),
+                AttackMissionOutcome::TargetInvalid(_) => format!(
+                    "attaque annulée sur le corps {} : cible devenue invalide",
+                    result.target.index(),
+                ),
+            },
         },
         GameEventKind::MissionReported(report) => format!(
             "rapport mission {:?} : {:?}",
@@ -6042,6 +6202,24 @@ fn mission_error_text(error: galactic_sim::MissionError) -> String {
         galactic_sim::MissionError::ProbeTargetNotDetected { .. } => {
             "la reconnaissance exige un système ou une planète actuellement détecté".to_string()
         }
+        galactic_sim::MissionError::AttackFleetUnavailable(_) => {
+            "aucune Frégate Rempart disponible ; construisez-en au chantier orbital".to_string()
+        }
+        galactic_sim::MissionError::AttackTargetNotAnalyzed { .. } => {
+            "la cible doit être sondée puis analysée avant une attaque".to_string()
+        }
+        galactic_sim::MissionError::AttackPlanetTargetRequired => {
+            "une attaque doit cibler une planète".to_string()
+        }
+        galactic_sim::MissionError::Attack(
+            galactic_sim::CombatSnapshotError::UnoccupiedTarget(_),
+        ) => "la planète est inoccupée et ne peut pas être attaquée".to_string(),
+        galactic_sim::MissionError::Attack(galactic_sim::CombatSnapshotError::FriendlyTarget(
+            _,
+        )) => "la planète est déjà sous contrôle allié".to_string(),
+        galactic_sim::MissionError::Attack(
+            galactic_sim::CombatSnapshotError::FleetNotCombatCapable(_),
+        ) => "la flotte doit être composée de vaisseaux militaires".to_string(),
         galactic_sim::MissionError::NoAccessibleRoute { .. } => {
             "aucune route connue ne permet d'atteindre cette destination".to_string()
         }
@@ -6720,6 +6898,10 @@ VmSwap:\t      2048 kB
             planet_id,
             KnowledgeLevel::Probed,
         );
+        simulation.apply_player_action(GameAction::SelectPlanet {
+            system_id,
+            planet_id,
+        });
         galactic_sim::refresh_planetary_intelligence(
             simulation.state_mut(),
             planet_id,
@@ -6734,6 +6916,8 @@ VmSwap:\t      2048 kB
         assert!(contact.contains("identité inconnue"));
         assert!(!contact.contains(&occupant_name));
         assert!(force_names.iter().all(|name| !contact.contains(name)));
+        assert!(!contact.contains("RAPPORT DE COMBAT"));
+        assert_eq!(selected_attack_context(&simulation), None);
 
         simulation.state_mut().research = galactic_sim::ResearchState::from_completed([
             galactic_sim::TechnologyId::SPATIAL_DETECTION,
@@ -6753,6 +6937,21 @@ VmSwap:\t      2048 kB
             !force.quantity.is_exact() && surveyed.contains(&estimate_range_text(force.quantity))
         }));
         assert!(!surveyed.contains("DONNÉES LOCALES"));
+        assert!(!surveyed.contains("RAPPORT DE COMBAT"));
+        assert_eq!(
+            selected_attack_context(&simulation),
+            Some((
+                simulation
+                    .state()
+                    .player_home_colony()
+                    .expect("the player home colony exists")
+                    .id,
+                MissionTarget::Planet {
+                    system_id,
+                    planet_id,
+                },
+            ))
+        );
     }
 
     #[test]
@@ -6896,6 +7095,7 @@ VmSwap:\t      2048 kB
             phase: MissionPhase::Outbound,
             phase_started_at: galactic_sim::StrategicTick::new(10),
             fuel_reservation: None,
+            attack: None,
             result: None,
         };
 
@@ -7039,6 +7239,14 @@ VmSwap:\t      2048 kB
             simulation_shortcut(&keyboard),
             Some(UiAction::AnalyzePlanet)
         );
+    }
+
+    #[test]
+    fn attack_shortcut_uses_m() {
+        let mut keyboard = ButtonInput::<KeyCode>::default();
+        keyboard.press(KeyCode::KeyM);
+
+        assert_eq!(simulation_shortcut(&keyboard), Some(UiAction::LaunchAttack));
     }
 
     #[test]

@@ -21,6 +21,7 @@ pub struct CraftableId(&'static str);
 impl CraftableId {
     pub const LIGHT_PROBE: Self = Self("light_probe");
     pub const LIGHT_CARGO: Self = Self("light_cargo");
+    pub const FRIGATE_BULWARK: Self = Self("frigate_bulwark");
     pub const COLONY_SHIP: Self = Self("colony_ship");
 
     pub const fn from_static(key: &'static str) -> Self {
@@ -1123,7 +1124,7 @@ mod tests {
     #[test]
     fn default_catalog_is_external_and_generic() {
         assert_eq!(craftable_catalog().version(), 2);
-        assert_eq!(craftable_catalog().ids().count(), 3);
+        assert_eq!(craftable_catalog().ids().count(), 4);
         assert_eq!(
             craftable_definition(CraftableId::LIGHT_PROBE).category,
             CraftableCategory::Probe,
@@ -1134,6 +1135,10 @@ mod tests {
                 .expect("cargo is a ship")
                 .cargo_capacity,
             800,
+        );
+        assert_eq!(
+            craftable_definition(CraftableId::FRIGATE_BULWARK).category,
+            CraftableCategory::Military,
         );
     }
 

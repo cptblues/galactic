@@ -5,19 +5,19 @@ use galactic_domain::{
 };
 
 use crate::{
-    BuildingLevels, ConstructionQueue, CraftInventory, CraftQueue, DiplomacyError, DiplomacyState,
-    DiplomaticRelation, DiscoveryFrontier, FleetState, KnowledgeChange, KnowledgeCounts,
-    KnowledgeLevel, KnowledgeTarget, MissionReport, MissionState, PlanetAnalysisReport,
-    PlanetKnowledge, PlanetResourceProfile, PlanetaryIntelligenceReport, PlanetaryPresence,
-    ProductionRemainder, ResearchState, SelectionTarget, StartingScenario, StartingScenarioError,
-    StrategicClock, StrategicTick, SystemKnowledge, UniverseRepository,
+    BuildingLevels, CombatReport, ConstructionQueue, CraftInventory, CraftQueue, DiplomacyError,
+    DiplomacyState, DiplomaticRelation, DiscoveryFrontier, FleetState, KnowledgeChange,
+    KnowledgeCounts, KnowledgeLevel, KnowledgeTarget, MissionReport, MissionState,
+    PlanetAnalysisReport, PlanetKnowledge, PlanetResourceProfile, PlanetaryIntelligenceReport,
+    PlanetaryPresence, ProductionRemainder, ResearchState, SelectionTarget, StartingScenario,
+    StartingScenarioError, StrategicClock, StrategicTick, SystemKnowledge, UniverseRepository,
     intelligence_precision_for_knowledge, planetary_presence_rules, refresh_planetary_intelligence,
 };
 
 /// Version of the mutable in-memory state contract.
 ///
-/// Version 20 persists real planetary presences and bounded intelligence reports.
-pub const GAME_STATE_VERSION: u32 = 20;
+/// Version 21 persists attack commitments and detailed combat reports.
+pub const GAME_STATE_VERSION: u32 = 21;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemVisibility {
@@ -61,6 +61,7 @@ pub struct GameState {
     pub missions: Vec<MissionState>,
     pub next_mission_id: u64,
     pub mission_reports: Vec<MissionReport>,
+    pub combat_reports: Vec<CombatReport>,
     pub planet_analysis_reports: Vec<PlanetAnalysisReport>,
     pub planetary_presences: Vec<PlanetaryPresence>,
     pub planetary_intelligence_reports: Vec<PlanetaryIntelligenceReport>,
@@ -127,6 +128,7 @@ impl GameState {
             missions: Vec::new(),
             next_mission_id: 0,
             mission_reports: Vec::new(),
+            combat_reports: Vec::new(),
             planet_analysis_reports: Vec::new(),
             planetary_presences,
             planetary_intelligence_reports: Vec::new(),
@@ -279,6 +281,19 @@ impl GameState {
         self.missions
             .iter()
             .filter(|mission| self.can_manage(self.player_faction, mission.owner))
+    }
+
+    pub fn combat_report(&self, mission_id: MissionId) -> Option<&CombatReport> {
+        self.combat_reports
+            .iter()
+            .find(|report| report.mission_id == mission_id)
+    }
+
+    pub fn latest_combat_report_for_planet(&self, planet_id: PlanetId) -> Option<&CombatReport> {
+        self.combat_reports
+            .iter()
+            .filter(|report| report.planet_id == planet_id)
+            .max_by_key(|report| (report.resolved_at, report.mission_id))
     }
 
     pub fn planet_analysis_report(&self, planet_id: PlanetId) -> Option<&PlanetAnalysisReport> {

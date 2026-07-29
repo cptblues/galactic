@@ -105,6 +105,7 @@ pub struct PlanetaryPresenceRules {
     definitions: BTreeMap<PlanetaryForceId, PlanetaryForceDefinition>,
     profiles: Vec<PlanetaryPresenceProfile>,
     total_profile_weight: u64,
+    guaranteed_nearby_profile_index: usize,
 }
 
 impl PlanetaryPresenceRules {
@@ -112,7 +113,7 @@ impl PlanetaryPresenceRules {
         config: PlanetaryPresenceRulesConfig,
         factions: &[StartingFactionConfig],
     ) -> Result<Self, PlanetaryPresenceRulesError> {
-        if config.version != 1 {
+        if config.version != 2 {
             return Err(PlanetaryPresenceRulesError::UnsupportedVersion(
                 config.version,
             ));
@@ -171,6 +172,9 @@ impl PlanetaryPresenceRules {
         }
         let home_forces = compile_fixed_forces(config.home.forces, &definition_ids, &definitions)?;
 
+        let guaranteed_profile_id = config.home_neighborhood.guaranteed_profile_id;
+        validate_identifier(&guaranteed_profile_id)
+            .map_err(|()| PlanetaryPresenceRulesError::InvalidIdentifier)?;
         if config.profiles.is_empty() || config.profiles.len() > MAX_PLANETARY_PRESENCE_PROFILES {
             return Err(PlanetaryPresenceRulesError::InvalidProfileCount {
                 found: config.profiles.len(),
@@ -242,6 +246,14 @@ impl PlanetaryPresenceRules {
         if !has_unoccupied || !has_occupied {
             return Err(PlanetaryPresenceRulesError::MissingProfileCategory);
         }
+        let guaranteed_nearby_profile_index = profiles
+            .iter()
+            .position(|profile| profile.id == guaranteed_profile_id)
+            .ok_or(PlanetaryPresenceRulesError::UnknownGuaranteedProfile)?;
+        let guaranteed = &profiles[guaranteed_nearby_profile_index];
+        if guaranteed.occupant == Owner::Unowned || guaranteed.forces.is_empty() {
+            return Err(PlanetaryPresenceRulesError::InvalidGuaranteedProfile);
+        }
 
         Ok(Self {
             version: config.version,
@@ -252,6 +264,7 @@ impl PlanetaryPresenceRules {
             definitions,
             profiles,
             total_profile_weight,
+            guaranteed_nearby_profile_index,
         })
     }
 
@@ -294,6 +307,31 @@ impl PlanetaryPresenceRules {
                 presences.push(presence);
             }
         }
+        let guaranteed = &self.profiles[self.guaranteed_nearby_profile_index];
+        for system_id in universe.neighboring_systems(home_planet.system_id()) {
+            let already_present = presences.iter().any(|presence| {
+                presence.planet_id.system_id() == system_id
+                    && presence.occupant == guaranteed.occupant
+                    && !presence.forces.is_empty()
+            });
+            if already_present {
+                continue;
+            }
+            let Some(system) = universe.system(system_id) else {
+                continue;
+            };
+            let Some(target) = system.planets.iter().min_by_key(|planet| {
+                splitmix64(universe.definition().seed ^ planet.id.raw() ^ 0x4e45_4152_4259_5447)
+            }) else {
+                continue;
+            };
+            let replacement = self.presence_from_selected_profile(target.id, guaranteed);
+            let index = presences
+                .iter()
+                .position(|presence| presence.planet_id == target.id)
+                .expect("every generated planet has an initial presence");
+            presences[index] = replacement;
+        }
         presences.sort_by_key(|presence| presence.planet_id);
         presences
     }
@@ -314,6 +352,14 @@ impl PlanetaryPresenceRules {
                 }
             })
             .expect("validated profile weights must select one profile");
+        self.presence_from_selected_profile(planet_id, profile)
+    }
+
+    fn presence_from_selected_profile(
+        &self,
+        planet_id: PlanetId,
+        profile: &PlanetaryPresenceProfile,
+    ) -> PlanetaryPresence {
         let population = varied_inclusive(
             profile.minimum_population,
             profile.maximum_population,
@@ -464,6 +510,9 @@ impl PlanetaryPresenceRules {
             }
             output.push_str("];");
         }
+        output.push_str("nearby:");
+        output.push_str(self.profiles[self.guaranteed_nearby_profile_index].id);
+        output.push(';');
     }
 }
 
@@ -514,10 +563,14 @@ impl EstimateRange {
         if value == 0 {
             return Self::exact(0);
         }
-        let minimum = value / step * step;
+        let bucket_start = value / step * step;
         Self {
-            minimum,
-            maximum: minimum.saturating_add(step.saturating_sub(1)),
+            minimum: bucket_start.max(1),
+            maximum: if bucket_start == 0 {
+                step
+            } else {
+                bucket_start.saturating_add(step.saturating_sub(1))
+            },
         }
     }
 
@@ -660,6 +713,8 @@ pub enum PlanetaryPresenceRulesError {
     InvalidOccupiedPopulation,
     InvalidProfileForce,
     MissingProfileCategory,
+    UnknownGuaranteedProfile,
+    InvalidGuaranteedProfile,
 }
 
 pub fn planetary_presence_rules() -> &'static PlanetaryPresenceRules {
@@ -1070,9 +1125,15 @@ pub(crate) struct PlanetaryPresenceRulesConfig {
     version: u32,
     population_estimate_step: u64,
     strength_estimate_step: u64,
+    home_neighborhood: HomeNeighborhoodConfig,
     home: HomePresenceConfig,
     units: Vec<PlanetaryForceDefinitionConfig>,
     profiles: Vec<PlanetaryPresenceProfileConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HomeNeighborhoodConfig {
+    guaranteed_profile_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1150,6 +1211,17 @@ mod tests {
                 .iter()
                 .any(|presence| presence.occupant == Owner::Faction(FactionId::new(2))),
         );
+        let home = left.state().colonies[0].system_id;
+        for neighbor in left.universe_repository().neighboring_systems(home) {
+            assert!(
+                left.state().planetary_presences.iter().any(|presence| {
+                    presence.planet_id.system_id() == neighbor
+                        && presence.occupant == Owner::Faction(FactionId::new(2))
+                        && !presence.forces.is_empty()
+                }),
+                "every home-neighbor system exposes a deterministic hostile target",
+            );
+        }
     }
 
     #[test]
@@ -1210,6 +1282,32 @@ mod tests {
                 .iter()
                 .all(|force| !force.quantity.is_exact()),
         );
+    }
+
+    #[test]
+    fn positive_estimates_never_claim_that_zero_units_are_possible() {
+        assert_eq!(
+            EstimateRange::bucketed(1, 5),
+            EstimateRange {
+                minimum: 1,
+                maximum: 5,
+            },
+        );
+        assert_eq!(
+            EstimateRange::bucketed(4, 5),
+            EstimateRange {
+                minimum: 1,
+                maximum: 5,
+            },
+        );
+        assert_eq!(
+            EstimateRange::bucketed(5, 5),
+            EstimateRange {
+                minimum: 5,
+                maximum: 9,
+            },
+        );
+        assert_eq!(EstimateRange::bucketed(0, 5), EstimateRange::exact(0));
     }
 
     #[test]
