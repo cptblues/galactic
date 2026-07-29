@@ -1,8 +1,8 @@
 use galactic_domain::{ColonyId, FactionId, MissionId, PlanetId, SystemId};
 
 use crate::{
-    BuildingKind, CraftableId, FleetComposition, MissionOrder, StrategicTick, TechnologyId,
-    TimeSpeed,
+    BuildingKind, CraftableId, FleetComposition, MissionOrder, MissionTarget, StrategicTick,
+    TechnologyId, TimeSpeed,
 };
 
 /// An action requested from the deterministic simulation.
@@ -37,7 +37,7 @@ pub enum GameAction {
     },
     LaunchProbe {
         colony_id: ColonyId,
-        target: SystemId,
+        target: MissionTarget,
     },
     LaunchMission(MissionOrder),
     CancelMission {

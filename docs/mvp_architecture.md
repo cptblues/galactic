@@ -1202,3 +1202,35 @@ anneaux restent partagés. La rotation axiale et l'orbite sont uniquement
 visuelles, lentes et calculées avec le temps Bevy : elles ne changent ni la
 position métier, ni les durées de mission. Un corps `Detected` conserve le mesh
 simple et le matériau de silhouette afin de ne pas révéler son type.
+
+## MVP-023-E — Sondes planétaires et trajectoires visibles
+
+`MissionTarget` distingue désormais une cible `System(SystemId)` d'une cible
+`Planet { system_id, planet_id }`. Le planificateur valide l'appartenance de la
+planète à son système et autorise une route locale réduite au système d'origine.
+Le temps d'un trajet interstellaire reste calculé par saut connu ; le temps
+local ajoute un travail orbital déterministe croissant avec l'index de la
+planète. Le carburant aller-retour comprend au moins une étape pour une cible
+planétaire locale.
+
+À l'arrivée d'une reconnaissance planétaire, seule la cible progresse de
+`Detected` à `Probed`. Ses planètes voisines conservent leur niveau courant et
+aucune donnée d'habitabilité n'est révélée avant l'analyse planétaire. Les
+missions vers un système conservent la découverte de frontière introduite en
+MVP-023.
+
+Le client nomme provisoirement les corps détectés selon leur orbite
+(`Nom-du-système I`, `II`, etc.). La touche `K` construit la même commande
+atomique de reconnaissance pour le système ou la planète sélectionnés.
+Un repère cyan interpole sa position depuis les bornes de phase persistées :
+sur les orbites dans la vue Système pour une cible locale, et sur la liste des
+systèmes de la route dans la vue Univers pour une mission interstellaire.
+L'aller progresse de 0 à 1 et le retour de 1 à 0 exclusivement selon les ticks
+stratégiques ; le rendu n'ajoute aucun asset ni état métier par image.
+
+La forme persistée des missions change :
+
+- `GAME_STATE_VERSION = 18` ;
+- `SAVE_VERSION = 19` ;
+- `RULESET_SCHEMA_VERSION = 5` (inchangé) ;
+- `GENERATION_VERSION = 4` (inchangé).

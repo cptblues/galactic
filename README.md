@@ -39,11 +39,11 @@ Le domaine, la simulation et la persistance ne dependent pas de Bevy. Les vues
 peuvent etre recreees depuis l'etat metier sans conserver d'`Entity`. Le moteur
 de mission calcule les trajets, verrouille les flottes et progresse uniquement
 sur les ticks stratégiques. Une Sonde Luciole construite au chantier peut être
-envoyée vers le système détecté sélectionné : son arrivée révèle la cible,
-ses routes directes et exactement le prochain anneau de signaux. La définition
-immuable de l'univers regroupe aussi les systèmes en secteurs déterministes ;
-la vue globale affiche uniquement les secteurs dont au moins un membre est
-connu.
+envoyée vers un système ou une planète détectés. Une cible planétaire locale est
+identifiée sans révéler ses voisines ; une cible interstellaire ouvre ensuite la
+frontière de découverte normale. La définition immuable de l'univers regroupe
+aussi les systèmes en secteurs déterministes ; la vue globale affiche uniquement
+les secteurs dont au moins un membre est connu.
 
 Documentation courte: `docs/mvp_architecture.md`.
 
@@ -68,7 +68,7 @@ Référence éditoriale : `docs/universe_bible.md`.
 | Gestion planétaire | `C` |
 | Recherche | `T` |
 | Chantier orbital | `Y` |
-| Lancer une reconnaissance | `K` |
+| Sonder le système ou la planète sélectionnés | `K` |
 | Basculer projection 3D / 2,5D | `P` |
 | Reconstruire les vues Bevy | `R` |
 
@@ -107,3 +107,17 @@ identifiées tournent lentement sur elles-mêmes et suivent une orbite visuelle
 indépendante des ticks de simulation. Atmosphères, anneaux et halos réutilisent
 des meshes et matériaux partagés ; les corps seulement détectés restent des
 silhouettes et ne révèlent aucune donnée cachée.
+
+## MVP-023-E — Sondes planétaires et trajectoires
+
+Les corps détectés d'un système reçoivent une désignation orbitale stable
+(`Port-Sillage I`, `II`, etc.) avant que leur véritable identité soit connue.
+Sélectionner l'un de ces corps puis appuyer sur `K` lance une Sonde Luciole :
+à l'arrivée, cette planète seule passe au niveau `Probed`, révélant son nom et
+son type sans anticiper l'analyse de sa colonisabilité.
+
+Une mission locale reste dans la vue Système et sa durée augmente avec le rang
+orbital de la cible. Une mission vers un autre système est animée le long de sa
+route dans la vue Univers ; sa durée dépend du nombre de sauts connus. Le même
+repère visuel suit l'aller puis le retour et sa position est calculée depuis les
+ticks stratégiques, indépendamment du nombre d'images par seconde.

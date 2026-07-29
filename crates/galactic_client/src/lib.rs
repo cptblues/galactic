@@ -22,8 +22,8 @@ use galactic_domain::{
 };
 use galactic_sim::{
     GameAction, GameEvent, GameEventKind, KnowledgeLevel, KnowledgeTarget, MVP_HOME_SYSTEM_ID,
-    MissionKind, MissionPhase, MissionResult, SelectionTarget, Simulation, SystemVisibility,
-    TimeSpeed,
+    MissionKind, MissionPhase, MissionResult, MissionTarget, SelectionTarget, Simulation,
+    SystemVisibility, TimeSpeed,
 };
 
 const UNIVERSE_VERTICAL_EXAGGERATION: f32 = 3.4;
@@ -1441,9 +1441,7 @@ fn spawn_system_view(
             KnowledgeLevel::Unknown => {
                 continue;
             }
-            KnowledgeLevel::Detected => {
-                format!("Corps détecté {}", index + 1)
-            }
+            KnowledgeLevel::Detected => provisional_planet_label(&system.name, index),
             KnowledgeLevel::Probed => {
                 format!("{} — {:?}", planet.name, planet.kind)
             }
@@ -2709,16 +2707,7 @@ fn pointer_tooltip_text(simulation: &Simulation, target: PickTarget) -> String {
         }
         PickTarget::Planet { planet_id, .. } => {
             let level = state.planet_knowledge_level(planet_id);
-            let title = simulation
-                .universe_repository()
-                .planet(planet_id)
-                .map(|planet| {
-                    if level.reveals_identity() {
-                        planet.name.clone()
-                    } else {
-                        format!("Corps détecté {}", planet_id.index())
-                    }
-                })
+            let title = planet_display_label(simulation, planet_id, level)
                 .unwrap_or_else(|| "Planète invalide".to_string());
             format!(
                 "{}\n{}\nClic : sélectionner | Double-clic : recentrer",
@@ -2746,15 +2735,46 @@ fn pick_target_label(simulation: &Simulation, target: PickTarget) -> String {
         PickTarget::Planet { planet_id, .. } => simulation
             .universe_repository()
             .planet(planet_id)
-            .map(|planet| {
-                if state.planet_knowledge_level(planet_id).reveals_identity() {
-                    format!("Planète {}", planet.name)
-                } else {
-                    format!("Corps détecté {}", planet_id.index())
-                }
+            .and_then(|_| {
+                planet_display_label(
+                    simulation,
+                    planet_id,
+                    state.planet_knowledge_level(planet_id),
+                )
             })
+            .map(|label| format!("Planète {label}"))
             .unwrap_or_else(|| format!("Planète {}", planet_id.index())),
     }
+}
+
+fn planet_display_label(
+    simulation: &Simulation,
+    planet_id: PlanetId,
+    level: KnowledgeLevel,
+) -> Option<String> {
+    let (system_id, planet) = simulation
+        .universe_repository()
+        .planet_location(planet_id)?;
+    if level.reveals_identity() {
+        return Some(planet.name.clone());
+    }
+    let system = simulation.universe().system(system_id)?;
+    let index = system
+        .planets
+        .iter()
+        .position(|candidate| candidate.id == planet_id)?;
+    Some(provisional_planet_label(&system.name, index))
+}
+
+fn provisional_planet_label(system_name: &str, orbit_index: usize) -> String {
+    const ROMAN: [&str; 12] = [
+        "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII",
+    ];
+    let suffix = ROMAN
+        .get(orbit_index)
+        .map(|value| (*value).to_string())
+        .unwrap_or_else(|| (orbit_index + 1).to_string());
+    format!("{system_name} {suffix}")
 }
 
 fn rank_pointer_candidates(candidates: &mut [PointerCandidate]) {
@@ -3879,14 +3899,27 @@ fn action_active(
 
 fn selected_probe_context(
     simulation: &Simulation,
-) -> Option<(galactic_domain::ColonyId, SystemId)> {
+) -> Option<(galactic_domain::ColonyId, MissionTarget)> {
     let state = simulation.state();
-    let SelectionTarget::System(target) = state.selected else {
-        return None;
+    let target = match state.selected {
+        SelectionTarget::System(system_id)
+            if state.system_knowledge_level(system_id) == KnowledgeLevel::Detected =>
+        {
+            MissionTarget::System(system_id)
+        }
+        SelectionTarget::Planet {
+            system_id,
+            planet_id,
+        } if state.planet_knowledge_level(planet_id) == KnowledgeLevel::Detected => {
+            MissionTarget::Planet {
+                system_id,
+                planet_id,
+            }
+        }
+        SelectionTarget::None | SelectionTarget::System(_) | SelectionTarget::Planet { .. } => {
+            return None;
+        }
     };
-    if state.system_knowledge_level(target) != KnowledgeLevel::Detected {
-        return None;
-    }
     Some((state.player_home_colony()?.id, target))
 }
 
@@ -4423,13 +4456,21 @@ fn draw_strategic_overlays(
     mut gizmos: Gizmos,
     simulation: Res<SimulationResource>,
     navigation: Res<StrategicNavigation>,
+    time: Res<Time>,
 ) {
     match navigation.mode {
         StrategicViewMode::Universe => {
             draw_universe_routes(&mut gizmos, simulation.simulation(), &navigation);
+            draw_universe_missions(&mut gizmos, simulation.simulation(), &navigation);
         }
         StrategicViewMode::System(system_id) => {
             draw_system_orbits(&mut gizmos, simulation.simulation(), system_id);
+            draw_system_missions(
+                &mut gizmos,
+                simulation.simulation(),
+                system_id,
+                time.elapsed_secs(),
+            );
         }
     }
 }
@@ -4580,6 +4621,157 @@ fn draw_circle_xz(gizmos: &mut Gizmos, radius: f32, segments: usize, color: Colo
     }
 }
 
+fn draw_universe_missions(
+    gizmos: &mut Gizmos,
+    simulation: &Simulation,
+    navigation: &StrategicNavigation,
+) {
+    let current_tick = simulation.state().clock.current_tick();
+    for mission in simulation
+        .state()
+        .player_missions()
+        .filter(|mission| !mission.phase.is_terminal() && mission.plan.route.len() > 1)
+    {
+        let Some(progress) = mission_route_progress(mission, current_tick) else {
+            continue;
+        };
+        let Some(position) = mission_route_position(
+            simulation,
+            &mission.plan.route,
+            progress,
+            navigation.projection_mix,
+        ) else {
+            continue;
+        };
+        draw_probe_marker(gizmos, position, 1.15);
+    }
+}
+
+fn draw_system_missions(
+    gizmos: &mut Gizmos,
+    simulation: &Simulation,
+    system_id: SystemId,
+    elapsed_seconds: f32,
+) {
+    let current_tick = simulation.state().clock.current_tick();
+    let Some(system) = simulation.universe().system(system_id) else {
+        return;
+    };
+    for mission in simulation.state().player_missions().filter(|mission| {
+        !mission.phase.is_terminal()
+            && mission.order.origin == system_id
+            && matches!(
+                mission.order.target,
+                MissionTarget::Planet {
+                    system_id: target_system,
+                    ..
+                } if target_system == system_id
+            )
+    }) {
+        let MissionTarget::Planet { planet_id, .. } = mission.order.target else {
+            continue;
+        };
+        let Some(origin_colony) = simulation.state().colony(mission.origin_colony_id) else {
+            continue;
+        };
+        let Some(origin_index) = system
+            .planets
+            .iter()
+            .position(|planet| planet.id == origin_colony.planet_id)
+        else {
+            continue;
+        };
+        let Some(target_index) = system
+            .planets
+            .iter()
+            .position(|planet| planet.id == planet_id)
+        else {
+            continue;
+        };
+        let Some(progress) = mission_route_progress(mission, current_tick) else {
+            continue;
+        };
+        let origin_radius = 6.0 + origin_index as f32 * 4.8;
+        let target_radius = 6.0 + target_index as f32 * 4.8;
+        let origin =
+            planet_orbit(origin_index, origin_radius, 0.32).translation_at(elapsed_seconds);
+        let target =
+            planet_orbit(target_index, target_radius, 0.32).translation_at(elapsed_seconds);
+        gizmos.line(origin, target, Color::srgba(0.32, 0.88, 0.96, 0.24));
+        draw_probe_marker(gizmos, origin.lerp(target, progress), 0.62);
+    }
+}
+
+fn mission_route_progress(
+    mission: &galactic_sim::MissionState,
+    current_tick: galactic_sim::StrategicTick,
+) -> Option<f32> {
+    let ratio = |start: galactic_sim::StrategicTick, end: galactic_sim::StrategicTick| {
+        let duration = end.value().saturating_sub(start.value());
+        if duration == 0 {
+            return 1.0;
+        }
+        current_tick.value().saturating_sub(start.value()) as f32 / duration as f32
+    };
+    match mission.phase {
+        MissionPhase::Preparation => Some(0.0),
+        MissionPhase::Outbound => Some(
+            ratio(mission.order.departure_at, mission.plan.outbound_arrival_at).clamp(0.0, 1.0),
+        ),
+        MissionPhase::OnSite => Some(1.0),
+        MissionPhase::Returning => Some(
+            1.0 - ratio(
+                mission.plan.return_departure_at,
+                mission.plan.return_arrival_at,
+            )
+            .clamp(0.0, 1.0),
+        ),
+        MissionPhase::Completed | MissionPhase::Cancelled | MissionPhase::Failed => None,
+    }
+}
+
+fn mission_route_position(
+    simulation: &Simulation,
+    route: &[SystemId],
+    progress: f32,
+    projection_mix: f32,
+) -> Option<Vec3> {
+    let segments = route.len().checked_sub(1)?;
+    if segments == 0 {
+        return None;
+    }
+    let scaled = progress.clamp(0.0, 1.0) * segments as f32;
+    let segment = (scaled.floor() as usize).min(segments - 1);
+    let local = (scaled - segment as f32).clamp(0.0, 1.0);
+    let from = simulation.universe().system(route[segment])?;
+    let to = simulation.universe().system(route[segment + 1])?;
+    Some(
+        projected_universe_position(from.position, projection_mix).lerp(
+            projected_universe_position(to.position, projection_mix),
+            local,
+        ),
+    )
+}
+
+fn draw_probe_marker(gizmos: &mut Gizmos, position: Vec3, radius: f32) {
+    let color = Color::srgba(0.42, 0.96, 1.0, 0.96);
+    gizmos.line(
+        position - Vec3::X * radius,
+        position + Vec3::X * radius,
+        color,
+    );
+    gizmos.line(
+        position - Vec3::Y * radius,
+        position + Vec3::Y * radius,
+        color,
+    );
+    gizmos.line(
+        position - Vec3::Z * radius,
+        position + Vec3::Z * radius,
+        color,
+    );
+}
+
 fn update_ui(
     simulation: Res<SimulationResource>,
     navigation: Res<StrategicNavigation>,
@@ -4659,20 +4851,7 @@ fn mission_status_line(simulation: &Simulation) -> String {
     else {
         return "Missions : aucune mission active".to_string();
     };
-    let target = simulation
-        .universe()
-        .system(mission.order.target)
-        .map(|system| {
-            if state
-                .system_knowledge_level(mission.order.target)
-                .reveals_identity()
-            {
-                system.name.clone()
-            } else {
-                format!("Signal {}", mission.order.target.index())
-            }
-        })
-        .unwrap_or_else(|| format!("Système {}", mission.order.target.index()));
+    let target = mission_target_label(simulation, mission.order.target);
     let phase = match mission.phase {
         MissionPhase::Preparation => "préparation",
         MissionPhase::Outbound => "transit aller",
@@ -4709,6 +4888,43 @@ fn mission_status_line(simulation: &Simulation) -> String {
         phase,
         format_strategic_duration(galactic_sim::StrategicDuration::from_ticks(remaining)),
     )
+}
+
+fn mission_target_label(simulation: &Simulation, target: MissionTarget) -> String {
+    let state = simulation.state();
+    match target {
+        MissionTarget::System(system_id) => simulation
+            .universe()
+            .system(system_id)
+            .map(|system| {
+                if state.system_knowledge_level(system_id).reveals_identity() {
+                    system.name.clone()
+                } else {
+                    format!("Signal {}", system_id.index())
+                }
+            })
+            .unwrap_or_else(|| format!("Système {}", system_id.index())),
+        MissionTarget::Planet {
+            system_id,
+            planet_id,
+        } => simulation
+            .universe()
+            .system(system_id)
+            .and_then(|system| {
+                system
+                    .planets
+                    .iter()
+                    .position(|planet| planet.id == planet_id)
+                    .map(|index| {
+                        if state.planet_knowledge_level(planet_id).reveals_identity() {
+                            system.planets[index].name.clone()
+                        } else {
+                            provisional_planet_label(&system.name, index)
+                        }
+                    })
+            })
+            .unwrap_or_else(|| format!("Planète {}", planet_id.index())),
+    }
 }
 
 fn update_info_panel(
@@ -4963,6 +5179,11 @@ fn planet_inspector_content(
     } else {
         "Sélection : recoupée avec le système réel"
     };
+    let orbit_index = system
+        .planets
+        .iter()
+        .position(|candidate| candidate.id == planet_id)
+        .unwrap_or_default();
 
     let (title, mut body) = match level {
         KnowledgeLevel::Unknown => (
@@ -4979,16 +5200,19 @@ Lunes : ???
             ),
         ),
         KnowledgeLevel::Detected => (
-            format!("Corps détecté {}", planet_id.index()),
+            provisional_planet_label(&system.name, orbit_index),
             format!(
                 "Système : {}
-Nom : ???
+Identité : non déterminée
+Orbite : {}
 Type : ???
 Habitabilité : ???
 Potentiel : analyse requise
 Lunes : non recensées
 {}",
-                system_label, selection_note,
+                system_label,
+                orbit_index + 1,
+                selection_note,
             ),
         ),
         KnowledgeLevel::Probed => (
@@ -5447,13 +5671,19 @@ fn event_label(event: GameEvent) -> String {
             transition.mission_id, transition.from, transition.to,
         ),
         GameEventKind::MissionResolved(resolution) => match resolution.result {
-            MissionResult::Probe(result) => format!(
-                "reconnaissance terminée : système {} sondé, {} nouveaux signaux, {} routes et {} planètes révélées",
-                result.target.index(),
-                result.newly_detected_systems,
-                result.revealed_routes,
-                result.revealed_planets,
-            ),
+            MissionResult::Probe(result) => match result.target {
+                MissionTarget::System(system_id) => format!(
+                    "reconnaissance terminée : système {} sondé, {} nouveaux signaux, {} routes et {} planètes révélées",
+                    system_id.index(),
+                    result.newly_detected_systems,
+                    result.revealed_routes,
+                    result.revealed_planets,
+                ),
+                MissionTarget::Planet { planet_id, .. } => format!(
+                    "reconnaissance planétaire terminée : corps {} identifié",
+                    planet_id.index(),
+                ),
+            },
         },
         GameEventKind::MissionReported(report) => format!(
             "rapport mission {:?} : {:?}",
@@ -5474,7 +5704,7 @@ fn mission_error_text(error: galactic_sim::MissionError) -> String {
             "la flotte sélectionnée ne contient aucune Sonde Luciole".to_string()
         }
         galactic_sim::MissionError::ProbeTargetNotDetected { .. } => {
-            "la reconnaissance exige un système actuellement détecté".to_string()
+            "la reconnaissance exige un système ou une planète actuellement détecté".to_string()
         }
         galactic_sim::MissionError::NoAccessibleRoute { .. } => {
             "aucune route connue ne permet d'atteindre cette destination".to_string()
@@ -5495,8 +5725,12 @@ fn mission_error_text(error: galactic_sim::MissionError) -> String {
             "la flotte doit être amarrée à la colonie d'origine".to_string()
         }
         galactic_sim::MissionError::UnknownTarget(_)
+        | galactic_sim::MissionError::UnknownPlanetTarget(_)
         | galactic_sim::MissionError::UnknownOrigin(_) => {
             "origine ou destination inconnue".to_string()
+        }
+        galactic_sim::MissionError::PlanetTargetSystemMismatch { .. } => {
+            "la planète ne correspond pas au système sélectionné".to_string()
         }
         galactic_sim::MissionError::SameSystem(_) => {
             "l'origine et la destination doivent être différentes".to_string()
@@ -6048,9 +6282,19 @@ VmSwap:\t      2048 kB
             .expect("detected planet exists");
 
         let rendered = planet_inspector_content(&simulation, system_id, detected).render();
+        let system = simulation
+            .universe()
+            .system(system_id)
+            .expect("detected planet system exists");
+        let orbit_index = system
+            .planets
+            .iter()
+            .position(|candidate| candidate.id == detected)
+            .expect("detected planet belongs to its system");
 
         assert!(rendered.contains("DÉTECTÉ"));
-        assert!(rendered.contains("Nom : ???"));
+        assert!(rendered.contains(&provisional_planet_label(&system.name, orbit_index)));
+        assert!(rendered.contains("Identité : non déterminée"));
         assert!(rendered.contains("Habitabilité : ???"));
         assert!(!rendered.contains(&planet.name));
         assert!(!rendered.contains(&format!("{:?}", planet.kind)));
@@ -6153,6 +6397,67 @@ VmSwap:\t      2048 kB
         assert_eq!(start.y, 1.35);
         assert_eq!(later.y, 1.35);
         assert!(start.distance(later) < 1.5);
+    }
+
+    #[test]
+    fn detected_planets_receive_stable_orbital_designations() {
+        assert_eq!(
+            provisional_planet_label("Port-Sillage", 0),
+            "Port-Sillage I"
+        );
+        assert_eq!(
+            provisional_planet_label("Port-Sillage", 7),
+            "Port-Sillage VIII"
+        );
+        assert_eq!(
+            provisional_planet_label("Port-Sillage", 12),
+            "Port-Sillage 13"
+        );
+    }
+
+    #[test]
+    fn mission_marker_progresses_outward_then_returns() {
+        let mut mission = galactic_sim::MissionState {
+            id: galactic_domain::MissionId::new(0),
+            owner: galactic_domain::Owner::Faction(galactic_domain::FactionId::new(0)),
+            order: galactic_sim::MissionOrder {
+                fleet_id: galactic_domain::FleetId::new(0),
+                origin: SystemId::new(0),
+                target: MissionTarget::System(SystemId::new(1)),
+                kind: galactic_sim::MissionKind::Probe,
+                departure_at: galactic_sim::StrategicTick::new(10),
+            },
+            origin_colony_id: galactic_domain::ColonyId::new(0),
+            plan: galactic_sim::MissionPlan {
+                route: vec![SystemId::new(0), SystemId::new(1)],
+                hops: 1,
+                travel_duration: galactic_sim::StrategicDuration::from_ticks(10),
+                resolution_duration: galactic_sim::StrategicDuration::from_ticks(1),
+                fuel_cost: galactic_domain::ResourceCost::new(0, 0, 2),
+                outbound_arrival_at: galactic_sim::StrategicTick::new(20),
+                return_departure_at: galactic_sim::StrategicTick::new(30),
+                return_arrival_at: galactic_sim::StrategicTick::new(40),
+            },
+            phase: MissionPhase::Outbound,
+            phase_started_at: galactic_sim::StrategicTick::new(10),
+            fuel_reservation: None,
+            result: None,
+        };
+
+        assert_eq!(
+            mission_route_progress(&mission, galactic_sim::StrategicTick::new(15)),
+            Some(0.5)
+        );
+        mission.phase = MissionPhase::Returning;
+        assert_eq!(
+            mission_route_progress(&mission, galactic_sim::StrategicTick::new(35)),
+            Some(0.5)
+        );
+        mission.phase = MissionPhase::Completed;
+        assert_eq!(
+            mission_route_progress(&mission, galactic_sim::StrategicTick::new(40)),
+            None
+        );
     }
 
     #[test]
@@ -6303,7 +6608,10 @@ VmSwap:\t      2048 kB
             craftable: galactic_sim::CraftableId::LIGHT_PROBE,
         });
         simulation.advance(Duration::from_secs(50));
-        simulation.apply_player_action(GameAction::LaunchProbe { colony_id, target });
+        simulation.apply_player_action(GameAction::LaunchProbe {
+            colony_id,
+            target: MissionTarget::System(target),
+        });
         simulation.advance(Duration::from_secs(1));
 
         let status = mission_status_line(&simulation);
@@ -6332,7 +6640,7 @@ VmSwap:\t      2048 kB
             GameEventKind::MissionResolved(galactic_sim::MissionResolution {
                 mission_id: galactic_domain::MissionId::new(0),
                 result: MissionResult::Probe(galactic_sim::ProbeMissionResult {
-                    target: SystemId::new(4),
+                    target: MissionTarget::System(SystemId::new(4)),
                     previous: KnowledgeLevel::Detected,
                     current: KnowledgeLevel::Probed,
                     revealed_systems: 3,

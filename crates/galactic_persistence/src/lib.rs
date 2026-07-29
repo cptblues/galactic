@@ -12,7 +12,8 @@ use galactic_sim::{
     TimeSpeed, default_ruleset, production_refresh_ticks,
 };
 
-pub const SAVE_VERSION: u32 = 18;
+/// Version 19 persists explicit system or planet mission targets.
+pub const SAVE_VERSION: u32 = 19;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SaveGame {
@@ -381,8 +382,8 @@ mod tests {
     use galactic_domain::UniverseConfig;
     use galactic_sim::{
         BuildingKind, CraftableId, FleetComposition, GAME_STATE_VERSION, GameAction,
-        KnowledgeLevel, MissionKind, MissionOrder, MissionPhase, MissionResult, ShipStack,
-        TechnologyId, default_building_catalog,
+        KnowledgeLevel, MissionKind, MissionOrder, MissionPhase, MissionResult, MissionTarget,
+        ShipStack, TechnologyId, default_building_catalog,
     };
 
     use super::*;
@@ -630,7 +631,7 @@ mod tests {
         simulation.apply_player_action(GameAction::LaunchMission(MissionOrder {
             fleet_id: created.fleet_id,
             origin,
-            target,
+            target: MissionTarget::System(target),
             kind: MissionKind::Probe,
             departure_at,
         }));
@@ -657,7 +658,7 @@ mod tests {
         let Some(MissionResult::Probe(result)) = restored.state().mission_reports[0].result else {
             panic!("completed reconnaissance keeps its frontier result");
         };
-        assert_eq!(result.target, target);
+        assert_eq!(result.target, MissionTarget::System(target));
         assert_eq!(result.current, KnowledgeLevel::Probed);
         assert_eq!(
             usize::from(result.newly_detected_systems),

@@ -2,7 +2,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use galactic_domain::{
-    ColonyId, FactionId, FleetId, MissionId, Owner, ReservationId, ResourceCost,
+    ColonyId, FactionId, FleetId, MissionId, Owner, PlanetId, ReservationId, ResourceCost,
     ResourceLedgerError, SystemId,
 };
 
@@ -17,6 +17,8 @@ use crate::{
 /// Dividing this work by `cruise_speed` yields strategic ticks. With the
 /// default ruleset, a Luciole crosses one hop in 100 ticks (10 seconds at x1).
 pub const MISSION_TRAVEL_WORK_PER_HOP: u64 = 16_000;
+pub const MISSION_LOCAL_TRAVEL_WORK_BASE: u64 = 2_400;
+pub const MISSION_LOCAL_TRAVEL_WORK_PER_ORBIT: u64 = 1_200;
 pub const MISSION_RESOLUTION_TICKS: u64 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,11 +46,35 @@ impl MissionPhase {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MissionTarget {
+    System(SystemId),
+    Planet {
+        system_id: SystemId,
+        planet_id: PlanetId,
+    },
+}
+
+impl MissionTarget {
+    pub const fn system_id(self) -> SystemId {
+        match self {
+            Self::System(system_id) | Self::Planet { system_id, .. } => system_id,
+        }
+    }
+
+    pub const fn planet_id(self) -> Option<PlanetId> {
+        match self {
+            Self::System(_) => None,
+            Self::Planet { planet_id, .. } => Some(planet_id),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MissionOrder {
     pub fleet_id: FleetId,
     pub origin: SystemId,
-    pub target: SystemId,
+    pub target: MissionTarget,
     pub kind: MissionKind,
     pub departure_at: StrategicTick,
 }
@@ -83,7 +109,7 @@ pub struct MissionLaunched {
     pub mission_id: MissionId,
     pub fleet_id: FleetId,
     pub kind: MissionKind,
-    pub target: SystemId,
+    pub target: MissionTarget,
     pub departure_at: StrategicTick,
     pub return_arrival_at: StrategicTick,
     pub fuel_cost: ResourceCost,
@@ -112,7 +138,7 @@ pub enum MissionReportOutcome {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProbeMissionResult {
-    pub target: SystemId,
+    pub target: MissionTarget,
     pub previous: KnowledgeLevel,
     pub current: KnowledgeLevel,
     pub revealed_systems: u16,
@@ -162,6 +188,12 @@ pub enum MissionError {
     FleetNotDocked(FleetId),
     UnknownOrigin(SystemId),
     UnknownTarget(SystemId),
+    UnknownPlanetTarget(PlanetId),
+    PlanetTargetSystemMismatch {
+        planet_id: PlanetId,
+        expected: SystemId,
+        found: SystemId,
+    },
     OriginMismatch {
         expected: SystemId,
         found: SystemId,
@@ -170,7 +202,7 @@ pub enum MissionError {
     ProbeUnavailable(ColonyId),
     ProbeRequired(FleetId),
     ProbeTargetNotDetected {
-        target: SystemId,
+        target: MissionTarget,
         current: KnowledgeLevel,
     },
     DepartureInPast {
@@ -214,6 +246,12 @@ pub enum MissionStateError {
         found: SystemId,
     },
     UnknownRouteSystem(SystemId),
+    UnknownTargetPlanet(PlanetId),
+    TargetPlanetSystemMismatch {
+        planet_id: PlanetId,
+        expected: SystemId,
+        found: SystemId,
+    },
     MissingRoute {
         from: SystemId,
         to: SystemId,
@@ -229,8 +267,8 @@ pub enum MissionStateError {
     MissingProbeResult,
     UnexpectedMissionResult,
     ProbeResultTargetMismatch {
-        expected: SystemId,
-        found: SystemId,
+        expected: MissionTarget,
+        found: MissionTarget,
     },
 }
 
@@ -288,10 +326,8 @@ pub fn plan_mission(
     if universe.system(order.origin).is_none() {
         return Err(MissionError::UnknownOrigin(order.origin));
     }
-    if universe.system(order.target).is_none() {
-        return Err(MissionError::UnknownTarget(order.target));
-    }
-    if order.origin == order.target {
+    let target_system = validate_mission_target(universe, order.target)?;
+    if order.origin == target_system && matches!(order.target, MissionTarget::System(_)) {
         return Err(MissionError::SameSystem(order.origin));
     }
     let current_tick = state.clock.current_tick();
@@ -302,14 +338,21 @@ pub fn plan_mission(
         });
     }
 
-    let route = accessible_shortest_path(state, universe, order.origin, order.target).ok_or(
-        MissionError::NoAccessibleRoute {
-            origin: order.origin,
-            target: order.target,
-        },
-    )?;
+    let route = if order.origin == target_system {
+        vec![order.origin]
+    } else {
+        accessible_shortest_path(state, universe, order.origin, target_system).ok_or(
+            MissionError::NoAccessibleRoute {
+                origin: order.origin,
+                target: target_system,
+            },
+        )?
+    };
     if order.kind == MissionKind::Probe {
-        let current = state.system_knowledge_level(order.target);
+        let current = match order.target {
+            MissionTarget::System(system_id) => state.system_knowledge_level(system_id),
+            MissionTarget::Planet { planet_id, .. } => state.planet_knowledge_level(planet_id),
+        };
         if current != KnowledgeLevel::Detected {
             return Err(MissionError::ProbeTargetNotDetected {
                 target: order.target,
@@ -332,8 +375,12 @@ pub fn plan_mission(
         });
     }
 
-    let work = MISSION_TRAVEL_WORK_PER_HOP
+    let interstellar_work = MISSION_TRAVEL_WORK_PER_HOP
         .checked_mul(u64::from(hops))
+        .ok_or(MissionError::TravelDurationOverflow)?;
+    let local_work = local_target_work(universe, order.target)?;
+    let work = interstellar_work
+        .checked_add(local_work)
         .ok_or(MissionError::TravelDurationOverflow)?;
     let travel_ticks = work
         .checked_add(capabilities.cruise_speed.saturating_sub(1))
@@ -342,7 +389,10 @@ pub fn plan_mission(
     if travel_ticks == 0 {
         return Err(MissionError::TravelDurationOverflow);
     }
-    let round_trip_hops = u64::from(hops)
+    let outbound_fuel_legs = u64::from(hops)
+        .checked_add(u64::from(order.target.planet_id().is_some()))
+        .ok_or(MissionError::FuelCostOverflow)?;
+    let round_trip_hops = outbound_fuel_legs
         .checked_mul(2)
         .ok_or(MissionError::FuelCostOverflow)?;
     let fuel = capabilities
@@ -368,6 +418,61 @@ pub fn plan_mission(
             return_arrival_at,
         },
     ))
+}
+
+fn validate_mission_target(
+    universe: &UniverseRepository,
+    target: MissionTarget,
+) -> Result<SystemId, MissionError> {
+    match target {
+        MissionTarget::System(system_id) => universe
+            .system(system_id)
+            .map(|_| system_id)
+            .ok_or(MissionError::UnknownTarget(system_id)),
+        MissionTarget::Planet {
+            system_id,
+            planet_id,
+        } => {
+            let Some((found_system, _)) = universe.planet_location(planet_id) else {
+                return Err(MissionError::UnknownPlanetTarget(planet_id));
+            };
+            if found_system != system_id {
+                return Err(MissionError::PlanetTargetSystemMismatch {
+                    planet_id,
+                    expected: found_system,
+                    found: system_id,
+                });
+            }
+            Ok(system_id)
+        }
+    }
+}
+
+fn local_target_work(
+    universe: &UniverseRepository,
+    target: MissionTarget,
+) -> Result<u64, MissionError> {
+    let MissionTarget::Planet {
+        system_id,
+        planet_id,
+    } = target
+    else {
+        return Ok(0);
+    };
+    let system = universe
+        .system(system_id)
+        .ok_or(MissionError::UnknownTarget(system_id))?;
+    let orbit_index = system
+        .planets
+        .iter()
+        .position(|planet| planet.id == planet_id)
+        .ok_or(MissionError::UnknownPlanetTarget(planet_id))?;
+    let orbit_index =
+        u64::try_from(orbit_index).map_err(|_| MissionError::TravelDurationOverflow)?;
+    MISSION_LOCAL_TRAVEL_WORK_PER_ORBIT
+        .checked_mul(orbit_index)
+        .and_then(|work| work.checked_add(MISSION_LOCAL_TRAVEL_WORK_BASE))
+        .ok_or(MissionError::TravelDurationOverflow)
 }
 
 pub fn launch_mission(
@@ -432,7 +537,7 @@ pub fn launch_probe_mission(
     universe: &UniverseRepository,
     actor: FactionId,
     origin_colony_id: ColonyId,
-    target: SystemId,
+    target: MissionTarget,
 ) -> Result<(Option<FleetCreated>, MissionLaunched), MissionError> {
     let origin_colony = state
         .colony(origin_colony_id)
@@ -441,12 +546,16 @@ pub fn launch_probe_mission(
         .authorize_management(actor, origin_colony.owner)
         .map_err(MissionError::Access)?;
     let origin = origin_colony.system_id;
-    if universe.system(target).is_none() {
-        return Err(MissionError::UnknownTarget(target));
-    }
-    let current = state.system_knowledge_level(target);
+    let target_system = validate_mission_target(universe, target)?;
+    let current = match target {
+        MissionTarget::System(system_id) => state.system_knowledge_level(system_id),
+        MissionTarget::Planet { planet_id, .. } => state.planet_knowledge_level(planet_id),
+    };
     if current == KnowledgeLevel::Unknown {
-        return Err(MissionError::NoAccessibleRoute { origin, target });
+        return Err(MissionError::NoAccessibleRoute {
+            origin,
+            target: target_system,
+        });
     }
     if current != KnowledgeLevel::Detected {
         return Err(MissionError::ProbeTargetNotDetected { target, current });
@@ -589,6 +698,22 @@ pub fn validate_mission_state(
     mission: &MissionState,
     universe: &UniverseRepository,
 ) -> Result<(), MissionStateError> {
+    if let MissionTarget::Planet {
+        system_id,
+        planet_id,
+    } = mission.order.target
+    {
+        let Some((expected, _)) = universe.planet_location(planet_id) else {
+            return Err(MissionStateError::UnknownTargetPlanet(planet_id));
+        };
+        if expected != system_id {
+            return Err(MissionStateError::TargetPlanetSystemMismatch {
+                planet_id,
+                expected,
+                found: system_id,
+            });
+        }
+    }
     let Some(first) = mission.plan.route.first().copied() else {
         return Err(MissionStateError::EmptyRoute);
     };
@@ -604,9 +729,10 @@ pub fn validate_mission_state(
         .last()
         .copied()
         .expect("non-empty route has a last item");
-    if last != mission.order.target {
+    let target_system = mission.order.target.system_id();
+    if last != target_system {
         return Err(MissionStateError::RouteTargetMismatch {
-            expected: mission.order.target,
+            expected: target_system,
             found: last,
         });
     }
@@ -720,6 +846,7 @@ pub(crate) fn advance_missions(
             let fleet_id = mission.order.fleet_id;
             let origin = mission.order.origin;
             let target = mission.order.target;
+            let target_system = target.system_id();
             let origin_colony_id = mission.origin_colony_id;
             let reservation = mission.fuel_reservation;
             let owner = mission
@@ -750,36 +877,76 @@ pub(crate) fn advance_missions(
                     state
                         .fleet_mut(fleet_id)
                         .expect("validated mission fleet exists")
-                        .location = FleetLocation::InSystem(target);
+                        .location = FleetLocation::InSystem(target_system);
                     if kind == MissionKind::Probe {
-                        let previous = state.system_knowledge_level(target);
-                        let frontier = state.probe_system(universe, target);
-                        let revealed_systems = frontier
-                            .changes
-                            .iter()
-                            .filter(|change| matches!(change.target, KnowledgeTarget::System(_)))
-                            .count()
-                            .min(usize::from(u16::MAX))
-                            as u16;
-                        let revealed_planets = frontier
-                            .changes
-                            .iter()
-                            .filter(|change| matches!(change.target, KnowledgeTarget::Planet(_)))
-                            .count()
-                            .min(usize::from(u16::MAX))
-                            as u16;
-                        let newly_detected_systems = frontier
-                            .newly_detected_systems
-                            .len()
-                            .min(usize::from(u16::MAX))
-                            as u16;
-                        let revealed_routes =
-                            frontier.revealed_routes.len().min(usize::from(u16::MAX)) as u16;
-                        knowledge_changes = frontier.changes;
+                        let (
+                            previous,
+                            revealed_systems,
+                            newly_detected_systems,
+                            revealed_routes,
+                            revealed_planets,
+                        ) = match target {
+                            MissionTarget::System(system_id) => {
+                                let previous = state.system_knowledge_level(system_id);
+                                let frontier = state.probe_system(universe, system_id);
+                                let revealed_systems = frontier
+                                    .changes
+                                    .iter()
+                                    .filter(|change| {
+                                        matches!(change.target, KnowledgeTarget::System(_))
+                                    })
+                                    .count()
+                                    .min(usize::from(u16::MAX))
+                                    as u16;
+                                let revealed_planets = frontier
+                                    .changes
+                                    .iter()
+                                    .filter(|change| {
+                                        matches!(change.target, KnowledgeTarget::Planet(_))
+                                    })
+                                    .count()
+                                    .min(usize::from(u16::MAX))
+                                    as u16;
+                                let newly_detected_systems = frontier
+                                    .newly_detected_systems
+                                    .len()
+                                    .min(usize::from(u16::MAX))
+                                    as u16;
+                                let revealed_routes =
+                                    frontier.revealed_routes.len().min(usize::from(u16::MAX))
+                                        as u16;
+                                knowledge_changes = frontier.changes;
+                                (
+                                    previous,
+                                    revealed_systems,
+                                    newly_detected_systems,
+                                    revealed_routes,
+                                    revealed_planets,
+                                )
+                            }
+                            MissionTarget::Planet { planet_id, .. } => {
+                                let previous = state.planet_knowledge_level(planet_id);
+                                knowledge_changes = state.advance_planet_knowledge(
+                                    universe,
+                                    planet_id,
+                                    KnowledgeLevel::Probed,
+                                );
+                                let revealed_planets =
+                                    u16::from(state.planet_knowledge_level(planet_id) > previous);
+                                (previous, 0, 0, 0, revealed_planets)
+                            }
+                        };
                         let result = MissionResult::Probe(ProbeMissionResult {
                             target,
                             previous,
-                            current: state.system_knowledge_level(target),
+                            current: match target {
+                                MissionTarget::System(system_id) => {
+                                    state.system_knowledge_level(system_id)
+                                }
+                                MissionTarget::Planet { planet_id, .. } => {
+                                    state.planet_knowledge_level(planet_id)
+                                }
+                            },
                             revealed_systems,
                             newly_detected_systems,
                             revealed_routes,
@@ -938,6 +1105,22 @@ mod tests {
         simulation.universe_repository().neighboring_systems(origin)[0]
     }
 
+    fn detected_planets_in_origin(simulation: &Simulation) -> Vec<(usize, PlanetId)> {
+        let origin = simulation.state().colonies[0].system_id;
+        simulation
+            .universe()
+            .system(origin)
+            .expect("home system exists")
+            .planets
+            .iter()
+            .enumerate()
+            .filter(|(_, planet)| {
+                simulation.state().planet_knowledge_level(planet.id) == KnowledgeLevel::Detected
+            })
+            .map(|(index, planet)| (index, planet.id))
+            .collect()
+    }
+
     #[test]
     fn all_mvp_mission_kinds_use_the_generic_planner() {
         for kind in [
@@ -952,7 +1135,7 @@ mod tests {
             let order = MissionOrder {
                 fleet_id,
                 origin,
-                target,
+                target: MissionTarget::System(target),
                 kind,
                 departure_at: simulation.state().clock.current_tick(),
             };
@@ -980,7 +1163,7 @@ mod tests {
         let order = MissionOrder {
             fleet_id,
             origin,
-            target,
+            target: MissionTarget::System(target),
             kind: MissionKind::Probe,
             departure_at: StrategicTick::new(2),
         };
@@ -1027,7 +1210,7 @@ mod tests {
                 &repository,
                 actor,
                 colony_id,
-                target,
+                MissionTarget::System(target),
             ),
             Err(MissionError::ProbeUnavailable(colony_id)),
         );
@@ -1041,7 +1224,7 @@ mod tests {
             &repository,
             actor,
             colony_id,
-            target,
+            MissionTarget::System(target),
         )
         .expect("a crafted probe can launch");
 
@@ -1059,6 +1242,95 @@ mod tests {
     }
 
     #[test]
+    fn local_probe_duration_grows_with_the_target_orbit() {
+        let (simulation, fleet_id) = simulation_with_probe_fleet();
+        let actor = simulation.state().player_faction;
+        let origin = simulation.state().colonies[0].system_id;
+        let detected = detected_planets_in_origin(&simulation);
+        assert!(
+            detected.len() >= 2,
+            "the MVP home system needs two detectable planets"
+        );
+        let (near_index, near_planet) = detected[0];
+        let (far_index, far_planet) = detected[detected.len() - 1];
+        assert!(far_index > near_index);
+
+        let plan_for = |planet_id| {
+            plan_mission(
+                simulation.state(),
+                simulation.universe_repository(),
+                actor,
+                MissionOrder {
+                    fleet_id,
+                    origin,
+                    target: MissionTarget::Planet {
+                        system_id: origin,
+                        planet_id,
+                    },
+                    kind: MissionKind::Probe,
+                    departure_at: StrategicTick::ZERO,
+                },
+            )
+            .expect("a detected local planet accepts a probe")
+            .1
+        };
+        let near_plan = plan_for(near_planet);
+        let far_plan = plan_for(far_planet);
+
+        assert_eq!(near_plan.route, vec![origin]);
+        assert_eq!(near_plan.hops, 0);
+        assert!(near_plan.fuel_cost.fuel > 0);
+        assert!(far_plan.travel_duration > near_plan.travel_duration);
+    }
+
+    #[test]
+    fn local_probe_identifies_only_its_selected_planet() {
+        let (mut simulation, fleet_id) = simulation_with_probe_fleet();
+        let origin = simulation.state().colonies[0].system_id;
+        let detected = detected_planets_in_origin(&simulation);
+        assert!(
+            detected.len() >= 2,
+            "the MVP home system needs two detectable planets"
+        );
+        let target = detected[0].1;
+        let sibling = detected[1].1;
+        let mission_target = MissionTarget::Planet {
+            system_id: origin,
+            planet_id: target,
+        };
+
+        simulation.apply_player_action(GameAction::LaunchMission(MissionOrder {
+            fleet_id,
+            origin,
+            target: mission_target,
+            kind: MissionKind::Probe,
+            departure_at: StrategicTick::ZERO,
+        }));
+        let travel = simulation.state().missions[0].plan.travel_duration;
+        let events = simulation.advance(travel.as_duration());
+
+        assert_eq!(
+            simulation.state().planet_knowledge_level(target),
+            KnowledgeLevel::Probed
+        );
+        assert_eq!(
+            simulation.state().planet_knowledge_level(sibling),
+            KnowledgeLevel::Detected
+        );
+        assert!(events.iter().any(|event| matches!(
+            event.kind,
+            crate::GameEventKind::MissionResolved(MissionResolution {
+                result: MissionResult::Probe(ProbeMissionResult {
+                    target: resolved,
+                    revealed_planets: 1,
+                    ..
+                }),
+                ..
+            }) if resolved == mission_target
+        )));
+    }
+
+    #[test]
     fn probe_arrival_reveals_the_target_and_records_a_result() {
         let (mut simulation, fleet_id) = simulation_with_probe_fleet();
         let origin = simulation.state().colonies[0].system_id;
@@ -1066,7 +1338,7 @@ mod tests {
         let events = simulation.apply_player_action(GameAction::LaunchMission(MissionOrder {
             fleet_id,
             origin,
-            target,
+            target: MissionTarget::System(target),
             kind: MissionKind::Probe,
             departure_at: StrategicTick::ZERO,
         }));
@@ -1102,7 +1374,7 @@ mod tests {
                     ..
                 }),
                 ..
-            }) if resolved == target
+            }) if resolved == MissionTarget::System(target)
         )));
     }
 
@@ -1132,7 +1404,7 @@ mod tests {
         let hidden_order = MissionOrder {
             fleet_id,
             origin,
-            target: hidden_target,
+            target: MissionTarget::System(hidden_target),
             kind: MissionKind::Probe,
             departure_at: StrategicTick::ZERO,
         };
@@ -1202,7 +1474,7 @@ mod tests {
                 MissionOrder {
                     fleet_id,
                     origin,
-                    target,
+                    target: MissionTarget::System(target),
                     kind: MissionKind::Colonize,
                     departure_at: StrategicTick::ZERO,
                 },
@@ -1227,7 +1499,7 @@ mod tests {
             MissionOrder {
                 fleet_id,
                 origin,
-                target,
+                target: MissionTarget::System(target),
                 kind: MissionKind::Probe,
                 departure_at: StrategicTick::new(10),
             },
@@ -1256,7 +1528,7 @@ mod tests {
         let action = GameAction::LaunchMission(MissionOrder {
             fleet_id,
             origin,
-            target,
+            target: MissionTarget::System(target),
             kind: MissionKind::Probe,
             departure_at: StrategicTick::ZERO,
         });
@@ -1286,7 +1558,7 @@ mod tests {
                 target: resolved,
                 current: KnowledgeLevel::Probed,
                 ..
-            })) if resolved == target
+            })) if resolved == MissionTarget::System(target)
         ));
         assert_eq!(
             fast.state().colonies[0].resources.stock(),

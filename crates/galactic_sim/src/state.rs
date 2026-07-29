@@ -14,8 +14,8 @@ use crate::{
 
 /// Version of the mutable in-memory state contract.
 ///
-/// Version 17 adds persisted discovery-frontier metrics to reconnaissance results.
-pub const GAME_STATE_VERSION: u32 = 17;
+/// Version 18 adds explicit system or planet targets to persisted missions.
+pub const GAME_STATE_VERSION: u32 = 18;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemVisibility {

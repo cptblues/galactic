@@ -843,9 +843,9 @@ fn validate_state(
                 Some(crate::FleetLocation::Docked(mission.origin_colony_id))
             }
             MissionPhase::Outbound => Some(crate::FleetLocation::InSystem(mission.order.origin)),
-            MissionPhase::OnSite | MissionPhase::Returning => {
-                Some(crate::FleetLocation::InSystem(mission.order.target))
-            }
+            MissionPhase::OnSite | MissionPhase::Returning => Some(crate::FleetLocation::InSystem(
+                mission.order.target.system_id(),
+            )),
             MissionPhase::Completed | MissionPhase::Cancelled | MissionPhase::Failed => None,
         };
         if expected_location.is_some_and(|expected| fleet.location != expected) {
