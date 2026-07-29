@@ -8,14 +8,16 @@ use crate::{
     BuildingLevels, ConstructionQueue, CraftInventory, CraftQueue, DiplomacyError, DiplomacyState,
     DiplomaticRelation, DiscoveryFrontier, FleetState, KnowledgeChange, KnowledgeCounts,
     KnowledgeLevel, KnowledgeTarget, MissionReport, MissionState, PlanetAnalysisReport,
-    PlanetKnowledge, PlanetResourceProfile, ProductionRemainder, ResearchState, SelectionTarget,
-    StartingScenario, StartingScenarioError, StrategicClock, SystemKnowledge, UniverseRepository,
+    PlanetKnowledge, PlanetResourceProfile, PlanetaryIntelligenceReport, PlanetaryPresence,
+    ProductionRemainder, ResearchState, SelectionTarget, StartingScenario, StartingScenarioError,
+    StrategicClock, StrategicTick, SystemKnowledge, UniverseRepository,
+    intelligence_precision_for_knowledge, planetary_presence_rules, refresh_planetary_intelligence,
 };
 
 /// Version of the mutable in-memory state contract.
 ///
-/// Version 19 persists dated planetary analysis reports.
-pub const GAME_STATE_VERSION: u32 = 19;
+/// Version 20 persists real planetary presences and bounded intelligence reports.
+pub const GAME_STATE_VERSION: u32 = 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemVisibility {
@@ -60,6 +62,8 @@ pub struct GameState {
     pub next_mission_id: u64,
     pub mission_reports: Vec<MissionReport>,
     pub planet_analysis_reports: Vec<PlanetAnalysisReport>,
+    pub planetary_presences: Vec<PlanetaryPresence>,
+    pub planetary_intelligence_reports: Vec<PlanetaryIntelligenceReport>,
     pub research: ResearchState,
     pub system_knowledge: Vec<SystemKnowledge>,
     pub planet_knowledge: Vec<PlanetKnowledge>,
@@ -81,6 +85,8 @@ impl GameState {
 
         let player_faction = scenario.player_faction_id;
         let home = scenario.home_colony;
+        let planetary_presences =
+            planetary_presence_rules().initial_presences(universe, home.planet_id, home.owner);
 
         let mut state = Self {
             version: GAME_STATE_VERSION,
@@ -122,6 +128,8 @@ impl GameState {
             next_mission_id: 0,
             mission_reports: Vec::new(),
             planet_analysis_reports: Vec::new(),
+            planetary_presences,
+            planetary_intelligence_reports: Vec::new(),
             research: ResearchState::from_completed(scenario.initial_technologies.iter().copied()),
             system_knowledge: Vec::new(),
             planet_knowledge: Vec::new(),
@@ -137,6 +145,18 @@ impl GameState {
         }
         for knowledge in scenario.initial_planet_knowledge {
             state.advance_planet_knowledge(universe, knowledge.planet_id, knowledge.level);
+        }
+        let initial_intelligence = state.planet_knowledge.clone();
+        for knowledge in initial_intelligence {
+            if let Some(precision) = intelligence_precision_for_knowledge(knowledge.level) {
+                refresh_planetary_intelligence(
+                    &mut state,
+                    knowledge.planet_id,
+                    precision,
+                    StrategicTick::ZERO,
+                )
+                .expect("every generated planet has a deterministic presence");
+            }
         }
 
         Ok(state)
@@ -263,6 +283,30 @@ impl GameState {
 
     pub fn planet_analysis_report(&self, planet_id: PlanetId) -> Option<&PlanetAnalysisReport> {
         self.planet_analysis_reports
+            .iter()
+            .find(|report| report.planet_id == planet_id)
+    }
+
+    pub fn planetary_presence(&self, planet_id: PlanetId) -> Option<&PlanetaryPresence> {
+        self.planetary_presences
+            .iter()
+            .find(|presence| presence.planet_id == planet_id)
+    }
+
+    pub fn planetary_presence_mut(
+        &mut self,
+        planet_id: PlanetId,
+    ) -> Option<&mut PlanetaryPresence> {
+        self.planetary_presences
+            .iter_mut()
+            .find(|presence| presence.planet_id == planet_id)
+    }
+
+    pub fn planetary_intelligence_report(
+        &self,
+        planet_id: PlanetId,
+    ) -> Option<&PlanetaryIntelligenceReport> {
+        self.planetary_intelligence_reports
             .iter()
             .find(|report| report.planet_id == planet_id)
     }

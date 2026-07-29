@@ -39,8 +39,8 @@
 | ⬜ | [MVP-023](#eng-31) — Propager la découverte aux systèmes suivants | [ENG-31](https://cadylo.app/galactic/issue/ENG-31) | P1 | 5 |
 | ⬜ | [MVP-023-B](#eng-48) — Structurer la galaxie en secteurs déterministes | [ENG-48](https://cadylo.app/galactic/issue/ENG-48) | P1 | 8 |
 | ⬜ | [MVP-023-C](#eng-49) — Ajouter la projection aplatie et les presets d'échelle galactique | [ENG-49](https://cadylo.app/galactic/issue/ENG-49) | P1 | 8 |
-| ⬜ | [MVP-024](#eng-32) — Ajouter l'analyse planétaire et les règles de colonisabilité | [ENG-32](https://cadylo.app/galactic/issue/ENG-32) | P1 | 8 |
-| ⬜ | [MVP-025](#eng-33) — Ajouter les occupants, forces et défenses planétaires | [ENG-33](https://cadylo.app/galactic/issue/ENG-33) | P1 | 5 |
+| ✅ | [MVP-024](#eng-32) — Ajouter l'analyse planétaire et les règles de colonisabilité | [ENG-32](https://cadylo.app/galactic/issue/ENG-32) | P1 | 8 |
+| ✅ | [MVP-025](#eng-33) — Ajouter les occupants, forces et défenses planétaires | [ENG-33](https://cadylo.app/galactic/issue/ENG-33) | P1 | 5 |
 | ⬜ | [MVP-025-B](#eng-52) — Ajouter les attaques, le combat V1 et les rapports | [ENG-52](https://cadylo.app/galactic/issue/ENG-52) | P1 | — |
 | ⬜ | [MVP-026](#eng-34) — Implémenter le vaisseau-colonie et la mission de colonisation | [ENG-34](https://cadylo.app/galactic/issue/ENG-34) | P1 | 8 |
 | ⬜ | [MVP-027](#eng-35) — Initialiser une nouvelle colonie jouable | [ENG-35](https://cadylo.app/galactic/issue/ENG-35) | P1 | 8 |
@@ -1131,11 +1131,11 @@ Permettre de lire facilement la galaxie en 2,5D et augmenter sa taille sans sacr
 | Métadonnée | Valeur |
 |---|---|
 | Issue | [ENG-32](https://cadylo.app/galactic/issue/ENG-32) |
-| Statut | À faire |
+| Statut | Terminée |
 | Priorité | P1 |
 | Estimation | 8 points |
 | Créée le | 23/07/2026 |
-| Mise à jour le | 27/07/2026 |
+| Mise à jour le | 29/07/2026 |
 
 ### Objectif
 
@@ -1160,10 +1160,10 @@ et déterminer explicitement si une planète peut être colonisée.
 
 ### Critères d'acceptation
 
-- Une planète inconnue ou insuffisamment analysée ne peut pas être déclarée
+- [x] Une planète inconnue ou insuffisamment analysée ne peut pas être déclarée
   colonisable.
-- Le moteur retourne les raisons précises d'un refus.
-- Les règles d'équilibrage sont configurables lorsqu'elles utilisent des
+- [x] Le moteur retourne les raisons précises d'un refus.
+- [x] Les règles d'équilibrage sont configurables lorsqu'elles utilisent des
   caractéristiques déjà reconnues.
 
 [↑ Retour au sommaire](#sommaire-de-la-roadmap)
@@ -1177,11 +1177,11 @@ et déterminer explicitement si une planète peut être colonisée.
 | Métadonnée | Valeur |
 |---|---|
 | Issue | [ENG-33](https://cadylo.app/galactic/issue/ENG-33) |
-| Statut | À faire |
+| Statut | Terminée |
 | Priorité | P1 |
 | Estimation | 5 points |
 | Créée le | 23/07/2026 |
-| Mise à jour le | 27/07/2026 |
+| Mise à jour le | 29/07/2026 |
 
 ### Objectif
 
@@ -1206,9 +1206,9 @@ l'attaque sans figer encore la formule de combat.
 
 ### Critères d'acceptation
 
-- Une cible peut posséder des forces inconnues ou partiellement estimées.
-- Les données réelles ne fuient pas dans l'interface du joueur.
-- Les forces et défenses survivent à une sauvegarde/reprise.
+- [x] Une cible peut posséder des forces inconnues ou partiellement estimées.
+- [x] Les données réelles ne fuient pas dans l'interface du joueur.
+- [x] Les forces et défenses survivent à une sauvegarde/reprise.
 
 [↑ Retour au sommaire](#sommaire-de-la-roadmap)
 

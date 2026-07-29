@@ -135,3 +135,18 @@ L'inspecteur évalue aussi la colonisabilité sans lancer de colonie : il indiqu
 les blocages précis liés au type de monde, à l'habitabilité, aux routes connues,
 à la technologie, à la cargaison de fondation et à la limite de colonies. Les
 seuils, profils planétaires, coûts et contraintes viennent du ruleset externe.
+
+## MVP-025 — Occupants, forces et défenses planétaires
+
+Chaque planète possède désormais une présence réelle déterministe : inoccupée,
+neutre, hostile ou contrôlée par le joueur. Population, unités terrestres et
+défenses orbitales sont conservées dans l'état mutable et la sauvegarde. Le
+catalogue `planetary_presence.ron` définit les unités, leurs statistiques et les
+profils d'occupation utilisés par la seed.
+
+Ces données réelles ne sont jamais lues directement par l'inspecteur. Une sonde
+ne révèle qu'un contact global et masque l'identité comme les types d'unités.
+L'analyse remplace ce contact par un rapport daté avec faction, population et
+effectifs sous forme de fourchettes. Les valeurs exactes restent réservées aux
+colonies possédées. Une présence étrangère non sécurisée bloque explicitement
+la colonisation ; l'attaque et le combat restent dans MVP-025-B.

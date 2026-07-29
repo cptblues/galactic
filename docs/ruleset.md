@@ -4,7 +4,7 @@ Galactic charge son ruleset au démarrage depuis
 `assets/rulesets/default/`. La variable d'environnement
 `GALACTIC_RULESET_DIR` permet de sélectionner un autre dossier.
 
-Le ruleset est composé de huit fichiers RON :
+Le ruleset est composé de neuf fichiers RON :
 
 - `manifest.ron` : identifiant et versions ;
 - `economy.ron` : stockage de base, limites de files et cadence de production ;
@@ -14,6 +14,8 @@ Le ruleset est composé de huit fichiers RON :
 - `craftables.ron` : objets fabricables, vaisseaux, coûts, prérequis et capacités ;
 - `planetary_analysis.ron` : seuil de colonisabilité, coût de fondation et
   profils environnementaux par type de planète ;
+- `planetary_presence.ron` : profils d'occupation, population et forces
+  terrestres ou orbitales ;
 - `starting_scenario.ron` : faction joueur, colonie, ressources et bâtiments initiaux.
 
 Les durées de construction et de fabrication sont exprimées en secondes dans
@@ -92,6 +94,25 @@ Les contraintes reconnues sont `ThinAtmosphere`, `GlobalOcean`,
 Elles sont informatives ; l'éligibilité du type, l'habitabilité, la route, la
 technologie, la limite de colonies et la cargaison de fondation sont évaluées
 séparément et produisent chacune un motif de refus explicite.
+
+## Présences planétaires
+
+`planetary_presence.ron` définit des forces réutilisables et des profils
+d'occupation pondérés. Une force indique son domaine (`Ground` ou `Orbital`),
+ses valeurs d'attaque, de défense et de durabilité ainsi que le pas utilisé
+pour arrondir les estimations du joueur. Un profil choisit une faction
+occupante éventuelle, une population bornée et les quantités de chaque force.
+
+Le moteur sélectionne et matérialise ces données de façon déterministe pour
+chaque `PlanetId`. La planète colonisée au départ utilise un profil séparé
+décrivant sa population et sa garnison. Les identifiants de force et de faction
+doivent exister, les poids et statistiques doivent être strictement positifs,
+et les bornes doivent rester ordonnées.
+
+Le ruleset configure l'état réel, jamais la précision de l'interface. Une sonde
+ne révèle que le contact ; une analyse transforme les valeurs réelles en
+fourchettes arrondies. Les pertes futures modifient l'état réel sans actualiser
+automatiquement le dernier renseignement connu.
 
 ## Validation et sauvegardes
 

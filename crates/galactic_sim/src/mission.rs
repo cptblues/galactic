@@ -9,7 +9,8 @@ use galactic_domain::{
 use crate::{
     AuthorizationError, CraftableId, FleetAssignment, FleetComposition, FleetCompositionError,
     FleetCreated, FleetError, FleetLocation, GameState, KnowledgeChange, KnowledgeLevel,
-    KnowledgeTarget, ShipStack, StrategicDuration, StrategicTick, UniverseRepository, form_fleet,
+    KnowledgeTarget, PlanetaryIntelPrecision, ShipStack, StrategicDuration, StrategicTick,
+    UniverseRepository, form_fleet, refresh_planetary_intelligence,
 };
 
 /// Abstract distance crossed by a fleet for one route hop.
@@ -931,6 +932,13 @@ pub(crate) fn advance_missions(
                                     planet_id,
                                     KnowledgeLevel::Probed,
                                 );
+                                refresh_planetary_intelligence(
+                                    state,
+                                    planet_id,
+                                    PlanetaryIntelPrecision::Contact,
+                                    transition_at,
+                                )
+                                .expect("validated mission targets have a planetary presence");
                                 let revealed_planets =
                                     u16::from(state.planet_knowledge_level(planet_id) > previous);
                                 (previous, 0, 0, 0, revealed_planets)

@@ -1266,3 +1266,34 @@ Versions après ce checkpoint :
 - `GAME_STATE_VERSION = 19` ;
 - `SAVE_VERSION = 20` ;
 - `RULESET_SCHEMA_VERSION = 6`.
+
+## MVP-025 — Occupants, forces et défenses planétaires
+
+Chaque planète possède désormais un `PlanetaryPresence` réel, initialisé de
+façon déterministe depuis la graine de l'univers et son `PlanetId`. Cette
+présence regroupe une faction occupante éventuelle, une population et des
+forces stationnées au sol ou en orbite. Les profils, leurs poids et les
+statistiques de chaque force sont définis dans `planetary_presence.ron`.
+
+L'état réel reste séparé du dernier renseignement du joueur. Une sonde produit
+un rapport `Contact` limité à un signal d'occupation. L'analyse élève ce rapport
+à `Surveyed` et expose seulement des fourchettes quantifiées, arrondies selon
+la précision de chaque définition. Les colonies du joueur disposent d'un
+rapport `Exact`. Le client ne lit que ce rapport pour afficher une présence,
+une relation diplomatique, une population et des forces estimées.
+
+Les pertes futures passent par `apply_planetary_force_losses`. Cette mutation
+est atomique, refuse les quantités invalides, incrémente la révision de la
+présence et ne rafraîchit pas implicitement le renseignement connu. Elle
+préserve ainsi la distinction entre réalité et information lors du futur
+combat.
+
+Une planète occupée par une autre faction ajoute un motif explicite au verdict
+de colonisabilité. L'attaque et la résolution du combat restent hors périmètre
+de ce checkpoint.
+
+Versions après ce checkpoint :
+
+- `GAME_STATE_VERSION = 20` ;
+- `SAVE_VERSION = 21` ;
+- `RULESET_SCHEMA_VERSION = 7`.

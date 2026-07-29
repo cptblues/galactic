@@ -5,8 +5,9 @@ use galactic_domain::{FactionId, Owner, Planet, PlanetId, PlanetKind, ResourceCo
 use serde::Deserialize;
 
 use crate::{
-    AuthorizationError, GameState, KnowledgeChange, KnowledgeLevel, PlanetResourceProfile,
-    StrategicTick, TechnologyUnlock, UniverseRepository, default_ruleset,
+    AuthorizationError, DiplomaticRelation, GameState, KnowledgeChange, KnowledgeLevel,
+    PlanetResourceProfile, PlanetaryIntelPrecision, StrategicTick, TechnologyUnlock,
+    UniverseRepository, default_ruleset, refresh_planetary_intelligence,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -271,15 +272,28 @@ pub struct PlanetAnalysisRejected {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColonizationBlocker {
     UnknownPlanet(PlanetId),
-    NotAnalyzed { current: KnowledgeLevel },
+    NotAnalyzed {
+        current: KnowledgeLevel,
+    },
     MissingAnalysisReport,
     AlreadyColonized,
+    OccupiedPlanet {
+        occupant: FactionId,
+        relation: DiplomaticRelation,
+    },
     MissingTechnology(TechnologyUnlock),
     UnsupportedEnvironment(PlanetEnvironment),
-    HabitabilityTooLow { minimum: u8, found: u8 },
+    HabitabilityTooLow {
+        minimum: u8,
+        found: u8,
+    },
     NoAccessibleRoute,
-    ColonyLimitReached { maximum: usize },
-    InsufficientFoundationResources { cost: ResourceCost },
+    ColonyLimitReached {
+        maximum: usize,
+    },
+    InsufficientFoundationResources {
+        cost: ResourceCost,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -373,6 +387,14 @@ pub fn analyze_planet(
     state
         .planet_analysis_reports
         .sort_by_key(|entry| entry.planet_id);
+    let observed_at = state.clock.current_tick();
+    refresh_planetary_intelligence(
+        state,
+        planet_id,
+        PlanetaryIntelPrecision::Surveyed,
+        observed_at,
+    )
+    .expect("an analyzed planet has a validated planetary presence");
 
     Ok(PlanetAnalysisOutcome {
         report,
@@ -407,6 +429,18 @@ pub fn assess_planet_colonizability(
     }
     if state.colony_on_planet(planet_id).is_some() {
         blockers.push(ColonizationBlocker::AlreadyColonized);
+    }
+    if let Some(Owner::Faction(occupant)) = state
+        .planetary_presence(planet_id)
+        .map(|presence| presence.occupant)
+        && occupant != actor
+    {
+        blockers.push(ColonizationBlocker::OccupiedPlanet {
+            occupant,
+            relation: state
+                .relation_between(actor, occupant)
+                .unwrap_or(DiplomaticRelation::Unknown),
+        });
     }
     if !state.research.has_unlock(TechnologyUnlock::FoundColonies) {
         blockers.push(ColonizationBlocker::MissingTechnology(

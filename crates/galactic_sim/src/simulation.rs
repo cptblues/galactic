@@ -12,14 +12,16 @@ use crate::{
     DiplomacyError, DiplomacyState, FactionKind, FleetAssignment, FleetStateError,
     GAME_STATE_VERSION, GameAction, GameCommand, GameEvent, GameEventKind, GameState,
     KnowledgeLevel, MissionEngineEvent, MissionPhase, MissionStateError, PlanetAnalysisStateError,
-    ResearchStateError, SelectionTarget, StartingScenario, StartingScenarioError,
-    StrategicDuration, TimeSpeed, UniverseIndexError, UniverseRepository,
-    advance_colony_construction, advance_colony_craft, advance_missions, advance_research,
-    analyze_planet, build_planet_analysis_report, cancel_mission, default_building_catalog,
-    enqueue_building_upgrade, enqueue_craft, enqueue_research, form_fleet, launch_mission,
-    launch_probe_mission, planetary_analysis_rules, queue_colony_production, storage_capacity,
+    PlanetaryIntelPrecision, PlanetaryPresenceStateError, ResearchStateError, SelectionTarget,
+    StartingScenario, StartingScenarioError, StrategicDuration, TimeSpeed, UniverseIndexError,
+    UniverseRepository, advance_colony_construction, advance_colony_craft, advance_missions,
+    advance_research, analyze_planet, build_planet_analysis_report, cancel_mission,
+    default_building_catalog, enqueue_building_upgrade, enqueue_craft, enqueue_research,
+    form_fleet, launch_mission, launch_probe_mission, planetary_analysis_rules,
+    queue_colony_production, refresh_planetary_intelligence, storage_capacity,
     validate_construction_queue, validate_craft_state, validate_fleet_state,
-    validate_mission_state, validate_planet_analysis_state, validate_research_state,
+    validate_mission_state, validate_planet_analysis_state, validate_planetary_presence_state,
+    validate_research_state,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +57,7 @@ pub enum SimulationBuildError {
     },
     InvalidResearchState(ResearchStateError),
     InvalidPlanetAnalysisState(PlanetAnalysisStateError),
+    InvalidPlanetaryPresenceState(PlanetaryPresenceStateError),
     InvalidColonyResourceLedger {
         colony_id: ColonyId,
         error: ResourceLedgerError,
@@ -572,10 +575,30 @@ impl Simulation {
                     self.state
                         .planet_analysis_reports
                         .sort_by_key(|entry| entry.planet_id);
+                    let observed_at = self.state.clock.current_tick();
+                    refresh_planetary_intelligence(
+                        &mut self.state,
+                        planet_id,
+                        PlanetaryIntelPrecision::Surveyed,
+                        observed_at,
+                    )
+                    .expect("an analyzed planet has a deterministic presence");
                     changes
                 } else {
-                    self.state
-                        .advance_planet_knowledge(&self.universe, planet_id, next)
+                    let changes =
+                        self.state
+                            .advance_planet_knowledge(&self.universe, planet_id, next);
+                    if next == KnowledgeLevel::Probed {
+                        let observed_at = self.state.clock.current_tick();
+                        refresh_planetary_intelligence(
+                            &mut self.state,
+                            planet_id,
+                            PlanetaryIntelPrecision::Contact,
+                            observed_at,
+                        )
+                        .expect("a probed planet has a deterministic presence");
+                    }
+                    changes
                 }
             }
         };
@@ -779,6 +802,9 @@ fn validate_state(
             });
         }
     }
+
+    validate_planetary_presence_state(state, universe)
+        .map_err(SimulationBuildError::InvalidPlanetaryPresenceState)?;
 
     let mut fleet_ids = HashSet::with_capacity(state.fleets.len());
     for fleet in &state.fleets {

@@ -15,12 +15,13 @@ use crate::{
     CraftCatalogError, CraftableCatalog, CraftableCatalogConfig, DiplomacyState,
     DiplomaticRelation, FactionKind, FactionRelation, InitialPlanetKnowledge,
     InitialSystemKnowledge, KnowledgeLevel, PlanetResourceProfile, PlanetaryAnalysisRules,
-    PlanetaryAnalysisRulesConfig, PlanetaryAnalysisRulesError, ResourceValuesConfig,
+    PlanetaryAnalysisRulesConfig, PlanetaryAnalysisRulesError, PlanetaryPresenceRules,
+    PlanetaryPresenceRulesConfig, PlanetaryPresenceRulesError, ResourceValuesConfig,
     StartingColonyConfig, StartingFactionConfig, StartingScenario, TechnologyCatalog,
     TechnologyCatalogConfig, TechnologyCatalogError,
 };
 
-pub const RULESET_SCHEMA_VERSION: u32 = 6;
+pub const RULESET_SCHEMA_VERSION: u32 = 7;
 pub const RULESET_DIRECTORY_ENV: &str = "GALACTIC_RULESET_DIR";
 pub const DEFAULT_RULESET_DIRECTORY: &str = "assets/rulesets/default";
 
@@ -45,6 +46,7 @@ pub struct Ruleset {
     technologies: TechnologyCatalog,
     craftables: CraftableCatalog,
     planetary_analysis: PlanetaryAnalysisRules,
+    planetary_presence: PlanetaryPresenceRules,
     starting_scenario: StartingScenario,
 }
 
@@ -81,6 +83,13 @@ impl Ruleset {
             read_ron(directory, "planetary_analysis.ron")?;
         let planetary_analysis = PlanetaryAnalysisRules::from_config(planetary_analysis_config)
             .map_err(RulesetLoadError::PlanetaryAnalysis)?;
+        let planetary_presence_config: PlanetaryPresenceRulesConfig =
+            read_ron(directory, "planetary_presence.ron")?;
+        let planetary_presence = PlanetaryPresenceRules::from_config(
+            planetary_presence_config,
+            faction_catalog.factions,
+        )
+        .map_err(RulesetLoadError::PlanetaryPresence)?;
         let starting_config: StartingScenarioConfig = read_ron(directory, "starting_scenario.ron")?;
         let starting_scenario = starting_config.compile(
             &buildings,
@@ -104,6 +113,7 @@ impl Ruleset {
         technologies.append_structure(&mut structure);
         craftables.append_structure(&mut structure);
         planetary_analysis.append_structure(&mut structure);
+        planetary_presence.append_structure(&mut structure);
 
         Ok(Self {
             id: manifest.id,
@@ -115,6 +125,7 @@ impl Ruleset {
             technologies,
             craftables,
             planetary_analysis,
+            planetary_presence,
             starting_scenario,
         })
     }
@@ -153,6 +164,10 @@ impl Ruleset {
 
     pub const fn planetary_analysis(&self) -> &PlanetaryAnalysisRules {
         &self.planetary_analysis
+    }
+
+    pub const fn planetary_presence(&self) -> &PlanetaryPresenceRules {
+        &self.planetary_presence
     }
 
     pub const fn starting_scenario(&self) -> StartingScenario {
@@ -223,6 +238,7 @@ pub enum RulesetLoadError {
     Technologies(TechnologyCatalogError),
     Craftables(CraftCatalogError),
     PlanetaryAnalysis(PlanetaryAnalysisRulesError),
+    PlanetaryPresence(PlanetaryPresenceRulesError),
     StartingScenario(&'static str),
 }
 
@@ -252,6 +268,9 @@ impl fmt::Display for RulesetLoadError {
             Self::Craftables(error) => write!(formatter, "invalid craftables catalog: {error:?}"),
             Self::PlanetaryAnalysis(error) => {
                 write!(formatter, "invalid planetary analysis rules: {error:?}")
+            }
+            Self::PlanetaryPresence(error) => {
+                write!(formatter, "invalid planetary presence rules: {error:?}")
             }
             Self::StartingScenario(message) => {
                 write!(formatter, "invalid starting scenario: {message}")
@@ -723,6 +742,8 @@ mod tests {
         assert_eq!(ruleset.technologies().definitions().count(), 6);
         assert_eq!(ruleset.craftables().definitions().count(), 3);
         assert_eq!(ruleset.planetary_analysis().version(), 1,);
+        assert_eq!(ruleset.planetary_presence().version(), 1);
+        assert_eq!(ruleset.planetary_presence().definitions().count(), 5);
     }
 
     #[test]
@@ -741,6 +762,9 @@ mod tests {
         default_ruleset().craftables().append_structure(&mut first);
         default_ruleset()
             .planetary_analysis()
+            .append_structure(&mut first);
+        default_ruleset()
+            .planetary_presence()
             .append_structure(&mut first);
         assert_eq!(
             default_ruleset().structure_fingerprint(),

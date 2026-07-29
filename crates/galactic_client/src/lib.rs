@@ -21,10 +21,12 @@ use galactic_domain::{
     WorldPosition,
 };
 use galactic_sim::{
-    ColonizationBlocker, GameAction, GameEvent, GameEventKind, InstallationConstraint,
-    KnowledgeLevel, KnowledgeTarget, MVP_HOME_SYSTEM_ID, MissionKind, MissionPhase, MissionResult,
-    MissionTarget, PlanetAnalysisError, PlanetEnvironment, SelectionTarget, Simulation,
-    SystemVisibility, TechnologyUnlock, TimeSpeed, assess_planet_colonizability,
+    ColonizationBlocker, DiplomaticRelation, EstimateRange, GameAction, GameEvent, GameEventKind,
+    InstallationConstraint, KnowledgeLevel, KnowledgeTarget, MVP_HOME_SYSTEM_ID, MissionKind,
+    MissionPhase, MissionResult, MissionTarget, PlanetAnalysisError, PlanetEnvironment,
+    PlanetaryForceDomain, PlanetaryIntelPrecision, PlanetaryOccupancyIntel, SelectionTarget,
+    Simulation, SystemVisibility, TechnologyUnlock, TimeSpeed, assess_planet_colonizability,
+    default_ruleset,
 };
 
 const UNIVERSE_VERTICAL_EXAGGERATION: f32 = 3.4;
@@ -5241,11 +5243,15 @@ Lunes : non recensées
 Type : {:?}
 Habitabilité estimée : {}
 Potentiel : analyse requise
+
+{}
+
 Lunes : non recensées
 {}",
                 system_label,
                 planet.kind,
                 habitability_estimate(planet.habitability),
+                planetary_intelligence_text(simulation, planet_id),
                 selection_note,
             ),
         ),
@@ -5260,6 +5266,9 @@ Lunes : non recensées
 Type : {:?}
 Habitabilité exacte : {}%
 Statut : {}
+
+{}
+
 Lunes : aucune donnée disponible
 {}",
                 system_label,
@@ -5268,6 +5277,7 @@ Lunes : aucune donnée disponible
                 colony
                     .map(|value| value.name.as_str())
                     .unwrap_or("colonie non référencée"),
+                planetary_intelligence_text(simulation, planet_id),
                 selection_note,
             ),
         ),
@@ -5354,6 +5364,8 @@ Carburant : {}
 
 {}
 
+{}
+
 Lunes : aucune donnée disponible
 {selection_note}",
         planet.kind,
@@ -5364,8 +5376,128 @@ Lunes : aucune donnée disponible
         report.resource_profile.crystal,
         report.resource_profile.fuel,
         report.resource_profile.energy,
-        colonizability_text(&assessment),
+        planetary_intelligence_text(simulation, planet.id),
+        colonizability_text(&assessment, simulation.state()),
     )
+}
+
+fn planetary_intelligence_text(simulation: &Simulation, planet_id: PlanetId) -> String {
+    let state = simulation.state();
+    let Some(report) = state.planetary_intelligence_report(planet_id) else {
+        return "RENSEIGNEMENT PLANÉTAIRE\nRapport indisponible".to_string();
+    };
+
+    let observed = format!("Observation au tick {}", report.observed_at.value());
+    match report.precision {
+        PlanetaryIntelPrecision::Contact => {
+            let presence = match report.occupancy {
+                PlanetaryOccupancyIntel::Unoccupied => {
+                    "aucune présence organisée détectée".to_string()
+                }
+                PlanetaryOccupancyIntel::OccupiedUnknown => {
+                    "signature occupante détectée, identité inconnue".to_string()
+                }
+                PlanetaryOccupancyIntel::Occupied(faction_id) => {
+                    format!("signature attribuée à la faction {}", faction_id.raw())
+                }
+            };
+            format!(
+                "RENSEIGNEMENT PLANÉTAIRE — CONTACT\n{observed}\nPrésence : {presence}\nForces terrestres : {}\nDéfenses orbitales : {}\nUne analyse est requise pour identifier les unités et leurs effectifs.",
+                strategic_signal_label(report.ground_strength),
+                strategic_signal_label(report.orbital_strength),
+            )
+        }
+        PlanetaryIntelPrecision::Surveyed | PlanetaryIntelPrecision::Exact => {
+            let precision_label = if report.precision == PlanetaryIntelPrecision::Exact {
+                "DONNÉES LOCALES"
+            } else {
+                "ESTIMATION"
+            };
+            let presence = match report.occupancy {
+                PlanetaryOccupancyIntel::Unoccupied => "aucune présence organisée".to_string(),
+                PlanetaryOccupancyIntel::OccupiedUnknown => {
+                    "présence occupante non attribuée".to_string()
+                }
+                PlanetaryOccupancyIntel::Occupied(faction_id) => {
+                    let name = state
+                        .faction(faction_id)
+                        .map(|faction| faction.name.as_str())
+                        .unwrap_or("faction inconnue");
+                    let relation = state
+                        .relation_between(state.player_faction, faction_id)
+                        .unwrap_or(DiplomaticRelation::Unknown);
+                    format!("{name} — relation {}", diplomatic_relation_label(relation))
+                }
+            };
+            let population = report
+                .population
+                .map(estimate_range_text)
+                .unwrap_or_else(|| "aucune".to_string());
+            let force_catalog = default_ruleset().planetary_presence();
+            let forces = if report.forces.is_empty() {
+                "• aucune unité recensée".to_string()
+            } else {
+                report
+                    .forces
+                    .iter()
+                    .map(|force| {
+                        let Some(definition) = force_catalog.definition(force.definition_id) else {
+                            return format!(
+                                "• unité inconnue {} : {}",
+                                force.definition_id,
+                                estimate_range_text(force.quantity),
+                            );
+                        };
+                        format!(
+                            "• {} ({}) : {}",
+                            definition.name,
+                            planetary_force_domain_label(definition.domain),
+                            estimate_range_text(force.quantity),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            format!(
+                "RENSEIGNEMENT PLANÉTAIRE — {precision_label}\n{observed}\nOccupant : {presence}\nPopulation : {population}\nIndice terrestre : {}\nIndice orbital : {}\n{forces}",
+                estimate_range_text(report.ground_strength),
+                estimate_range_text(report.orbital_strength),
+            )
+        }
+    }
+}
+
+fn estimate_range_text(range: EstimateRange) -> String {
+    if range.is_exact() {
+        range.minimum.to_string()
+    } else {
+        format!("{}–{}", range.minimum, range.maximum)
+    }
+}
+
+fn strategic_signal_label(range: EstimateRange) -> &'static str {
+    match range.maximum {
+        0 => "aucune signature",
+        1..=749 => "faible",
+        750..=1_999 => "modérée",
+        _ => "forte",
+    }
+}
+
+const fn planetary_force_domain_label(domain: PlanetaryForceDomain) -> &'static str {
+    match domain {
+        PlanetaryForceDomain::Ground => "sol",
+        PlanetaryForceDomain::Orbital => "orbite",
+    }
+}
+
+const fn diplomatic_relation_label(relation: DiplomaticRelation) -> &'static str {
+    match relation {
+        DiplomaticRelation::Unknown => "inconnue",
+        DiplomaticRelation::Neutral => "neutre",
+        DiplomaticRelation::Hostile => "hostile",
+        DiplomaticRelation::Allied => "alliée",
+    }
 }
 
 fn planet_environment_label(environment: PlanetEnvironment) -> &'static str {
@@ -5390,7 +5522,10 @@ fn installation_constraint_label(constraint: InstallationConstraint) -> &'static
     }
 }
 
-fn colonizability_text(assessment: &galactic_sim::ColonizabilityAssessment) -> String {
+fn colonizability_text(
+    assessment: &galactic_sim::ColonizabilityAssessment,
+    state: &galactic_sim::GameState,
+) -> String {
     let cost = assessment.foundation_cost;
     if assessment.is_colonizable() {
         return format!(
@@ -5404,7 +5539,7 @@ Investissement requis : {} métal, {} cristal, {} carburant",
     let blockers = assessment
         .blockers
         .iter()
-        .map(|blocker| format!("• {}", colonization_blocker_label(*blocker)))
+        .map(|blocker| format!("• {}", colonization_blocker_label(*blocker, state)))
         .collect::<Vec<_>>()
         .join("\n");
     format!(
@@ -5416,7 +5551,10 @@ Investissement requis : {} métal, {} cristal, {} carburant",
     )
 }
 
-fn colonization_blocker_label(blocker: ColonizationBlocker) -> String {
+fn colonization_blocker_label(
+    blocker: ColonizationBlocker,
+    state: &galactic_sim::GameState,
+) -> String {
     match blocker {
         ColonizationBlocker::UnknownPlanet(_) => "planète inconnue".to_string(),
         ColonizationBlocker::NotAnalyzed { current } => {
@@ -5426,6 +5564,16 @@ fn colonization_blocker_label(blocker: ColonizationBlocker) -> String {
             "rapport d'analyse persistant introuvable".to_string()
         }
         ColonizationBlocker::AlreadyColonized => "planète déjà colonisée".to_string(),
+        ColonizationBlocker::OccupiedPlanet { occupant, relation } => {
+            let name = state
+                .faction(occupant)
+                .map(|faction| faction.name.as_str())
+                .unwrap_or("faction inconnue");
+            format!(
+                "présence {} non sécurisée : {name}",
+                diplomatic_relation_label(relation),
+            )
+        }
         ColonizationBlocker::MissingTechnology(TechnologyUnlock::FoundColonies) => {
             "technologie Ingénierie d'implantation manquante".to_string()
         }
@@ -5467,7 +5615,7 @@ const fn knowledge_badge_fr(level: KnowledgeLevel) -> &'static str {
         KnowledgeLevel::Unknown => "[INCONNU — DONNÉES MASQUÉES]",
         KnowledgeLevel::Detected => "[DÉTECTÉ — DONNÉES MASQUÉES]",
         KnowledgeLevel::Probed => "[SONDÉ — ESTIMATIONS]",
-        KnowledgeLevel::Analyzed => "[ANALYSÉ — VALEURS EXACTES]",
+        KnowledgeLevel::Analyzed => "[ANALYSÉ — RAPPORT COMPLET]",
         KnowledgeLevel::Colonized => "[COLONISÉ — VALEURS EXACTES]",
     }
 }
@@ -6524,6 +6672,87 @@ VmSwap:\t      2048 kB
         assert!(rendered.contains("POTENTIEL EXACT"));
         assert!(rendered.contains("COLONISABILITÉ — BLOQUÉE"));
         assert!(!rendered.contains("Potentiel : analyse requise"));
+    }
+
+    #[test]
+    fn planetary_intelligence_progresses_without_leaking_real_forces() {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+        let presence = simulation
+            .state()
+            .planetary_presences
+            .iter()
+            .find(|presence| {
+                presence.occupant != galactic_domain::Owner::Unowned
+                    && !presence.forces.is_empty()
+                    && simulation
+                        .state()
+                        .colony_on_planet(presence.planet_id)
+                        .is_none()
+            })
+            .expect("the MVP seed contains an occupied remote planet")
+            .clone();
+        let planet_id = presence.planet_id;
+        let system_id = planet_id.system_id();
+        let occupant = presence
+            .occupant
+            .faction()
+            .expect("selected presence is occupied");
+        let occupant_name = simulation
+            .state()
+            .faction(occupant)
+            .expect("occupant exists")
+            .name
+            .clone();
+        let force_names = presence
+            .forces
+            .iter()
+            .map(|force| {
+                default_ruleset()
+                    .planetary_presence()
+                    .definition(force.definition_id)
+                    .expect("force definition exists")
+                    .name
+            })
+            .collect::<Vec<_>>();
+        let repository = simulation.universe_repository().clone();
+        simulation.state_mut().advance_planet_knowledge(
+            &repository,
+            planet_id,
+            KnowledgeLevel::Probed,
+        );
+        galactic_sim::refresh_planetary_intelligence(
+            simulation.state_mut(),
+            planet_id,
+            PlanetaryIntelPrecision::Contact,
+            galactic_sim::StrategicTick::ZERO,
+        )
+        .expect("contact report");
+
+        let contact = planet_inspector_content(&simulation, system_id, planet_id).render();
+
+        assert!(contact.contains("RENSEIGNEMENT PLANÉTAIRE — CONTACT"));
+        assert!(contact.contains("identité inconnue"));
+        assert!(!contact.contains(&occupant_name));
+        assert!(force_names.iter().all(|name| !contact.contains(name)));
+
+        simulation.state_mut().research = galactic_sim::ResearchState::from_completed([
+            galactic_sim::TechnologyId::SPATIAL_DETECTION,
+            galactic_sim::TechnologyId::PLANETARY_ANALYSIS,
+        ]);
+        simulation.apply_player_action(GameAction::AnalyzePlanet { planet_id });
+        let report = simulation
+            .state()
+            .planetary_intelligence_report(planet_id)
+            .expect("analysis refreshes intelligence");
+        let surveyed = planet_inspector_content(&simulation, system_id, planet_id).render();
+
+        assert_eq!(report.precision, PlanetaryIntelPrecision::Surveyed);
+        assert!(surveyed.contains("RENSEIGNEMENT PLANÉTAIRE — ESTIMATION"));
+        assert!(surveyed.contains(&occupant_name));
+        assert!(report.forces.iter().all(|force| {
+            !force.quantity.is_exact() && surveyed.contains(&estimate_range_text(force.quantity))
+        }));
+        assert!(!surveyed.contains("DONNÉES LOCALES"));
     }
 
     #[test]
