@@ -1234,3 +1234,35 @@ La forme persistée des missions change :
 - `SAVE_VERSION = 19` ;
 - `RULESET_SCHEMA_VERSION = 5` (inchangé) ;
 - `GENERATION_VERSION = 4` (inchangé).
+
+## MVP-024 — Analyse planétaire et règles de colonisabilité
+
+`GameAction::AnalyzePlanet` accepte uniquement une planète au niveau `Probed`
+et exige le déblocage `AnalyzePlanets`. L'action est déterministe et immédiate :
+elle élève la connaissance à `Analyzed`, produit un `PlanetAnalysisReport`
+horodaté au tick stratégique courant et l'ajoute à
+`GameState::planet_analysis_reports`.
+
+Le rapport est un instantané persistant distinct de la définition réelle de
+l'univers. Il contient l'environnement, l'habitabilité exacte, quatre
+potentiels économiques et un ensemble compact de contraintes d'installation.
+La restauration valide l'unicité, la cible, le niveau de connaissance,
+l'horodatage et la concordance du rapport avec la planète et le ruleset actifs.
+
+`planetary_analysis.ron` pilote le seuil minimal d'habitabilité, la limite de
+colonies, la cargaison de fondation et les profils de chaque type de planète.
+Une variation stable dérivée du `PlanetId` différencie les mondes de même type
+sans état aléatoire mutable.
+
+La fonction `assess_planet_colonizability` ne modifie aucun état. Elle retourne
+tous les motifs de blocage présents : analyse insuffisante, rapport absent,
+monde déjà colonisé, technologie manquante, environnement incompatible,
+habitabilité trop faible, route connue absente, limite atteinte ou cargaison
+insuffisante. Le client affiche ces motifs et le coût exact dans l'inspecteur ;
+la création effective d'une colonie reste hors périmètre de ce checkpoint.
+
+Versions après ce checkpoint :
+
+- `GAME_STATE_VERSION = 19` ;
+- `SAVE_VERSION = 20` ;
+- `RULESET_SCHEMA_VERSION = 6`.

@@ -69,6 +69,7 @@ Référence éditoriale : `docs/universe_bible.md`.
 | Recherche | `T` |
 | Chantier orbital | `Y` |
 | Sonder le système ou la planète sélectionnés | `K` |
+| Analyser la planète sondée sélectionnée | `L` |
 | Basculer projection 3D / 2,5D | `P` |
 | Reconstruire les vues Bevy | `R` |
 
@@ -121,3 +122,16 @@ orbital de la cible. Une mission vers un autre système est animée le long de s
 route dans la vue Univers ; sa durée dépend du nombre de sauts connus. Le même
 repère visuel suit l'aller puis le retour et sa position est calculée depuis les
 ticks stratégiques, indépendamment du nombre d'images par seconde.
+
+## MVP-024 — Analyse planétaire et colonisabilité
+
+Une planète identifiée peut être analysée avec `L` après acquisition de
+Spectrométrie planétaire. Le rapport horodaté révèle l'environnement, les
+contraintes d'installation, l'habitabilité exacte et quatre potentiels de
+ressources déterministes. Il est conservé dans la sauvegarde séparément des
+données réelles de l'univers.
+
+L'inspecteur évalue aussi la colonisabilité sans lancer de colonie : il indique
+les blocages précis liés au type de monde, à l'habitabilité, aux routes connues,
+à la technologie, à la cargaison de fondation et à la limite de colonies. Les
+seuils, profils planétaires, coûts et contraintes viennent du ruleset externe.

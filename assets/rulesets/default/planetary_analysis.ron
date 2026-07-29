@@ -1,0 +1,50 @@
+(
+    version: 1,
+    minimum_habitability: 50,
+    maximum_colonies: 3,
+    foundation_cost: (metal: 650, crystal: 420, fuel: 260),
+    kinds: [
+        (
+            kind: Rocky,
+            environment: Temperate,
+            base_resources: (metal: 135, crystal: 95, fuel: 70, energy: 105),
+            colonizable: true,
+            constraints: [ThinAtmosphere],
+        ),
+        (
+            kind: Ocean,
+            environment: Oceanic,
+            base_resources: (metal: 80, crystal: 115, fuel: 105, energy: 115),
+            colonizable: true,
+            constraints: [GlobalOcean],
+        ),
+        (
+            kind: Desert,
+            environment: Arid,
+            base_resources: (metal: 115, crystal: 125, fuel: 65, energy: 130),
+            colonizable: true,
+            constraints: [AridClimate],
+        ),
+        (
+            kind: Ice,
+            environment: Frozen,
+            base_resources: (metal: 90, crystal: 135, fuel: 125, energy: 70),
+            colonizable: true,
+            constraints: [CryogenicClimate],
+        ),
+        (
+            kind: GasGiant,
+            environment: Gaseous,
+            base_resources: (metal: 35, crystal: 85, fuel: 165, energy: 120),
+            colonizable: false,
+            constraints: [NoSolidSurface],
+        ),
+        (
+            kind: Volcanic,
+            environment: Volcanic,
+            base_resources: (metal: 155, crystal: 90, fuel: 80, energy: 145),
+            colonizable: true,
+            constraints: [ExtremeVolcanism],
+        ),
+    ],
+)

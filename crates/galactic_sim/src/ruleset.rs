@@ -14,12 +14,13 @@ use crate::{
     BuildingCatalog, BuildingCatalogConfig, BuildingCatalogError, BuildingLevels,
     CraftCatalogError, CraftableCatalog, CraftableCatalogConfig, DiplomacyState,
     DiplomaticRelation, FactionKind, FactionRelation, InitialPlanetKnowledge,
-    InitialSystemKnowledge, KnowledgeLevel, PlanetResourceProfile, ResourceValuesConfig,
+    InitialSystemKnowledge, KnowledgeLevel, PlanetResourceProfile, PlanetaryAnalysisRules,
+    PlanetaryAnalysisRulesConfig, PlanetaryAnalysisRulesError, ResourceValuesConfig,
     StartingColonyConfig, StartingFactionConfig, StartingScenario, TechnologyCatalog,
     TechnologyCatalogConfig, TechnologyCatalogError,
 };
 
-pub const RULESET_SCHEMA_VERSION: u32 = 5;
+pub const RULESET_SCHEMA_VERSION: u32 = 6;
 pub const RULESET_DIRECTORY_ENV: &str = "GALACTIC_RULESET_DIR";
 pub const DEFAULT_RULESET_DIRECTORY: &str = "assets/rulesets/default";
 
@@ -43,6 +44,7 @@ pub struct Ruleset {
     buildings: BuildingCatalog,
     technologies: TechnologyCatalog,
     craftables: CraftableCatalog,
+    planetary_analysis: PlanetaryAnalysisRules,
     starting_scenario: StartingScenario,
 }
 
@@ -75,6 +77,10 @@ impl Ruleset {
         let craftable_config: CraftableCatalogConfig = read_ron(directory, "craftables.ron")?;
         let craftables = CraftableCatalog::from_config(craftable_config, &buildings, &technologies)
             .map_err(RulesetLoadError::Craftables)?;
+        let planetary_analysis_config: PlanetaryAnalysisRulesConfig =
+            read_ron(directory, "planetary_analysis.ron")?;
+        let planetary_analysis = PlanetaryAnalysisRules::from_config(planetary_analysis_config)
+            .map_err(RulesetLoadError::PlanetaryAnalysis)?;
         let starting_config: StartingScenarioConfig = read_ron(directory, "starting_scenario.ron")?;
         let starting_scenario = starting_config.compile(
             &buildings,
@@ -97,6 +103,7 @@ impl Ruleset {
         buildings.append_structure(&mut structure);
         technologies.append_structure(&mut structure);
         craftables.append_structure(&mut structure);
+        planetary_analysis.append_structure(&mut structure);
 
         Ok(Self {
             id: manifest.id,
@@ -107,6 +114,7 @@ impl Ruleset {
             buildings,
             technologies,
             craftables,
+            planetary_analysis,
             starting_scenario,
         })
     }
@@ -141,6 +149,10 @@ impl Ruleset {
 
     pub const fn craftables(&self) -> &CraftableCatalog {
         &self.craftables
+    }
+
+    pub const fn planetary_analysis(&self) -> &PlanetaryAnalysisRules {
+        &self.planetary_analysis
     }
 
     pub const fn starting_scenario(&self) -> StartingScenario {
@@ -210,6 +222,7 @@ pub enum RulesetLoadError {
     Buildings(BuildingCatalogError),
     Technologies(TechnologyCatalogError),
     Craftables(CraftCatalogError),
+    PlanetaryAnalysis(PlanetaryAnalysisRulesError),
     StartingScenario(&'static str),
 }
 
@@ -237,6 +250,9 @@ impl fmt::Display for RulesetLoadError {
                 write!(formatter, "invalid technologies catalog: {error:?}")
             }
             Self::Craftables(error) => write!(formatter, "invalid craftables catalog: {error:?}"),
+            Self::PlanetaryAnalysis(error) => {
+                write!(formatter, "invalid planetary analysis rules: {error:?}")
+            }
             Self::StartingScenario(message) => {
                 write!(formatter, "invalid starting scenario: {message}")
             }
@@ -706,6 +722,7 @@ mod tests {
         assert_eq!(ruleset.buildings().definitions().count(), 8);
         assert_eq!(ruleset.technologies().definitions().count(), 6);
         assert_eq!(ruleset.craftables().definitions().count(), 3);
+        assert_eq!(ruleset.planetary_analysis().version(), 1,);
     }
 
     #[test]
@@ -722,6 +739,9 @@ mod tests {
             .technologies()
             .append_structure(&mut first);
         default_ruleset().craftables().append_structure(&mut first);
+        default_ruleset()
+            .planetary_analysis()
+            .append_structure(&mut first);
         assert_eq!(
             default_ruleset().structure_fingerprint(),
             fnv1a64(first.as_bytes()),

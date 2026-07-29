@@ -7,15 +7,15 @@ use galactic_domain::{
 use crate::{
     BuildingLevels, ConstructionQueue, CraftInventory, CraftQueue, DiplomacyError, DiplomacyState,
     DiplomaticRelation, DiscoveryFrontier, FleetState, KnowledgeChange, KnowledgeCounts,
-    KnowledgeLevel, KnowledgeTarget, MissionReport, MissionState, PlanetKnowledge,
-    PlanetResourceProfile, ProductionRemainder, ResearchState, SelectionTarget, StartingScenario,
-    StartingScenarioError, StrategicClock, SystemKnowledge, UniverseRepository,
+    KnowledgeLevel, KnowledgeTarget, MissionReport, MissionState, PlanetAnalysisReport,
+    PlanetKnowledge, PlanetResourceProfile, ProductionRemainder, ResearchState, SelectionTarget,
+    StartingScenario, StartingScenarioError, StrategicClock, SystemKnowledge, UniverseRepository,
 };
 
 /// Version of the mutable in-memory state contract.
 ///
-/// Version 18 adds explicit system or planet targets to persisted missions.
-pub const GAME_STATE_VERSION: u32 = 18;
+/// Version 19 persists dated planetary analysis reports.
+pub const GAME_STATE_VERSION: u32 = 19;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemVisibility {
@@ -59,6 +59,7 @@ pub struct GameState {
     pub missions: Vec<MissionState>,
     pub next_mission_id: u64,
     pub mission_reports: Vec<MissionReport>,
+    pub planet_analysis_reports: Vec<PlanetAnalysisReport>,
     pub research: ResearchState,
     pub system_knowledge: Vec<SystemKnowledge>,
     pub planet_knowledge: Vec<PlanetKnowledge>,
@@ -120,6 +121,7 @@ impl GameState {
             missions: Vec::new(),
             next_mission_id: 0,
             mission_reports: Vec::new(),
+            planet_analysis_reports: Vec::new(),
             research: ResearchState::from_completed(scenario.initial_technologies.iter().copied()),
             system_knowledge: Vec::new(),
             planet_knowledge: Vec::new(),
@@ -257,6 +259,12 @@ impl GameState {
         self.missions
             .iter()
             .filter(|mission| self.can_manage(self.player_faction, mission.owner))
+    }
+
+    pub fn planet_analysis_report(&self, planet_id: PlanetId) -> Option<&PlanetAnalysisReport> {
+        self.planet_analysis_reports
+            .iter()
+            .find(|report| report.planet_id == planet_id)
     }
 
     pub fn system_knowledge_level(&self, system_id: SystemId) -> KnowledgeLevel {

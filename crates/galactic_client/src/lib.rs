@@ -21,9 +21,10 @@ use galactic_domain::{
     WorldPosition,
 };
 use galactic_sim::{
-    GameAction, GameEvent, GameEventKind, KnowledgeLevel, KnowledgeTarget, MVP_HOME_SYSTEM_ID,
-    MissionKind, MissionPhase, MissionResult, MissionTarget, SelectionTarget, Simulation,
-    SystemVisibility, TimeSpeed,
+    ColonizationBlocker, GameAction, GameEvent, GameEventKind, InstallationConstraint,
+    KnowledgeLevel, KnowledgeTarget, MVP_HOME_SYSTEM_ID, MissionKind, MissionPhase, MissionResult,
+    MissionTarget, PlanetAnalysisError, PlanetEnvironment, SelectionTarget, Simulation,
+    SystemVisibility, TechnologyUnlock, TimeSpeed, assess_planet_colonizability,
 };
 
 const UNIVERSE_VERTICAL_EXAGGERATION: f32 = 3.4;
@@ -874,6 +875,7 @@ enum UiAction {
     EnterSystem,
     ExitSystem,
     LaunchProbe,
+    AnalyzePlanet,
     ToggleProjection,
     ToggleDebugGraph,
     RebuildView,
@@ -1672,6 +1674,7 @@ fn spawn_ui(mut commands: Commands) {
             spawn_action_button(parent, UiAction::EnterSystem, "Entrer système", "Enter");
             spawn_action_button(parent, UiAction::ExitSystem, "Retour univers", "Esc");
             spawn_action_button(parent, UiAction::LaunchProbe, "Lancer reconnaissance", "K");
+            spawn_action_button(parent, UiAction::AnalyzePlanet, "Analyser planète", "L");
             spawn_action_button(
                 parent,
                 UiAction::ToggleProjection,
@@ -1718,7 +1721,7 @@ fn spawn_ui(mut commands: Commands) {
 
     commands.spawn((
         Text::new(
-            "Clic sélectionner | Double-clic ouvrir/recentrer | P projection | droit orbite | milieu déplacer | molette zoom",
+            "Clic sélectionner | Double-clic ouvrir/recentrer | K sonder | L analyser | P projection | droit orbite | milieu déplacer | molette zoom",
         ),
         ui_text_font(12.0),
         TextColor(Color::srgb(0.76, 0.84, 0.90)),
@@ -3759,6 +3762,8 @@ fn simulation_shortcut(keyboard: &ButtonInput<KeyCode>) -> Option<UiAction> {
         Some(UiAction::SetSpeed(TimeSpeed::X4))
     } else if keyboard.just_pressed(KeyCode::KeyK) {
         Some(UiAction::LaunchProbe)
+    } else if keyboard.just_pressed(KeyCode::KeyL) {
+        Some(UiAction::AnalyzePlanet)
     } else {
         None
     }
@@ -3827,6 +3832,11 @@ fn apply_ui_action(
                 apply_simulation_command(simulation, GameAction::LaunchProbe { colony_id, target });
             }
         }
+        UiAction::AnalyzePlanet => {
+            if let Some(planet_id) = selected_analysis_target(simulation.simulation()) {
+                apply_simulation_command(simulation, GameAction::AnalyzePlanet { planet_id });
+            }
+        }
         UiAction::ToggleProjection => {
             navigation.toggle_projection();
         }
@@ -3879,6 +3889,7 @@ fn action_available(
         }
         UiAction::ExitSystem => matches!(navigation.mode, StrategicViewMode::System(_)),
         UiAction::LaunchProbe => selected_probe_context(simulation.simulation()).is_some(),
+        UiAction::AnalyzePlanet => selected_analysis_target(simulation.simulation()).is_some(),
     }
 }
 
@@ -3921,6 +3932,14 @@ fn selected_probe_context(
         }
     };
     Some((state.player_home_colony()?.id, target))
+}
+
+fn selected_analysis_target(simulation: &Simulation) -> Option<PlanetId> {
+    let state = simulation.state();
+    let SelectionTarget::Planet { planet_id, .. } = state.selected else {
+        return None;
+    };
+    (state.planet_knowledge_level(planet_id) == KnowledgeLevel::Probed).then_some(planet_id)
 }
 
 fn focus_selected_system(simulation: &SimulationResource, navigation: &mut StrategicNavigation) {
@@ -5232,16 +5251,7 @@ Lunes : non recensées
         ),
         KnowledgeLevel::Analyzed => (
             planet.name.clone(),
-            format!(
-                "Système : {}
-Type : {:?}
-Habitabilité exacte : {}%
-Statut : non colonisée
-Potentiel : aucune valeur économique générée pour ce corps
-Lunes : aucune donnée disponible
-{}",
-                system_label, planet.kind, planet.habitability, selection_note,
-            ),
+            analyzed_planet_text(simulation, &system_label, planet, selection_note),
         ),
         KnowledgeLevel::Colonized => (
             planet.name.clone(),
@@ -5292,6 +5302,153 @@ INFRASTRUCTURE
         title,
         body,
         hint: planet_knowledge_hint(level).to_string(),
+    }
+}
+
+fn analyzed_planet_text(
+    simulation: &Simulation,
+    system_label: &str,
+    planet: &galactic_domain::Planet,
+    selection_note: &str,
+) -> String {
+    let Some(report) = simulation.state().planet_analysis_report(planet.id) else {
+        return format!(
+            "Système : {system_label}
+Type : {:?}
+Habitabilité exacte : {}%
+Rapport d'analyse : manquant
+{selection_note}",
+            planet.kind, planet.habitability,
+        );
+    };
+    let constraints = report
+        .constraints
+        .iter()
+        .map(installation_constraint_label)
+        .collect::<Vec<_>>();
+    let constraints = if constraints.is_empty() {
+        "aucune".to_string()
+    } else {
+        constraints.join(", ")
+    };
+    let assessment = assess_planet_colonizability(
+        simulation.state(),
+        simulation.universe_repository(),
+        simulation.state().player_faction,
+        planet.id,
+    );
+
+    format!(
+        "Système : {system_label}
+Type : {:?}
+Environnement : {}
+Habitabilité exacte : {}%
+Contraintes : {constraints}
+Rapport établi au tick {}
+
+POTENTIEL EXACT
+Métal : {}
+Cristal : {}
+Carburant : {}
+Énergie : {}
+
+{}
+
+Lunes : aucune donnée disponible
+{selection_note}",
+        planet.kind,
+        planet_environment_label(report.environment),
+        report.habitability,
+        report.analyzed_at.value(),
+        report.resource_profile.metal,
+        report.resource_profile.crystal,
+        report.resource_profile.fuel,
+        report.resource_profile.energy,
+        colonizability_text(&assessment),
+    )
+}
+
+fn planet_environment_label(environment: PlanetEnvironment) -> &'static str {
+    match environment {
+        PlanetEnvironment::Temperate => "tempéré",
+        PlanetEnvironment::Oceanic => "océanique",
+        PlanetEnvironment::Arid => "aride",
+        PlanetEnvironment::Frozen => "gelé",
+        PlanetEnvironment::Volcanic => "volcanique",
+        PlanetEnvironment::Gaseous => "gazeux",
+    }
+}
+
+fn installation_constraint_label(constraint: InstallationConstraint) -> &'static str {
+    match constraint {
+        InstallationConstraint::ThinAtmosphere => "atmosphère ténue",
+        InstallationConstraint::GlobalOcean => "océan global",
+        InstallationConstraint::AridClimate => "climat aride",
+        InstallationConstraint::CryogenicClimate => "climat cryogénique",
+        InstallationConstraint::ExtremeVolcanism => "volcanisme extrême",
+        InstallationConstraint::NoSolidSurface => "absence de surface solide",
+    }
+}
+
+fn colonizability_text(assessment: &galactic_sim::ColonizabilityAssessment) -> String {
+    let cost = assessment.foundation_cost;
+    if assessment.is_colonizable() {
+        return format!(
+            "COLONISABILITÉ — ÉLIGIBLE
+Conditions remplies : analyse, environnement, habitabilité, route, technologie, limite et cargaison.
+Investissement requis : {} métal, {} cristal, {} carburant",
+            cost.metal, cost.crystal, cost.fuel,
+        );
+    }
+
+    let blockers = assessment
+        .blockers
+        .iter()
+        .map(|blocker| format!("• {}", colonization_blocker_label(*blocker)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "COLONISABILITÉ — BLOQUÉE
+Conditions manquantes :
+{blockers}
+Investissement requis : {} métal, {} cristal, {} carburant",
+        cost.metal, cost.crystal, cost.fuel,
+    )
+}
+
+fn colonization_blocker_label(blocker: ColonizationBlocker) -> String {
+    match blocker {
+        ColonizationBlocker::UnknownPlanet(_) => "planète inconnue".to_string(),
+        ColonizationBlocker::NotAnalyzed { current } => {
+            format!("analyse complète requise (niveau actuel : {current})")
+        }
+        ColonizationBlocker::MissingAnalysisReport => {
+            "rapport d'analyse persistant introuvable".to_string()
+        }
+        ColonizationBlocker::AlreadyColonized => "planète déjà colonisée".to_string(),
+        ColonizationBlocker::MissingTechnology(TechnologyUnlock::FoundColonies) => {
+            "technologie Ingénierie d'implantation manquante".to_string()
+        }
+        ColonizationBlocker::MissingTechnology(unlock) => {
+            format!("technologie requise manquante : {unlock:?}")
+        }
+        ColonizationBlocker::UnsupportedEnvironment(environment) => format!(
+            "environnement {} incompatible avec une implantation au sol",
+            planet_environment_label(environment),
+        ),
+        ColonizationBlocker::HabitabilityTooLow { minimum, found } => {
+            format!("habitabilité insuffisante : {found}% (minimum {minimum}%)")
+        }
+        ColonizationBlocker::NoAccessibleRoute => {
+            "aucune route connue depuis une colonie du joueur".to_string()
+        }
+        ColonizationBlocker::ColonyLimitReached { maximum } => {
+            format!("limite de {maximum} colonies déjà atteinte")
+        }
+        ColonizationBlocker::InsufficientFoundationResources { cost } => format!(
+            "aucune colonie ne dispose de la cargaison de fondation ({} métal, {} cristal, {} carburant)",
+            cost.metal, cost.crystal, cost.fuel,
+        ),
     }
 }
 
@@ -5613,6 +5770,16 @@ fn event_label(event: GameEvent) -> String {
             };
             format!("{} {} -> {}", target, change.previous, change.current)
         }
+        GameEventKind::PlanetAnalyzed(report) => format!(
+            "analyse terminée : planète {} caractérisée, colonisabilité évaluée",
+            report.planet_id.index(),
+        ),
+        GameEventKind::PlanetAnalysisRejected(rejected) => {
+            format!(
+                "analyse refusée : {}",
+                planet_analysis_error_text(rejected.error)
+            )
+        }
         GameEventKind::TicksAdvanced {
             ticks,
             current_tick,
@@ -5691,6 +5858,27 @@ fn event_label(event: GameEvent) -> String {
         ),
         GameEventKind::MissionCancellationRejected(rejected) => {
             format!("annulation de mission refusée : {:?}", rejected.error)
+        }
+    }
+}
+
+fn planet_analysis_error_text(error: PlanetAnalysisError) -> String {
+    match error {
+        PlanetAnalysisError::Access(_) => {
+            "la faction active ne peut pas effectuer cette analyse".to_string()
+        }
+        PlanetAnalysisError::UnknownPlanet(_) => "la planète sélectionnée est inconnue".to_string(),
+        PlanetAnalysisError::PlanetNotProbed { .. } => {
+            "la planète doit d'abord être identifiée par une Sonde Luciole".to_string()
+        }
+        PlanetAnalysisError::MissingTechnology(TechnologyUnlock::AnalyzePlanets) => {
+            "recherchez Spectrométrie planétaire avant de lancer l'analyse".to_string()
+        }
+        PlanetAnalysisError::MissingTechnology(unlock) => {
+            format!("technologie d'analyse manquante : {unlock:?}")
+        }
+        PlanetAnalysisError::AlreadyAnalyzed(_) => {
+            "cette planète possède déjà un rapport d'analyse exact".to_string()
         }
     }
 }
@@ -6301,6 +6489,44 @@ VmSwap:\t      2048 kB
     }
 
     #[test]
+    fn analyzed_planet_inspector_shows_exact_report_and_colonization_status() {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+        let planet_id = simulation
+            .state()
+            .planet_knowledge
+            .iter()
+            .find(|entry| entry.level == KnowledgeLevel::Detected)
+            .expect("the home system contains a detected planet")
+            .planet_id;
+        let (system_id, planet) = simulation
+            .universe_repository()
+            .planet_location(planet_id)
+            .expect("detected planet exists");
+        let planet_name = planet.name.clone();
+        let habitability = planet.habitability;
+        simulation.apply_player_action(GameAction::SelectPlanet {
+            system_id,
+            planet_id,
+        });
+        simulation.apply_player_action(GameAction::DebugAdvanceSelectedKnowledge);
+        simulation.state_mut().research = galactic_sim::ResearchState::from_completed([
+            galactic_sim::TechnologyId::SPATIAL_DETECTION,
+            galactic_sim::TechnologyId::PLANETARY_ANALYSIS,
+        ]);
+        simulation.apply_player_action(GameAction::AnalyzePlanet { planet_id });
+
+        let rendered = planet_inspector_content(&simulation, system_id, planet_id).render();
+
+        assert!(rendered.contains("ANALYSÉ"));
+        assert!(rendered.contains(&planet_name));
+        assert!(rendered.contains(&format!("Habitabilité exacte : {habitability}%")));
+        assert!(rendered.contains("Rapport établi au tick"));
+        assert!(rendered.contains("POTENTIEL EXACT"));
+        assert!(rendered.contains("COLONISABILITÉ — BLOQUÉE"));
+        assert!(!rendered.contains("Potentiel : analyse requise"));
+    }
+
+    #[test]
     fn semantic_lod_uses_stable_distance_bands() {
         assert_eq!(UniverseLod::from_distance(120.0), UniverseLod::Overview);
         assert_eq!(UniverseLod::from_distance(64.0), UniverseLod::Regional);
@@ -6573,6 +6799,17 @@ VmSwap:\t      2048 kB
         keyboard.press(KeyCode::KeyK);
 
         assert_eq!(simulation_shortcut(&keyboard), Some(UiAction::LaunchProbe));
+    }
+
+    #[test]
+    fn planetary_analysis_shortcut_uses_l() {
+        let mut keyboard = ButtonInput::<KeyCode>::default();
+        keyboard.press(KeyCode::KeyL);
+
+        assert_eq!(
+            simulation_shortcut(&keyboard),
+            Some(UiAction::AnalyzePlanet)
+        );
     }
 
     #[test]

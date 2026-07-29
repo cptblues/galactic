@@ -11,13 +11,15 @@ use crate::{
     BuildingCatalogError, CommandRejection, ConstructionQueueError, CraftStateError,
     DiplomacyError, DiplomacyState, FactionKind, FleetAssignment, FleetStateError,
     GAME_STATE_VERSION, GameAction, GameCommand, GameEvent, GameEventKind, GameState,
-    KnowledgeLevel, MissionEngineEvent, MissionPhase, MissionStateError, ResearchStateError,
-    SelectionTarget, StartingScenario, StartingScenarioError, StrategicDuration, TimeSpeed,
-    UniverseIndexError, UniverseRepository, advance_colony_construction, advance_colony_craft,
-    advance_missions, advance_research, cancel_mission, default_building_catalog,
+    KnowledgeLevel, MissionEngineEvent, MissionPhase, MissionStateError, PlanetAnalysisStateError,
+    ResearchStateError, SelectionTarget, StartingScenario, StartingScenarioError,
+    StrategicDuration, TimeSpeed, UniverseIndexError, UniverseRepository,
+    advance_colony_construction, advance_colony_craft, advance_missions, advance_research,
+    analyze_planet, build_planet_analysis_report, cancel_mission, default_building_catalog,
     enqueue_building_upgrade, enqueue_craft, enqueue_research, form_fleet, launch_mission,
-    launch_probe_mission, queue_colony_production, storage_capacity, validate_construction_queue,
-    validate_craft_state, validate_fleet_state, validate_mission_state, validate_research_state,
+    launch_probe_mission, planetary_analysis_rules, queue_colony_production, storage_capacity,
+    validate_construction_queue, validate_craft_state, validate_fleet_state,
+    validate_mission_state, validate_planet_analysis_state, validate_research_state,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,6 +54,7 @@ pub enum SimulationBuildError {
         error: CraftStateError,
     },
     InvalidResearchState(ResearchStateError),
+    InvalidPlanetAnalysisState(PlanetAnalysisStateError),
     InvalidColonyResourceLedger {
         colony_id: ColonyId,
         error: ResourceLedgerError,
@@ -337,6 +340,25 @@ impl Simulation {
                     )],
                 }
             }
+            GameAction::AnalyzePlanet { planet_id } => {
+                match analyze_planet(&mut self.state, &self.universe, issuer, planet_id) {
+                    Ok(outcome) => {
+                        let mut events =
+                            Vec::with_capacity(outcome.knowledge_changes.len().saturating_add(1));
+                        events.extend(
+                            outcome
+                                .knowledge_changes
+                                .into_iter()
+                                .map(GameEventKind::KnowledgeChanged),
+                        );
+                        events.push(GameEventKind::PlanetAnalyzed(outcome.report));
+                        events
+                    }
+                    Err(error) => vec![GameEventKind::PlanetAnalysisRejected(
+                        crate::PlanetAnalysisRejected { planet_id, error },
+                    )],
+                }
+            }
             GameAction::LaunchMission(order) => {
                 match launch_mission(&mut self.state, &self.universe, issuer, order) {
                     Ok(launched) => vec![GameEventKind::MissionLaunched(launched)],
@@ -533,8 +555,28 @@ impl Simulation {
                 let Some(next) = current.next_exploration_level() else {
                     return Vec::new();
                 };
-                self.state
-                    .advance_planet_knowledge(&self.universe, planet_id, next)
+                if next == KnowledgeLevel::Analyzed {
+                    let Some((system_id, planet)) = self.universe.planet_location(planet_id) else {
+                        return Vec::new();
+                    };
+                    let report = build_planet_analysis_report(
+                        planet,
+                        system_id,
+                        self.state.clock.current_tick(),
+                        planetary_analysis_rules(),
+                    );
+                    let changes =
+                        self.state
+                            .advance_planet_knowledge(&self.universe, planet_id, next);
+                    self.state.planet_analysis_reports.push(report);
+                    self.state
+                        .planet_analysis_reports
+                        .sort_by_key(|entry| entry.planet_id);
+                    changes
+                } else {
+                    self.state
+                        .advance_planet_knowledge(&self.universe, planet_id, next)
+                }
             }
         };
 
@@ -645,6 +687,9 @@ fn validate_state(
             ));
         }
     }
+
+    validate_planet_analysis_state(state, universe)
+        .map_err(SimulationBuildError::InvalidPlanetAnalysisState)?;
 
     let mut colony_ids = HashSet::with_capacity(state.colonies.len());
     for colony in &state.colonies {

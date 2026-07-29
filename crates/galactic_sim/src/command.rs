@@ -39,6 +39,9 @@ pub enum GameAction {
         colony_id: ColonyId,
         target: MissionTarget,
     },
+    AnalyzePlanet {
+        planet_id: PlanetId,
+    },
     LaunchMission(MissionOrder),
     CancelMission {
         mission_id: MissionId,

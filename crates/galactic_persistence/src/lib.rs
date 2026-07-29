@@ -6,14 +6,14 @@ use galactic_domain::{
 use galactic_sim::{
     BuildingLevels, ColonyState, ConstructionQueue, CraftInventory, CraftQueue, DiplomacyState,
     FactionData, FactionKind, FleetAssignment, FleetComposition, FleetLocation, FleetState,
-    GameState, MissionReport, MissionState, PlanetKnowledge, PlanetResourceProfile,
-    ProductionRemainder, ProductionRemainderError, ResearchState, SelectionTarget, Simulation,
-    SimulationBuildError, StrategicClock, StrategicClockError, StrategicTick, SystemKnowledge,
-    TimeSpeed, default_ruleset, production_refresh_ticks,
+    GameState, MissionReport, MissionState, PlanetAnalysisReport, PlanetKnowledge,
+    PlanetResourceProfile, ProductionRemainder, ProductionRemainderError, ResearchState,
+    SelectionTarget, Simulation, SimulationBuildError, StrategicClock, StrategicClockError,
+    StrategicTick, SystemKnowledge, TimeSpeed, default_ruleset, production_refresh_ticks,
 };
 
-/// Version 19 persists explicit system or planet mission targets.
-pub const SAVE_VERSION: u32 = 19;
+/// Version 20 persists dated planetary analysis reports.
+pub const SAVE_VERSION: u32 = 20;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SaveGame {
@@ -51,6 +51,7 @@ pub struct MutableGameSave {
     pub missions: Vec<MissionState>,
     pub next_mission_id: u64,
     pub mission_reports: Vec<MissionReport>,
+    pub planet_analysis_reports: Vec<PlanetAnalysisReport>,
     pub research: ResearchState,
 }
 
@@ -225,6 +226,7 @@ pub fn snapshot_from_simulation(simulation: &Simulation) -> SaveGame {
             missions: state.missions.clone(),
             next_mission_id: state.next_mission_id,
             mission_reports: state.mission_reports.clone(),
+            planet_analysis_reports: state.planet_analysis_reports.clone(),
             research: state.research.clone(),
         },
     }
@@ -365,6 +367,7 @@ pub fn restore_from_snapshot(save: &SaveGame) -> Result<Simulation, SaveError> {
         missions: save.state.missions.clone(),
         next_mission_id: save.state.next_mission_id,
         mission_reports: save.state.mission_reports.clone(),
+        planet_analysis_reports: save.state.planet_analysis_reports.clone(),
         research: save.state.research.clone(),
         system_knowledge: save.state.system_knowledge.clone(),
         planet_knowledge: save.state.planet_knowledge.clone(),
@@ -438,6 +441,49 @@ mod tests {
 
         assert_eq!(restored.state().research, simulation.state().research,);
         assert_eq!(restored.state(), simulation.state(),);
+    }
+
+    #[test]
+    fn planetary_analysis_report_survives_round_trip() {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+        let planet_id = simulation
+            .state()
+            .planet_knowledge
+            .iter()
+            .find(|entry| entry.level == KnowledgeLevel::Detected)
+            .expect("the home system contains a detected planet")
+            .planet_id;
+        let (system_id, _) = simulation
+            .universe_repository()
+            .planet_location(planet_id)
+            .expect("detected planet exists");
+        simulation.apply_player_action(GameAction::SelectPlanet {
+            system_id,
+            planet_id,
+        });
+        simulation.apply_player_action(GameAction::DebugAdvanceSelectedKnowledge);
+        simulation.state_mut().research = ResearchState::from_completed([
+            TechnologyId::SPATIAL_DETECTION,
+            TechnologyId::PLANETARY_ANALYSIS,
+        ]);
+        simulation.apply_player_action(GameAction::AnalyzePlanet { planet_id });
+
+        let report = *simulation
+            .state()
+            .planet_analysis_report(planet_id)
+            .expect("analysis creates a persistent report");
+        let save = snapshot_from_simulation(&simulation);
+        let restored = restore_from_snapshot(&save).expect("analysis save is compatible");
+
+        assert_eq!(restored.state(), simulation.state());
+        assert_eq!(
+            restored.state().planet_analysis_report(planet_id),
+            Some(&report)
+        );
+        assert_eq!(
+            restored.state().planet_knowledge_level(planet_id),
+            KnowledgeLevel::Analyzed
+        );
     }
 
     #[test]
@@ -671,7 +717,7 @@ mod tests {
     }
 
     #[test]
-    fn state_and_save_versions_match_mvp_023() {
+    fn state_and_save_versions_match_mvp_024() {
         let simulation = Simulation::new(UniverseConfig::mvp());
         let save = snapshot_from_simulation(&simulation);
 

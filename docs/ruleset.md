@@ -4,7 +4,7 @@ Galactic charge son ruleset au démarrage depuis
 `assets/rulesets/default/`. La variable d'environnement
 `GALACTIC_RULESET_DIR` permet de sélectionner un autre dossier.
 
-Le ruleset est composé de sept fichiers RON :
+Le ruleset est composé de huit fichiers RON :
 
 - `manifest.ron` : identifiant et versions ;
 - `economy.ron` : stockage de base, limites de files et cadence de production ;
@@ -12,6 +12,8 @@ Le ruleset est composé de sept fichiers RON :
 - `buildings.ron` : bâtiments, coûts, durées, effets et prérequis ;
 - `technologies.ron` : arbre de recherche, coûts et déblocages ;
 - `craftables.ron` : objets fabricables, vaisseaux, coûts, prérequis et capacités ;
+- `planetary_analysis.ron` : seuil de colonisabilité, coût de fondation et
+  profils environnementaux par type de planète ;
 - `starting_scenario.ron` : faction joueur, colonie, ressources et bâtiments initiaux.
 
 Les durées de construction et de fabrication sont exprimées en secondes dans
@@ -75,6 +77,21 @@ requis ; améliorer le chantier accélère ensuite la file.
 
 Un comportement entièrement nouveau reste une mécanique du moteur et nécessite
 une implémentation Rust.
+
+## Analyse planétaire
+
+`planetary_analysis.ron` configure le seuil minimal d'habitabilité, la limite
+de colonies, l'investissement de fondation et, pour chaque `PlanetKind`, le
+milieu, les potentiels de base, l'éligibilité à une implantation et les
+contraintes reconnues. Le moteur applique ensuite une variation déterministe
+bornée à chaque potentiel afin que deux mondes de même type ne soient pas
+strictement identiques.
+
+Les contraintes reconnues sont `ThinAtmosphere`, `GlobalOcean`,
+`AridClimate`, `CryogenicClimate`, `ExtremeVolcanism` et `NoSolidSurface`.
+Elles sont informatives ; l'éligibilité du type, l'habitabilité, la route, la
+technologie, la limite de colonies et la cargaison de fondation sont évaluées
+séparément et produisent chacune un motif de refus explicite.
 
 ## Validation et sauvegardes
 
