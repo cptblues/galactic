@@ -16,8 +16,8 @@ use crate::{
 
 /// Version of the mutable in-memory state contract.
 ///
-/// Version 24 persists the player's active colony selection.
-pub const GAME_STATE_VERSION: u32 = 24;
+/// Version 25 persists transport commitments, cargo reservations and results.
+pub const GAME_STATE_VERSION: u32 = 25;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemVisibility {

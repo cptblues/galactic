@@ -20,11 +20,11 @@ use crate::{
     advance_research, analyze_planet, build_planet_analysis_report, cancel_mission,
     default_building_catalog, enqueue_building_upgrade, enqueue_craft, enqueue_research,
     form_fleet, launch_attack_mission, launch_colonization_mission, launch_mission,
-    launch_probe_mission, planetary_analysis_rules, queue_colony_production,
-    refresh_planetary_intelligence, storage_capacity, validate_colony_foundations,
-    validate_construction_queue, validate_craft_state, validate_fleet_state,
-    validate_mission_state, validate_planet_analysis_state, validate_planetary_presence_state,
-    validate_research_state,
+    launch_probe_mission, launch_transport_mission, planetary_analysis_rules,
+    queue_colony_production, refresh_planetary_intelligence, storage_capacity,
+    validate_colony_foundations, validate_construction_queue, validate_craft_state,
+    validate_fleet_state, validate_mission_state, validate_planet_analysis_state,
+    validate_planetary_presence_state, validate_research_state,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,6 +145,12 @@ pub enum SimulationBuildError {
         mission_id: MissionId,
         fleet_id: FleetId,
     },
+    MissionFleetCargoMismatch {
+        mission_id: MissionId,
+        fleet_id: FleetId,
+        expected: ResourceStock,
+        found: ResourceStock,
+    },
     UnknownMissionOriginColony {
         mission_id: MissionId,
         colony_id: ColonyId,
@@ -164,6 +170,12 @@ pub enum SimulationBuildError {
         mission_id: MissionId,
     },
     MissionFoundationReservationMismatch {
+        mission_id: MissionId,
+    },
+    MissingMissionCargoReservation {
+        mission_id: MissionId,
+    },
+    MissionCargoReservationMismatch {
         mission_id: MissionId,
     },
     FleetAssignedToUnknownMission {
@@ -386,6 +398,35 @@ impl Simulation {
                     issuer,
                     colony_id,
                     target,
+                ) {
+                    Ok((created, launched)) => {
+                        let mut events = Vec::with_capacity(2);
+                        if let Some(created) = created {
+                            events.push(GameEventKind::FleetCreated(created));
+                        }
+                        events.push(GameEventKind::MissionLaunched(launched));
+                        events
+                    }
+                    Err(error) => vec![GameEventKind::MissionLaunchRejected(
+                        crate::MissionLaunchRejected {
+                            fleet_id: None,
+                            error,
+                        },
+                    )],
+                }
+            }
+            GameAction::LaunchTransport {
+                origin_colony_id,
+                destination_colony_id,
+                cargo,
+            } => {
+                match launch_transport_mission(
+                    &mut self.state,
+                    &self.universe,
+                    issuer,
+                    origin_colony_id,
+                    destination_colony_id,
+                    cargo,
                 ) {
                     Ok((created, launched)) => {
                         let mut events = Vec::with_capacity(2);
@@ -1089,6 +1130,27 @@ fn validate_state(
                     fleet_id: fleet.id,
                 });
             }
+            if let Some(transport) = mission.transport {
+                let expected_cargo = match mission.phase {
+                    MissionPhase::Preparation | MissionPhase::Cancelled => ResourceStock::ZERO,
+                    MissionPhase::Outbound => transport.cargo,
+                    MissionPhase::OnSite | MissionPhase::Returning => {
+                        transport.cargo.saturating_sub(transport.delivered)
+                    }
+                    MissionPhase::Completed | MissionPhase::Failed => match mission.result {
+                        Some(MissionResult::Transport(result)) => result.retained,
+                        _ => ResourceStock::ZERO,
+                    },
+                };
+                if fleet.cargo != expected_cargo {
+                    return Err(SimulationBuildError::MissionFleetCargoMismatch {
+                        mission_id: mission.id,
+                        fleet_id: fleet.id,
+                        expected: expected_cargo,
+                        found: fleet.cargo,
+                    });
+                }
+            }
         }
         let expected_location = match mission.phase {
             MissionPhase::Preparation => {
@@ -1161,6 +1223,28 @@ fn validate_state(
             };
             if reservation.cost != commitment.foundation_cost {
                 return Err(SimulationBuildError::MissionFoundationReservationMismatch {
+                    mission_id: mission.id,
+                });
+            }
+        }
+        if let Some(reservation_id) = mission.cargo_reservation {
+            let Some(reservation) = origin_colony
+                .resources
+                .reservations()
+                .iter()
+                .find(|reservation| reservation.id == reservation_id)
+            else {
+                return Err(SimulationBuildError::MissingMissionCargoReservation {
+                    mission_id: mission.id,
+                });
+            };
+            let Some(transport) = mission.transport else {
+                return Err(SimulationBuildError::MissionCargoReservationMismatch {
+                    mission_id: mission.id,
+                });
+            };
+            if reservation.cost != transport.cargo.into() {
+                return Err(SimulationBuildError::MissionCargoReservationMismatch {
                     mission_id: mission.id,
                 });
             }

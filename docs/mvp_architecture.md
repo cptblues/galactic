@@ -1414,3 +1414,31 @@ Versions après ce checkpoint :
 - `GAME_STATE_VERSION = 24` ;
 - `SAVE_VERSION = 25` ;
 - `RULESET_SCHEMA_VERSION` reste 10.
+
+## MVP-029 — Transport déterministe entre colonies
+
+`GameAction::LaunchTransport` porte explicitement les identifiants des colonies
+d'origine et de destination ainsi que les trois quantités de cargaison. Le
+moteur choisit de façon stable le cargo léger amarré de plus petit identifiant,
+ou forme la flotte minimale depuis l'inventaire. Le lancement est atomique :
+propriété, route, stock, capacité et absence de cargaison préexistante sont
+validés avant toute mutation.
+
+Le carburant et la cargaison utilisent deux réservations distinctes. Au départ,
+elles sont consommées et la cargaison devient un état réel de la flotte. À
+l'arrivée, `TransportMissionState` enregistre la quantité livrée et le statut de
+la destination. Le stockage applique un crédit plafonné ; tout reliquat repart
+avec la flotte puis revient à l'origine. Si ce dernier stockage est lui aussi
+plein, le reliquat reste visible dans la flotte amarrée au lieu d'être supprimé.
+
+L'annulation avant départ libère les deux réservations. Une colonie de
+destination supprimée ou devenue étrangère refuse toute livraison et provoque
+un retour avec un rapport d'échec explicite. L'ordre, la phase, les réservations,
+la cargaison de flotte et `TransportMissionResult` sont tous inclus dans
+`GameState`, donc dans la sauvegarde et dans sa validation de cohérence.
+
+Versions après ce checkpoint :
+
+- `GAME_STATE_VERSION = 25` ;
+- `SAVE_VERSION = 26` ;
+- `RULESET_SCHEMA_VERSION` reste 10.

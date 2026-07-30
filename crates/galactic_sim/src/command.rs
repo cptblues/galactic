@@ -1,4 +1,4 @@
-use galactic_domain::{ColonyId, FactionId, MissionId, PlanetId, SystemId};
+use galactic_domain::{ColonyId, FactionId, MissionId, PlanetId, ResourceStock, SystemId};
 
 use crate::{
     AuthorizationError, BuildingKind, CraftableId, FleetComposition, MissionOrder, MissionTarget,
@@ -45,6 +45,11 @@ pub enum GameAction {
     LaunchAttack {
         colony_id: ColonyId,
         target: MissionTarget,
+    },
+    LaunchTransport {
+        origin_colony_id: ColonyId,
+        destination_colony_id: ColonyId,
+        cargo: ResourceStock,
     },
     LaunchColonization {
         colony_id: ColonyId,

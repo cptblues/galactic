@@ -14,8 +14,8 @@ use galactic_sim::{
     TimeSpeed, default_ruleset, production_refresh_ticks,
 };
 
-/// Version 25 persists the player's active colony selection.
-pub const SAVE_VERSION: u32 = 25;
+/// Version 26 persists transport cargo, delivery progress and reports.
+pub const SAVE_VERSION: u32 = 26;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SaveGame {
@@ -594,6 +594,43 @@ mod tests {
         (simulation, target)
     }
 
+    fn simulation_with_launched_transport() -> (Simulation, MissionId, ResourceStock) {
+        let (mut simulation, _) = simulation_with_launched_colonization();
+        simulation.advance(Duration::from_secs(123));
+        assert_eq!(simulation.state().colonies.len(), 2);
+        let origin_colony_id = simulation.state().colonies[0].id;
+        let destination_colony_id = simulation.state().colonies[1].id;
+        simulation.apply_player_action(GameAction::QueueCraft {
+            colony_id: origin_colony_id,
+            craftable: CraftableId::LIGHT_CARGO,
+        });
+        simulation.advance(Duration::from_secs(80));
+        assert_eq!(
+            simulation.state().colonies[0]
+                .inventory
+                .quantity(CraftableId::LIGHT_CARGO),
+            1,
+        );
+        let cargo = ResourceStock::new(200, 150, 100);
+        let events = simulation.apply_player_action(GameAction::LaunchTransport {
+            origin_colony_id,
+            destination_colony_id,
+            cargo,
+        });
+        let launched = events
+            .iter()
+            .find_map(|event| match event.kind {
+                galactic_sim::GameEventKind::MissionLaunched(launched)
+                    if launched.kind == MissionKind::Transport =>
+                {
+                    Some(launched)
+                }
+                _ => None,
+            })
+            .expect("the cargo fleet launches");
+        (simulation, launched.mission_id, cargo)
+    }
+
     #[test]
     fn construction_queue_survives_round_trip() {
         let mut simulation = Simulation::new(UniverseConfig::mvp());
@@ -841,6 +878,58 @@ mod tests {
     }
 
     #[test]
+    fn transport_cargo_and_phase_resume_without_duplication() {
+        let (mut uninterrupted, mission_id, cargo) = simulation_with_launched_transport();
+        uninterrupted.advance(Duration::from_secs(1));
+        let mission = uninterrupted
+            .state()
+            .mission(mission_id)
+            .expect("the transport mission exists");
+        assert_eq!(mission.phase, MissionPhase::Outbound);
+        assert_eq!(
+            uninterrupted
+                .state()
+                .fleet(mission.order.fleet_id)
+                .expect("the cargo fleet exists")
+                .cargo,
+            cargo,
+        );
+
+        let in_flight = snapshot_from_simulation(&uninterrupted);
+        let mut restored =
+            restore_from_snapshot(&in_flight).expect("an in-flight transport is compatible");
+        assert_eq!(restored.state(), uninterrupted.state());
+
+        uninterrupted.advance(Duration::from_secs(120));
+        restored.advance(Duration::from_secs(120));
+        assert_eq!(restored.state(), uninterrupted.state());
+        let result = restored
+            .state()
+            .mission(mission_id)
+            .and_then(|mission| mission.result);
+        assert!(matches!(
+            result,
+            Some(MissionResult::Transport(
+                galactic_sim::TransportMissionResult {
+                    requested,
+                    delivered,
+                    returned,
+                    retained,
+                    status: galactic_sim::TransportDeliveryStatus::Delivered,
+                    ..
+                }
+            )) if requested == cargo
+                && delivered == cargo
+                && returned.is_zero()
+                && retained.is_zero()
+        ));
+        let resolved = snapshot_from_simulation(&restored);
+        let reloaded =
+            restore_from_snapshot(&resolved).expect("a completed transport is compatible");
+        assert_eq!(reloaded.state(), restored.state());
+    }
+
+    #[test]
     fn unknown_active_colony_is_rejected_during_restore() {
         let simulation = Simulation::new(UniverseConfig::mvp());
         let mut save = snapshot_from_simulation(&simulation);
@@ -1085,7 +1174,7 @@ mod tests {
     }
 
     #[test]
-    fn state_and_save_versions_match_mvp_028() {
+    fn state_and_save_versions_match_mvp_029() {
         let simulation = Simulation::new(UniverseConfig::mvp());
         let save = snapshot_from_simulation(&simulation);
 

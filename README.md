@@ -206,3 +206,18 @@ colonie comme origine explicite. Changer de colonie centre la sélection
 stratégique sur sa planète sans modifier ses stocks, bâtiments, énergie ou
 files. La recherche reste globale et additionne les laboratoires de toutes les
 colonies du joueur.
+
+## MVP-029 — Transport entre colonies
+
+L'écran de gestion planétaire permet de choisir une colonie de destination et
+une cargaison prédéfinie, puis de lancer un transport depuis la colonie active.
+La simulation réutilise un cargo léger disponible ou en forme un depuis
+l'inventaire, vérifie sa capacité et réserve explicitement les ressources avec
+le carburant avant le départ.
+
+La cargaison est retirée au départ, livrée dans la limite du stockage disponible
+et ramenée à l'origine si elle ne peut pas être acceptée. Une destination
+devenue étrangère ou absente provoque également le retour déterministe du
+chargement. La phase, la cargaison embarquée, le résultat détaillé et le rapport
+de mission sont persistants ; une reprise de sauvegarde ne peut donc ni perdre,
+ni dupliquer les ressources.

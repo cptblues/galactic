@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use galactic_domain::{
     ColonyId, FactionId, FleetId, MissionId, Owner, PlanetId, ReservationId, ResourceCost,
-    ResourceLedgerError, SystemId,
+    ResourceLedgerError, ResourceStock, SystemId,
 };
 
 use crate::{
@@ -14,7 +14,7 @@ use crate::{
     FleetCreated, FleetError, FleetLocation, GameState, KnowledgeChange, KnowledgeLevel,
     KnowledgeTarget, PlanetaryIntelPrecision, ShipStack, StrategicDuration, StrategicTick,
     UniverseRepository, assess_planet_colonizability, colonization_arrival_blocker, combat_rules,
-    form_fleet, initialize_colony_from_foundation, planetary_analysis_rules,
+    default_ruleset, form_fleet, initialize_colony_from_foundation, planetary_analysis_rules,
     prepare_attack_commitment, refresh_planetary_intelligence, resolve_and_apply_attack,
 };
 
@@ -109,8 +109,10 @@ pub struct MissionState {
     pub phase_started_at: StrategicTick,
     pub fuel_reservation: Option<ReservationId>,
     pub foundation_reservation: Option<ReservationId>,
+    pub cargo_reservation: Option<ReservationId>,
     pub attack: Option<AttackMissionCommitment>,
     pub colonization: Option<ColonizationMissionCommitment>,
+    pub transport: Option<TransportMissionState>,
     pub result: Option<MissionResult>,
 }
 
@@ -158,9 +160,36 @@ pub struct ProbeMissionResult {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportDeliveryStatus {
+    Pending,
+    Delivered,
+    PartiallyDelivered,
+    DestinationInvalid,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TransportMissionState {
+    pub destination_colony_id: ColonyId,
+    pub cargo: ResourceStock,
+    pub delivered: ResourceStock,
+    pub status: TransportDeliveryStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TransportMissionResult {
+    pub destination_colony_id: ColonyId,
+    pub requested: ResourceStock,
+    pub delivered: ResourceStock,
+    pub returned: ResourceStock,
+    pub retained: ResourceStock,
+    pub status: TransportDeliveryStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MissionResult {
     Probe(ProbeMissionResult),
     Attack(AttackMissionResult),
+    Transport(TransportMissionResult),
     Colonize(ColonizationMissionResult),
 }
 
@@ -224,6 +253,25 @@ pub enum MissionError {
     },
     AttackFleetUnavailable(ColonyId),
     Attack(CombatSnapshotError),
+    TransportOrderRequired,
+    TransportCargoEmpty,
+    TransportCargoAmountOverflow,
+    UnknownTransportDestination(ColonyId),
+    TransportDestinationIsOrigin(ColonyId),
+    TransportDestinationTargetMismatch {
+        colony_id: ColonyId,
+        target: MissionTarget,
+    },
+    TransportFleetUnavailable {
+        colony_id: ColonyId,
+        required_capacity: u64,
+        available_capacity: u64,
+    },
+    TransportFleetHasCargo(FleetId),
+    TransportCargoExceedsCapacity {
+        cargo: ResourceStock,
+        capacity: u64,
+    },
     ColonizationPlanetTargetRequired,
     ColonizationShipUnavailable(ColonyId),
     ColonizationFleetRequired(FleetId),
@@ -308,6 +356,26 @@ pub enum MissionStateError {
         expected: PlanetId,
         found: PlanetId,
     },
+    MissingCargoReservation,
+    UnexpectedCargoReservation,
+    MissingTransportState,
+    UnexpectedTransportState,
+    TransportPlanetTargetRequired,
+    EmptyTransportCargo,
+    InvalidTransportStatus {
+        phase: MissionPhase,
+        status: TransportDeliveryStatus,
+    },
+    TransportTargetMismatch {
+        expected: MissionTarget,
+        found: MissionTarget,
+    },
+    MissingTransportResult,
+    TransportResultDestinationMismatch {
+        expected: ColonyId,
+        found: ColonyId,
+    },
+    TransportResultCargoMismatch,
     MissingFoundationReservation,
     UnexpectedFoundationReservation,
     MissingColonizationCommitment,
@@ -571,7 +639,26 @@ pub fn launch_mission(
     actor: FactionId,
     order: MissionOrder,
 ) -> Result<MissionLaunched, MissionError> {
+    if order.kind == MissionKind::Transport {
+        return Err(MissionError::TransportOrderRequired);
+    }
+    let mut candidate = state.clone();
+    let launched = launch_mission_with_transport(&mut candidate, universe, actor, order, None)?;
+    *state = candidate;
+    Ok(launched)
+}
+
+fn launch_mission_with_transport(
+    state: &mut GameState,
+    universe: &UniverseRepository,
+    actor: FactionId,
+    order: MissionOrder,
+    transport: Option<TransportMissionState>,
+) -> Result<MissionLaunched, MissionError> {
     let (origin_colony_id, plan) = plan_mission(state, universe, actor, order)?;
+    if let Some(transport) = transport {
+        validate_transport_launch(state, actor, origin_colony_id, order, transport)?;
+    }
     let next_mission_id = state
         .next_mission_id
         .checked_add(1)
@@ -633,6 +720,18 @@ pub fn launch_mission(
     } else {
         None
     };
+    let cargo_reservation = if let Some(commitment) = transport {
+        Some(
+            state
+                .colony_mut(origin_colony_id)
+                .expect("mission origin was validated")
+                .resources
+                .reserve(commitment.cargo.into())
+                .map_err(MissionError::Resources)?,
+        )
+    } else {
+        None
+    };
     let owner = state
         .fleet(order.fleet_id)
         .expect("mission fleet was validated")
@@ -652,8 +751,10 @@ pub fn launch_mission(
         phase_started_at: state.clock.current_tick(),
         fuel_reservation: Some(fuel_reservation),
         foundation_reservation,
+        cargo_reservation,
         attack,
         colonization,
+        transport,
         result: None,
     });
     state.missions.sort_by_key(|mission| mission.id);
@@ -667,6 +768,61 @@ pub fn launch_mission(
         return_arrival_at: plan.return_arrival_at,
         fuel_cost: plan.fuel_cost,
     })
+}
+
+fn validate_transport_launch(
+    state: &GameState,
+    actor: FactionId,
+    origin_colony_id: ColonyId,
+    order: MissionOrder,
+    transport: TransportMissionState,
+) -> Result<(), MissionError> {
+    if order.kind != MissionKind::Transport {
+        return Err(MissionError::TransportOrderRequired);
+    }
+    if transport.cargo.is_zero() {
+        return Err(MissionError::TransportCargoEmpty);
+    }
+    if transport.status != TransportDeliveryStatus::Pending || !transport.delivered.is_zero() {
+        return Err(MissionError::TransportOrderRequired);
+    }
+    if transport.destination_colony_id == origin_colony_id {
+        return Err(MissionError::TransportDestinationIsOrigin(origin_colony_id));
+    }
+    let destination = state.colony(transport.destination_colony_id).ok_or(
+        MissionError::UnknownTransportDestination(transport.destination_colony_id),
+    )?;
+    state
+        .authorize_management(actor, destination.owner)
+        .map_err(MissionError::Access)?;
+    let expected_target = MissionTarget::Planet {
+        system_id: destination.system_id,
+        planet_id: destination.planet_id,
+    };
+    if order.target != expected_target {
+        return Err(MissionError::TransportDestinationTargetMismatch {
+            colony_id: destination.id,
+            target: order.target,
+        });
+    }
+    let fleet = state
+        .fleet(order.fleet_id)
+        .ok_or(MissionError::UnknownFleet(order.fleet_id))?;
+    if !fleet.cargo.is_zero() {
+        return Err(MissionError::TransportFleetHasCargo(fleet.id));
+    }
+    let cargo = resource_stock_total(transport.cargo)?;
+    let capacity = fleet
+        .capabilities()
+        .map_err(MissionError::InvalidFleetComposition)?
+        .cargo_capacity;
+    if cargo > capacity {
+        return Err(MissionError::TransportCargoExceedsCapacity {
+            cargo: transport.cargo,
+            capacity,
+        });
+    }
+    Ok(())
 }
 
 /// Launches a player-facing attack with an existing idle combat fleet, or
@@ -915,6 +1071,140 @@ pub fn launch_probe_mission(
     Ok((created, launched))
 }
 
+/// Launches an atomic colony-to-colony transport.
+///
+/// Cargo is reserved at order time, committed into the fleet at departure,
+/// delivered up to the destination's free storage, then returned to the
+/// origin if it could not be delivered. Any remainder that no longer fits at
+/// the origin stays visibly loaded on the docked fleet.
+pub fn launch_transport_mission(
+    state: &mut GameState,
+    universe: &UniverseRepository,
+    actor: FactionId,
+    origin_colony_id: ColonyId,
+    destination_colony_id: ColonyId,
+    cargo: ResourceStock,
+) -> Result<(Option<FleetCreated>, MissionLaunched), MissionError> {
+    if cargo.is_zero() {
+        return Err(MissionError::TransportCargoEmpty);
+    }
+    let cargo_total = resource_stock_total(cargo)?;
+    let origin_colony = state
+        .colony(origin_colony_id)
+        .ok_or(MissionError::UnknownOriginColony(origin_colony_id))?;
+    state
+        .authorize_management(actor, origin_colony.owner)
+        .map_err(MissionError::Access)?;
+    if destination_colony_id == origin_colony_id {
+        return Err(MissionError::TransportDestinationIsOrigin(origin_colony_id));
+    }
+    let destination =
+        state
+            .colony(destination_colony_id)
+            .ok_or(MissionError::UnknownTransportDestination(
+                destination_colony_id,
+            ))?;
+    state
+        .authorize_management(actor, destination.owner)
+        .map_err(MissionError::Access)?;
+
+    let origin = origin_colony.system_id;
+    let target = MissionTarget::Planet {
+        system_id: destination.system_id,
+        planet_id: destination.planet_id,
+    };
+    let departure_at = state.clock.current_tick();
+    let mut candidate = state.clone();
+    let existing_fleet = candidate
+        .fleets
+        .iter()
+        .filter(|fleet| {
+            candidate.can_manage(actor, fleet.owner)
+                && fleet.is_idle()
+                && fleet.location == FleetLocation::Docked(origin_colony_id)
+                && fleet.cargo.is_zero()
+                && fleet
+                    .capabilities()
+                    .is_ok_and(|capabilities| capabilities.cargo_capacity >= cargo_total)
+        })
+        .map(|fleet| fleet.id)
+        .filter(|fleet_id| {
+            plan_mission(
+                &candidate,
+                universe,
+                actor,
+                MissionOrder {
+                    fleet_id: *fleet_id,
+                    origin,
+                    target,
+                    kind: MissionKind::Transport,
+                    departure_at,
+                },
+            )
+            .is_ok()
+        })
+        .min();
+
+    let (fleet_id, created) = if let Some(fleet_id) = existing_fleet {
+        (fleet_id, None)
+    } else {
+        let definition = default_ruleset()
+            .craftables()
+            .get(CraftableId::LIGHT_CARGO)
+            .expect("the default ruleset defines its light cargo");
+        let capacity_per_ship = definition
+            .ship
+            .expect("the light cargo definition is a ship")
+            .cargo_capacity;
+        let required_ships = cargo_total
+            .checked_add(capacity_per_ship.saturating_sub(1))
+            .ok_or(MissionError::TransportCargoAmountOverflow)?
+            / capacity_per_ship;
+        let available_ships = candidate
+            .colony(origin_colony_id)
+            .expect("the origin colony was validated")
+            .inventory
+            .quantity(CraftableId::LIGHT_CARGO);
+        if available_ships < required_ships {
+            return Err(MissionError::TransportFleetUnavailable {
+                colony_id: origin_colony_id,
+                required_capacity: cargo_total,
+                available_capacity: available_ships.saturating_mul(capacity_per_ship),
+            });
+        }
+        let composition = FleetComposition::from_stacks([ShipStack::new(
+            CraftableId::LIGHT_CARGO,
+            required_ships,
+        )])
+        .map_err(FleetError::InvalidComposition)
+        .map_err(MissionError::Fleet)?;
+        let created = form_fleet(&mut candidate, actor, origin_colony_id, composition)
+            .map_err(MissionError::Fleet)?;
+        (created.fleet_id, Some(created))
+    };
+
+    let launched = launch_mission_with_transport(
+        &mut candidate,
+        universe,
+        actor,
+        MissionOrder {
+            fleet_id,
+            origin,
+            target,
+            kind: MissionKind::Transport,
+            departure_at,
+        },
+        Some(TransportMissionState {
+            destination_colony_id,
+            cargo,
+            delivered: ResourceStock::ZERO,
+            status: TransportDeliveryStatus::Pending,
+        }),
+    )?;
+    *state = candidate;
+    Ok((created, launched))
+}
+
 pub fn cancel_mission(
     state: &mut GameState,
     actor: FactionId,
@@ -938,6 +1228,7 @@ pub fn cancel_mission(
         .fuel_reservation
         .expect("validated preparation mission must hold its fuel reservation");
     let foundation_reservation = mission.foundation_reservation;
+    let cargo_reservation = mission.cargo_reservation;
     let origin_colony_id = mission.origin_colony_id;
     let fleet_id = mission.order.fleet_id;
     let kind = mission.order.kind;
@@ -948,6 +1239,14 @@ pub fn cancel_mission(
         .release(reservation)
         .map_err(MissionError::Resources)?;
     if let Some(reservation) = foundation_reservation {
+        state
+            .colony_mut(origin_colony_id)
+            .expect("validated mission origin must exist")
+            .resources
+            .release(reservation)
+            .map_err(MissionError::Resources)?;
+    }
+    if let Some(reservation) = cargo_reservation {
         state
             .colony_mut(origin_colony_id)
             .expect("validated mission origin must exist")
@@ -966,6 +1265,7 @@ pub fn cancel_mission(
     mission.phase_started_at = occurred_at;
     mission.fuel_reservation = None;
     mission.foundation_reservation = None;
+    mission.cargo_reservation = None;
     let transition = MissionTransition {
         mission_id,
         from: MissionPhase::Preparation,
@@ -982,6 +1282,14 @@ pub fn cancel_mission(
     };
     state.mission_reports.push(report);
     Ok((transition, report))
+}
+
+fn resource_stock_total(stock: ResourceStock) -> Result<u64, MissionError> {
+    stock
+        .metal
+        .checked_add(stock.crystal)
+        .and_then(|total| total.checked_add(stock.fuel))
+        .ok_or(MissionError::TransportCargoAmountOverflow)
 }
 
 pub const fn validate_mission_transition(
@@ -1118,6 +1426,45 @@ pub fn validate_mission_state(
     if !colonization_reservation_expected && mission.foundation_reservation.is_some() {
         return Err(MissionStateError::UnexpectedFoundationReservation);
     }
+    let cargo_reservation_expected =
+        mission.order.kind == MissionKind::Transport && mission.phase == MissionPhase::Preparation;
+    if cargo_reservation_expected && mission.cargo_reservation.is_none() {
+        return Err(MissionStateError::MissingCargoReservation);
+    }
+    if !cargo_reservation_expected && mission.cargo_reservation.is_some() {
+        return Err(MissionStateError::UnexpectedCargoReservation);
+    }
+    match (mission.order.kind, mission.transport) {
+        (MissionKind::Transport, Some(transport)) => {
+            if !matches!(mission.order.target, MissionTarget::Planet { .. }) {
+                return Err(MissionStateError::TransportPlanetTargetRequired);
+            }
+            if transport.cargo.is_zero() {
+                return Err(MissionStateError::EmptyTransportCargo);
+            }
+            if !transport.cargo.can_cover(transport.delivered) {
+                return Err(MissionStateError::TransportResultCargoMismatch);
+            }
+            let pending_expected = matches!(
+                mission.phase,
+                MissionPhase::Preparation | MissionPhase::Outbound | MissionPhase::Cancelled
+            );
+            if pending_expected != (transport.status == TransportDeliveryStatus::Pending) {
+                return Err(MissionStateError::InvalidTransportStatus {
+                    phase: mission.phase,
+                    status: transport.status,
+                });
+            }
+            if transport.status == TransportDeliveryStatus::Pending
+                && !transport.delivered.is_zero()
+            {
+                return Err(MissionStateError::TransportResultCargoMismatch);
+            }
+        }
+        (MissionKind::Transport, None) => return Err(MissionStateError::MissingTransportState),
+        (_, Some(_)) => return Err(MissionStateError::UnexpectedTransportState),
+        (_, None) => {}
+    }
     match (mission.order.kind, mission.phase, mission.result) {
         (
             MissionKind::Probe,
@@ -1163,6 +1510,41 @@ pub fn validate_mission_state(
                 });
             }
         }
+        (MissionKind::Transport, MissionPhase::Completed | MissionPhase::Failed, None) => {
+            return Err(MissionStateError::MissingTransportResult);
+        }
+        (
+            MissionKind::Transport,
+            MissionPhase::Preparation
+            | MissionPhase::Outbound
+            | MissionPhase::OnSite
+            | MissionPhase::Returning
+            | MissionPhase::Cancelled,
+            Some(_),
+        ) => return Err(MissionStateError::UnexpectedMissionResult),
+        (MissionKind::Transport, _, Some(MissionResult::Transport(result))) => {
+            let transport = mission
+                .transport
+                .ok_or(MissionStateError::MissingTransportState)?;
+            if result.destination_colony_id != transport.destination_colony_id {
+                return Err(MissionStateError::TransportResultDestinationMismatch {
+                    expected: transport.destination_colony_id,
+                    found: result.destination_colony_id,
+                });
+            }
+            let remaining = transport.cargo.saturating_sub(transport.delivered);
+            let accounted = result
+                .returned
+                .checked_add(result.retained)
+                .ok_or(MissionStateError::TransportResultCargoMismatch)?;
+            if result.requested != transport.cargo
+                || result.delivered != transport.delivered
+                || result.status != transport.status
+                || accounted != remaining
+            {
+                return Err(MissionStateError::TransportResultCargoMismatch);
+            }
+        }
         (
             MissionKind::Colonize,
             MissionPhase::OnSite | MissionPhase::Returning | MissionPhase::Completed,
@@ -1199,12 +1581,18 @@ pub fn validate_mission_state(
             }
         }
         (MissionKind::Attack, _, Some(MissionResult::Probe(_)))
+        | (MissionKind::Attack, _, Some(MissionResult::Transport(_)))
         | (MissionKind::Attack, _, Some(MissionResult::Colonize(_)))
         | (MissionKind::Probe, _, Some(MissionResult::Attack(_)))
+        | (MissionKind::Probe, _, Some(MissionResult::Transport(_)))
         | (MissionKind::Probe, _, Some(MissionResult::Colonize(_)))
         | (MissionKind::Colonize, _, Some(MissionResult::Attack(_)))
         | (MissionKind::Colonize, _, Some(MissionResult::Probe(_)))
-        | (MissionKind::Transport | MissionKind::Harvest, _, Some(_)) => {
+        | (MissionKind::Colonize, _, Some(MissionResult::Transport(_)))
+        | (MissionKind::Transport, _, Some(MissionResult::Attack(_)))
+        | (MissionKind::Transport, _, Some(MissionResult::Probe(_)))
+        | (MissionKind::Transport, _, Some(MissionResult::Colonize(_)))
+        | (MissionKind::Harvest, _, Some(_)) => {
             return Err(MissionStateError::UnexpectedMissionResult);
         }
         _ => {}
@@ -1321,6 +1709,7 @@ pub(crate) fn advance_missions(
             let origin_colony_id = mission.origin_colony_id;
             let reservation = mission.fuel_reservation;
             let foundation_reservation = mission.foundation_reservation;
+            let cargo_reservation = mission.cargo_reservation;
             let owner = mission
                 .owner
                 .faction()
@@ -1329,10 +1718,12 @@ pub(crate) fn advance_missions(
             let mission_result = mission.result;
             let attack = mission.attack.clone();
             let colonization = mission.colonization;
+            let transport = mission.transport;
             let mut knowledge_changes = Vec::new();
             let mut resolution = None;
             let mut prepared_foundation = None;
             let mut established_colony = None;
+            let mut transport_update = None;
 
             validate_mission_transition(from, next_phase)
                 .expect("engine transitions must follow the mission state machine");
@@ -1348,13 +1739,71 @@ pub(crate) fn advance_missions(
                         .fleet_mut(fleet_id)
                         .expect("validated mission fleet exists");
                     fleet.location = FleetLocation::InSystem(origin);
+                    if let Some(transport) = transport {
+                        state
+                            .colony_mut(origin_colony_id)
+                            .expect("validated mission origin exists")
+                            .resources
+                            .commit(
+                                cargo_reservation
+                                    .expect("a preparing transport reserves its cargo"),
+                            )
+                            .expect("validated transport cargo reservation commits");
+                        state
+                            .fleet_mut(fleet_id)
+                            .expect("validated mission fleet exists")
+                            .cargo = transport.cargo;
+                    }
                 }
                 MissionPhase::OnSite => {
                     state
                         .fleet_mut(fleet_id)
                         .expect("validated mission fleet exists")
                         .location = FleetLocation::InSystem(target_system);
-                    if kind == MissionKind::Probe {
+                    if kind == MissionKind::Transport {
+                        let mut updated =
+                            transport.expect("a validated transport has a transport state");
+                        let destination_is_valid = state
+                            .colony(updated.destination_colony_id)
+                            .is_some_and(|destination| {
+                                state.can_manage(owner, destination.owner)
+                                    && target
+                                        == (MissionTarget::Planet {
+                                            system_id: destination.system_id,
+                                            planet_id: destination.planet_id,
+                                        })
+                            });
+                        let cargo = state
+                            .fleet(fleet_id)
+                            .expect("validated mission fleet exists")
+                            .cargo;
+                        let delivered = if destination_is_valid {
+                            let destination = state
+                                .colony(updated.destination_colony_id)
+                                .expect("the destination was just validated");
+                            let capacity = crate::storage_capacity(destination.buildings);
+                            state
+                                .colony_mut(updated.destination_colony_id)
+                                .expect("the destination was just validated")
+                                .resources
+                                .credit_capped(cargo, capacity)
+                        } else {
+                            ResourceStock::ZERO
+                        };
+                        state
+                            .fleet_mut(fleet_id)
+                            .expect("validated mission fleet exists")
+                            .cargo = cargo.saturating_sub(delivered);
+                        updated.delivered = delivered;
+                        updated.status = if !destination_is_valid {
+                            TransportDeliveryStatus::DestinationInvalid
+                        } else if delivered == updated.cargo {
+                            TransportDeliveryStatus::Delivered
+                        } else {
+                            TransportDeliveryStatus::PartiallyDelivered
+                        };
+                        transport_update = Some(updated);
+                    } else if kind == MissionKind::Probe {
                         let (
                             previous,
                             revealed_systems,
@@ -1538,6 +1987,38 @@ pub(crate) fn advance_missions(
                                 )
                                 .expect("validated foundation reservation releases");
                         }
+                        if let Some(transport) = transport {
+                            let cargo = state
+                                .fleet(fleet_id)
+                                .expect("validated mission fleet exists")
+                                .cargo;
+                            let origin = state
+                                .colony(origin_colony_id)
+                                .expect("validated mission origin exists");
+                            let capacity = crate::storage_capacity(origin.buildings);
+                            let returned = state
+                                .colony_mut(origin_colony_id)
+                                .expect("validated mission origin exists")
+                                .resources
+                                .credit_capped(cargo, capacity);
+                            let retained = cargo.saturating_sub(returned);
+                            state
+                                .fleet_mut(fleet_id)
+                                .expect("validated mission fleet exists")
+                                .cargo = retained;
+                            resolution = Some(MissionResolution {
+                                mission_id,
+                                result: MissionResult::Transport(TransportMissionResult {
+                                    destination_colony_id: transport.destination_colony_id,
+                                    requested: transport.cargo,
+                                    delivered: transport.delivered,
+                                    returned,
+                                    retained,
+                                    status: transport.status,
+                                }),
+                                occurred_at: transition_at,
+                            });
+                        }
                         let fleet = state
                             .fleet_mut(fleet_id)
                             .expect("validated mission fleet exists");
@@ -1556,9 +2037,14 @@ pub(crate) fn advance_missions(
             mission.phase_started_at = transition_at;
             if next_phase == MissionPhase::Outbound {
                 mission.fuel_reservation = None;
+                mission.cargo_reservation = None;
             }
             if next_phase.is_terminal() {
                 mission.foundation_reservation = None;
+                mission.cargo_reservation = None;
+            }
+            if let Some(transport) = transport_update {
+                mission.transport = Some(transport);
             }
             if let Some(resolution) = resolution {
                 mission.result = Some(resolution.result);
@@ -1599,14 +2085,18 @@ pub(crate) fn advance_missions(
                 });
             }
             if matches!(next_phase, MissionPhase::Completed | MissionPhase::Failed) {
+                let final_result = resolution.map(|value| value.result).or(mission_result);
                 let outcome = if next_phase == MissionPhase::Failed
                     || matches!(
-                        mission_result,
+                        final_result,
                         Some(MissionResult::Attack(AttackMissionResult {
                             outcome: AttackMissionOutcome::TargetInvalid(_),
                             ..
                         })) | Some(MissionResult::Colonize(ColonizationMissionResult {
                             outcome: ColonizationMissionOutcome::TargetInvalid(_),
+                            ..
+                        })) | Some(MissionResult::Transport(TransportMissionResult {
+                            status: TransportDeliveryStatus::DestinationInvalid,
                             ..
                         }))
                     ) {
@@ -1620,7 +2110,7 @@ pub(crate) fn advance_missions(
                     kind,
                     outcome,
                     occurred_at: transition_at,
-                    result: mission_result,
+                    result: final_result,
                 };
                 state.mission_reports.push(report);
                 events.push(MissionEngineEvent::Report {
@@ -1701,7 +2191,9 @@ fn checked_tick_add(tick: StrategicTick, duration: u64) -> Result<StrategicTick,
 mod tests {
     use std::time::Duration;
 
-    use galactic_domain::{FactionId, Owner, PlanetId, ResourceStock, UniverseConfig};
+    use galactic_domain::{
+        FactionId, Owner, PlanetId, ResourceLedger, ResourceStock, UniverseConfig,
+    };
 
     use crate::{
         AttackInvalidReason, AttackMissionOutcome, CombatOutcome, CombatReportStatus, CraftableId,
@@ -1830,6 +2322,24 @@ mod tests {
             .inventory
             .add(CraftableId::COLONY_SHIP, 1);
         (simulation, target)
+    }
+
+    fn simulation_with_two_colonies() -> Simulation {
+        let (mut simulation, target) = simulation_with_colonization_target();
+        let origin_colony_id = simulation.state().colonies[0].id;
+        simulation.apply_player_action(GameAction::LaunchColonization {
+            colony_id: origin_colony_id,
+            target: MissionTarget::Planet {
+                system_id: target.system_id(),
+                planet_id: target,
+            },
+        });
+        simulation.advance(Duration::from_secs(120));
+        assert_eq!(simulation.state().colonies.len(), 2);
+        simulation.state_mut().colonies[0]
+            .inventory
+            .add(CraftableId::LIGHT_CARGO, 1);
+        simulation
     }
 
     fn detected_planets_in_origin(simulation: &Simulation) -> Vec<(usize, PlanetId)> {
@@ -2717,6 +3227,327 @@ mod tests {
                 .resources
                 .reservations()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn transport_requires_stock_and_capacity_without_partial_mutation() {
+        let mut simulation = simulation_with_two_colonies();
+        let actor = simulation.state().player_faction;
+        let origin = simulation.state().colonies[0].id;
+        let destination = simulation.state().colonies[1].id;
+        let repository = simulation.universe_repository().clone();
+        let before = simulation.state().clone();
+        let oversized = ResourceStock::new(801, 0, 0);
+
+        assert_eq!(
+            launch_transport_mission(
+                simulation.state_mut(),
+                &repository,
+                actor,
+                origin,
+                destination,
+                oversized,
+            ),
+            Err(MissionError::TransportFleetUnavailable {
+                colony_id: origin,
+                required_capacity: 801,
+                available_capacity: 800,
+            }),
+        );
+        assert_eq!(simulation.state(), &before);
+
+        simulation.state_mut().colony_mut(origin).unwrap().resources =
+            ResourceLedger::new(ResourceStock::new(20, 20, 100));
+        let before_low_stock = simulation.state().clone();
+        let cargo = ResourceStock::new(21, 0, 0);
+        assert!(matches!(
+            launch_transport_mission(
+                simulation.state_mut(),
+                &repository,
+                actor,
+                origin,
+                destination,
+                cargo,
+            ),
+            Err(MissionError::Resources(
+                ResourceLedgerError::InsufficientResources { .. }
+            )),
+        ));
+        assert_eq!(simulation.state(), &before_low_stock);
+    }
+
+    #[test]
+    fn transport_cancellation_releases_every_reservation_without_loss() {
+        let mut simulation = simulation_with_two_colonies();
+        let actor = simulation.state().player_faction;
+        let origin = simulation.state().colonies[0].id;
+        let destination = simulation.state().colonies[1].id;
+        let origin_before = simulation.state().colony(origin).unwrap().resources.stock();
+        let cargo = ResourceStock::new(275, 125, 20);
+        let repository = simulation.universe_repository().clone();
+        let (_, launched) = launch_transport_mission(
+            simulation.state_mut(),
+            &repository,
+            actor,
+            origin,
+            destination,
+            cargo,
+        )
+        .expect("one light cargo can reserve the transport");
+        assert!(
+            !simulation
+                .state()
+                .colony(origin)
+                .unwrap()
+                .resources
+                .reservations()
+                .is_empty()
+        );
+
+        cancel_mission(simulation.state_mut(), actor, launched.mission_id)
+            .expect("a transport can be cancelled before departure");
+
+        assert_eq!(
+            simulation.state().colony(origin).unwrap().resources.stock(),
+            origin_before,
+        );
+        assert!(
+            simulation
+                .state()
+                .colony(origin)
+                .unwrap()
+                .resources
+                .reservations()
+                .is_empty()
+        );
+        let fleet = simulation.state().fleet(launched.fleet_id).unwrap();
+        assert!(fleet.cargo.is_zero());
+        assert!(fleet.is_idle());
+        assert_eq!(fleet.location, FleetLocation::Docked(origin));
+    }
+
+    #[test]
+    fn transport_delivers_once_and_accounts_for_every_resource() {
+        let mut simulation = simulation_with_two_colonies();
+        let actor = simulation.state().player_faction;
+        let origin = simulation.state().colonies[0].id;
+        let destination = simulation.state().colonies[1].id;
+        let origin_before = simulation.state().colony(origin).unwrap().resources.stock();
+        let destination_before = simulation
+            .state()
+            .colony(destination)
+            .unwrap()
+            .resources
+            .stock();
+        let cargo = ResourceStock::new(120, 80, 20);
+        let repository = simulation.universe_repository().clone();
+
+        let (_, launched) = launch_transport_mission(
+            simulation.state_mut(),
+            &repository,
+            actor,
+            origin,
+            destination,
+            cargo,
+        )
+        .expect("one light cargo can carry the requested resources");
+        let mission = simulation.state().mission(launched.mission_id).unwrap();
+        assert_eq!(
+            simulation
+                .state()
+                .colony(origin)
+                .unwrap()
+                .resources
+                .reserved_total(),
+            launched
+                .fuel_cost
+                .as_stock()
+                .checked_add(cargo)
+                .expect("test reservation total fits"),
+        );
+        let departure = mission.order.departure_at;
+        let return_arrival = mission.plan.return_arrival_at;
+        advance_missions(simulation.state_mut(), &repository, departure);
+        assert_eq!(
+            simulation.state().fleet(launched.fleet_id).unwrap().cargo,
+            cargo
+        );
+        advance_missions(simulation.state_mut(), &repository, return_arrival);
+
+        let origin_after = simulation.state().colony(origin).unwrap().resources.stock();
+        let destination_after = simulation
+            .state()
+            .colony(destination)
+            .unwrap()
+            .resources
+            .stock();
+        assert_eq!(
+            origin_after,
+            origin_before
+                .checked_sub(launched.fuel_cost)
+                .and_then(|stock| stock.checked_sub(cargo))
+                .expect("the source covers fuel and cargo"),
+        );
+        assert_eq!(
+            destination_after,
+            destination_before
+                .checked_add(cargo)
+                .expect("the destination accepts the cargo"),
+        );
+        let fleet = simulation.state().fleet(launched.fleet_id).unwrap();
+        assert_eq!(fleet.location, FleetLocation::Docked(origin));
+        assert!(fleet.cargo.is_zero());
+        assert!(fleet.is_idle());
+        assert!(matches!(
+            simulation.state().mission(launched.mission_id).unwrap().result,
+            Some(MissionResult::Transport(TransportMissionResult {
+                requested,
+                delivered,
+                returned,
+                retained,
+                status: TransportDeliveryStatus::Delivered,
+                ..
+            })) if requested == cargo
+                && delivered == cargo
+                && returned.is_zero()
+                && retained.is_zero()
+        ));
+        assert_eq!(
+            simulation.state().mission_reports.last().unwrap().outcome,
+            MissionReportOutcome::Completed,
+        );
+    }
+
+    #[test]
+    fn full_destination_storage_returns_every_resource_to_the_origin() {
+        let mut simulation = simulation_with_two_colonies();
+        let actor = simulation.state().player_faction;
+        let origin = simulation.state().colonies[0].id;
+        let destination = simulation.state().colonies[1].id;
+        let cargo = ResourceStock::new(300, 180, 10);
+        let destination_capacity =
+            crate::storage_capacity(simulation.state().colony(destination).unwrap().buildings);
+        simulation
+            .state_mut()
+            .colony_mut(destination)
+            .unwrap()
+            .resources = ResourceLedger::new(destination_capacity);
+        let origin_before = simulation.state().colony(origin).unwrap().resources.stock();
+        let destination_before = simulation
+            .state()
+            .colony(destination)
+            .unwrap()
+            .resources
+            .stock();
+        let repository = simulation.universe_repository().clone();
+
+        let (_, launched) = launch_transport_mission(
+            simulation.state_mut(),
+            &repository,
+            actor,
+            origin,
+            destination,
+            cargo,
+        )
+        .expect("one light cargo can carry the requested resources");
+        let return_arrival = simulation
+            .state()
+            .mission(launched.mission_id)
+            .unwrap()
+            .plan
+            .return_arrival_at;
+        advance_missions(simulation.state_mut(), &repository, return_arrival);
+
+        assert_eq!(
+            simulation.state().colony(origin).unwrap().resources.stock(),
+            origin_before
+                .checked_sub(launched.fuel_cost)
+                .expect("only fuel is consumed when the cargo returns"),
+        );
+        assert_eq!(
+            simulation
+                .state()
+                .colony(destination)
+                .unwrap()
+                .resources
+                .stock(),
+            destination_before,
+        );
+        let fleet = simulation.state().fleet(launched.fleet_id).unwrap();
+        assert!(fleet.cargo.is_zero());
+        assert!(fleet.is_idle());
+        assert!(matches!(
+            simulation.state().mission(launched.mission_id).unwrap().result,
+            Some(MissionResult::Transport(TransportMissionResult {
+                delivered,
+                returned,
+                retained,
+                status: TransportDeliveryStatus::PartiallyDelivered,
+                ..
+            })) if delivered.is_zero() && returned == cargo && retained.is_zero()
+        ));
+    }
+
+    #[test]
+    fn invalid_transport_destination_returns_the_cargo_and_reports_failure() {
+        let mut simulation = simulation_with_two_colonies();
+        let actor = simulation.state().player_faction;
+        let origin = simulation.state().colonies[0].id;
+        let destination = simulation.state().colonies[1].id;
+        let cargo = ResourceStock::new(90, 60, 10);
+        let origin_before = simulation.state().colony(origin).unwrap().resources.stock();
+        let repository = simulation.universe_repository().clone();
+        let (_, launched) = launch_transport_mission(
+            simulation.state_mut(),
+            &repository,
+            actor,
+            origin,
+            destination,
+            cargo,
+        )
+        .expect("the transport initially has a valid destination");
+        simulation
+            .state_mut()
+            .colony_mut(destination)
+            .unwrap()
+            .owner = Owner::Faction(FactionId::new(2));
+        let return_arrival = simulation
+            .state()
+            .mission(launched.mission_id)
+            .unwrap()
+            .plan
+            .return_arrival_at;
+
+        advance_missions(simulation.state_mut(), &repository, return_arrival);
+
+        assert_eq!(
+            simulation.state().colony(origin).unwrap().resources.stock(),
+            origin_before
+                .checked_sub(launched.fuel_cost)
+                .expect("only fuel is consumed when the cargo returns"),
+        );
+        assert!(
+            simulation
+                .state()
+                .fleet(launched.fleet_id)
+                .unwrap()
+                .cargo
+                .is_zero()
+        );
+        assert!(matches!(
+            simulation.state().mission(launched.mission_id).unwrap().result,
+            Some(MissionResult::Transport(TransportMissionResult {
+                delivered,
+                returned,
+                retained,
+                status: TransportDeliveryStatus::DestinationInvalid,
+                ..
+            })) if delivered.is_zero() && returned == cargo && retained.is_zero()
+        ));
+        assert_eq!(
+            simulation.state().mission_reports.last().unwrap().outcome,
+            MissionReportOutcome::Failed,
         );
     }
 

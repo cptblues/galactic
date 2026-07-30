@@ -218,6 +218,7 @@ impl Plugin for PresentationPlugin {
                 update_colony_management_buildings,
                 update_colony_management_detail,
                 update_colony_management_queue,
+                update_colony_management_transport,
             )
                 .chain()
                 .in_set(PresentationUpdateSet::Management),
@@ -665,6 +666,8 @@ struct AmbiguityPanelText;
 struct ColonyManagementState {
     open: bool,
     selected_building: galactic_sim::BuildingKind,
+    transport_destination_id: Option<galactic_domain::ColonyId>,
+    transport_cargo: TransportCargoPreset,
     feedback: String,
 }
 
@@ -677,7 +680,39 @@ impl Default for ColonyManagementState {
                 .next()
                 .expect("validated ruleset contains at least one building")
                 .kind,
+            transport_destination_id: None,
+            transport_cargo: TransportCargoPreset::Mixed,
             feedback: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TransportCargoPreset {
+    Metal,
+    Crystal,
+    Fuel,
+    Mixed,
+}
+
+impl TransportCargoPreset {
+    const ALL: [Self; 4] = [Self::Metal, Self::Crystal, Self::Fuel, Self::Mixed];
+
+    const fn cargo(self) -> ResourceStock {
+        match self {
+            Self::Metal => ResourceStock::new(400, 0, 0),
+            Self::Crystal => ResourceStock::new(0, 400, 0),
+            Self::Fuel => ResourceStock::new(0, 0, 300),
+            Self::Mixed => ResourceStock::new(200, 150, 100),
+        }
+    }
+
+    const fn short_label(self) -> &'static str {
+        match self {
+            Self::Metal => "M 400",
+            Self::Crystal => "C 400",
+            Self::Fuel => "F 300",
+            Self::Mixed => "Mixte",
         }
     }
 }
@@ -717,6 +752,10 @@ enum ManagementButtonAction {
     Close,
     PreviousColony,
     NextColony,
+    PreviousTransportDestination,
+    NextTransportDestination,
+    SelectTransportCargo(TransportCargoPreset),
+    LaunchTransport,
     SelectBuilding(galactic_sim::BuildingKind),
     UpgradeSelected,
 }
@@ -737,6 +776,9 @@ enum ManagementTextRole {
     Title,
     Colony,
     ColonyList,
+    TransportDestination,
+    TransportCargo,
+    TransportLaunchLabel,
     Feedback,
     BuildingDetail,
     UpgradeLabel,
@@ -765,6 +807,40 @@ struct ManagementBuildingButtonText {
 
 #[derive(Component)]
 struct ManagementUpgradeButton;
+
+#[derive(Component)]
+struct ManagementTransportLaunchButton;
+
+#[derive(Component)]
+struct ManagementTransportPresetButton {
+    preset: TransportCargoPreset,
+}
+
+type ManagementTransportLaunchStyleQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static Interaction,
+        &'static mut BackgroundColor,
+        &'static mut Outline,
+    ),
+    (
+        With<ManagementTransportLaunchButton>,
+        Without<ManagementTransportPresetButton>,
+    ),
+>;
+
+type ManagementTransportPresetStyleQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static ManagementTransportPresetButton,
+        &'static Interaction,
+        &'static mut BackgroundColor,
+        &'static mut Outline,
+    ),
+    Without<ManagementTransportLaunchButton>,
+>;
 
 #[derive(Component)]
 struct ManagementQueueProgressFill;
@@ -2224,7 +2300,132 @@ fn spawn_management_queue(row: &mut ChildSpawnerCommands) {
             TextColor(Color::srgb(0.78, 0.84, 0.88)),
             ManagementTextRole::Queue,
         ));
+        queue.spawn((
+            Text::new("LOGISTIQUE INTERCOLONIALE"),
+            ui_text_font(12.0),
+            TextColor(Color::srgb(0.72, 0.88, 0.92)),
+            Node {
+                margin: UiRect::top(Val::Px(10.0)),
+                ..default()
+            },
+        ));
+        queue
+            .spawn((Node {
+                width: Val::Percent(100.0),
+                min_height: Val::Px(34.0),
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                column_gap: Val::Px(6.0),
+                ..default()
+            },))
+            .with_children(|row| {
+                spawn_management_small_button(
+                    row,
+                    "◀",
+                    ManagementButtonAction::PreviousTransportDestination,
+                    34.0,
+                );
+                row.spawn((
+                    Text::new("Destination"),
+                    ui_text_font(11.0),
+                    TextColor(Color::srgb(0.78, 0.88, 0.92)),
+                    Node {
+                        flex_grow: 1.0,
+                        ..default()
+                    },
+                    ManagementTextRole::TransportDestination,
+                ));
+                spawn_management_small_button(
+                    row,
+                    "▶",
+                    ManagementButtonAction::NextTransportDestination,
+                    34.0,
+                );
+            });
+        queue.spawn((
+            Text::new("Cargaison"),
+            ui_text_font(11.0),
+            TextColor(Color::srgb(0.76, 0.84, 0.88)),
+            ManagementTextRole::TransportCargo,
+        ));
+        queue
+            .spawn((Node {
+                width: Val::Percent(100.0),
+                min_height: Val::Px(32.0),
+                flex_direction: FlexDirection::Row,
+                column_gap: Val::Px(5.0),
+                ..default()
+            },))
+            .with_children(|row| {
+                for preset in TransportCargoPreset::ALL {
+                    spawn_management_transport_preset_button(row, preset);
+                }
+            });
+        queue
+            .spawn((
+                Button,
+                Node {
+                    width: Val::Percent(100.0),
+                    min_height: Val::Px(40.0),
+                    padding: UiRect::axes(Val::Px(10.0), Val::Px(7.0)),
+                    border: UiRect::all(Val::Px(1.0)),
+                    border_radius: BorderRadius::all(Val::Px(6.0)),
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.08, 0.28, 0.24, 0.98)),
+                Outline::new(
+                    Val::Px(1.0),
+                    Val::ZERO,
+                    Color::srgba(0.30, 0.88, 0.72, 0.70),
+                ),
+                ManagementButtonAction::LaunchTransport,
+                ManagementTransportLaunchButton,
+                UiPointerBlocker,
+            ))
+            .with_children(|button| {
+                button.spawn((
+                    Text::new("LANCER LE TRANSPORT"),
+                    ui_text_font(11.0),
+                    TextColor(Color::srgb(0.86, 0.98, 0.92)),
+                    ManagementTextRole::TransportLaunchLabel,
+                ));
+            });
     });
+}
+
+fn spawn_management_transport_preset_button(
+    parent: &mut ChildSpawnerCommands,
+    preset: TransportCargoPreset,
+) {
+    parent
+        .spawn((
+            Button,
+            Node {
+                flex_grow: 1.0,
+                flex_basis: Val::Px(0.0),
+                min_height: Val::Px(30.0),
+                padding: UiRect::axes(Val::Px(5.0), Val::Px(4.0)),
+                border: UiRect::all(Val::Px(1.0)),
+                border_radius: BorderRadius::all(Val::Px(5.0)),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.04, 0.08, 0.10, 0.96)),
+            Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
+            ManagementButtonAction::SelectTransportCargo(preset),
+            ManagementTransportPresetButton { preset },
+            UiPointerBlocker,
+        ))
+        .with_children(|button| {
+            button.spawn((
+                Text::new(preset.short_label()),
+                ui_text_font(10.0),
+                TextColor(Color::srgb(0.80, 0.88, 0.90)),
+            ));
+        });
 }
 
 fn spawn_panel_heading(parent: &mut ChildSpawnerCommands<'_>, label: &str) {
@@ -2876,6 +3077,19 @@ fn handle_colony_management_buttons(
             ManagementButtonAction::NextColony => {
                 cycle_management_colony(&mut management, &mut simulation, false);
             }
+            ManagementButtonAction::PreviousTransportDestination => {
+                cycle_transport_destination(&mut management, simulation.simulation(), true);
+            }
+            ManagementButtonAction::NextTransportDestination => {
+                cycle_transport_destination(&mut management, simulation.simulation(), false);
+            }
+            ManagementButtonAction::SelectTransportCargo(preset) => {
+                management.transport_cargo = preset;
+                management.feedback.clear();
+            }
+            ManagementButtonAction::LaunchTransport => {
+                launch_selected_transport(&mut management, &mut simulation);
+            }
             ManagementButtonAction::SelectBuilding(kind) => {
                 management.selected_building = kind;
                 management.feedback.clear();
@@ -2921,6 +3135,35 @@ fn capture_colony_management_feedback(
                     construction_error_text(rejected.error),
                 );
             }
+            GameEventKind::MissionLaunched(launched)
+                if management.open && launched.kind == MissionKind::Transport =>
+            {
+                management.feedback = simulation
+                    .simulation()
+                    .state()
+                    .mission(launched.mission_id)
+                    .and_then(|mission| mission.transport)
+                    .map(|transport| {
+                        format!(
+                            "Transport lancé vers C{} : {}.",
+                            transport.destination_colony_id.raw(),
+                            transport_cargo_label(transport.cargo),
+                        )
+                    })
+                    .unwrap_or_else(|| "Transport lancé.".to_string());
+            }
+            GameEventKind::MissionLaunchRejected(rejected) if management.open => {
+                management.feedback =
+                    format!("Transport refusé : {}", mission_error_text(rejected.error));
+            }
+            GameEventKind::MissionResolved(resolution)
+                if matches!(resolution.result, MissionResult::Transport(_)) =>
+            {
+                let MissionResult::Transport(result) = resolution.result else {
+                    unreachable!("the guard selected a transport result");
+                };
+                management.feedback = transport_result_label(result);
+            }
             _ => {}
         }
     }
@@ -2928,10 +3171,13 @@ fn capture_colony_management_feedback(
 
 fn update_colony_management_visibility(
     simulation: Res<SimulationResource>,
-    management: Res<ColonyManagementState>,
+    mut management: ResMut<ColonyManagementState>,
     mut roots: Query<&mut Visibility, With<ColonyManagementRoot>>,
     mut texts: Query<(&ManagementTextRole, &mut Text)>,
 ) {
+    if management.open {
+        sync_transport_destination(&mut management, simulation.simulation());
+    }
     for mut visibility in &mut roots {
         let next = if management.open {
             Visibility::Visible
@@ -2979,7 +3225,10 @@ fn update_colony_management_visibility(
             ),
             ManagementTextRole::ColonyList => Some(colony_list_label(simulation.simulation())),
             ManagementTextRole::Feedback => Some(management.feedback.clone()),
-            ManagementTextRole::BuildingDetail
+            ManagementTextRole::TransportDestination
+            | ManagementTextRole::TransportCargo
+            | ManagementTextRole::TransportLaunchLabel
+            | ManagementTextRole::BuildingDetail
             | ManagementTextRole::UpgradeLabel
             | ManagementTextRole::Queue => None,
         };
@@ -3145,6 +3394,70 @@ fn update_colony_management_queue(
     }
 }
 
+fn update_colony_management_transport(
+    simulation: Res<SimulationResource>,
+    management: Res<ColonyManagementState>,
+    mut texts: Query<(&ManagementTextRole, &mut Text, &mut TextColor)>,
+    mut launch_buttons: ManagementTransportLaunchStyleQuery,
+    mut preset_buttons: ManagementTransportPresetStyleQuery,
+) {
+    if !management.open {
+        return;
+    }
+    let state = simulation.simulation().state();
+    let destination = management
+        .transport_destination_id
+        .and_then(|colony_id| state.colony(colony_id));
+    let cargo = management.transport_cargo.cargo();
+    let available = state.active_player_colony().is_some_and(|origin| {
+        destination.is_some() && origin.resources.available().can_cover(cargo)
+    });
+    let destination_label = destination
+        .map(|colony| format!("C{} {}", colony.id.raw(), colony.name))
+        .unwrap_or_else(|| "Deux colonies requises".to_string());
+    let cargo_label = transport_cargo_label(cargo);
+    let launch_label = if destination.is_none() {
+        "DEUX COLONIES REQUISES"
+    } else {
+        "LANCER LE TRANSPORT"
+    };
+
+    for (role, mut text, mut color) in &mut texts {
+        match role {
+            ManagementTextRole::TransportDestination => {
+                text.0 = destination_label.clone();
+                color.0 = if destination.is_some() {
+                    Color::srgb(0.78, 0.88, 0.92)
+                } else {
+                    Color::srgb(0.64, 0.66, 0.66)
+                };
+            }
+            ManagementTextRole::TransportCargo => {
+                text.0 = format!("Cargaison : {cargo_label}");
+                color.0 = Color::srgb(0.76, 0.84, 0.88);
+            }
+            ManagementTextRole::TransportLaunchLabel => {
+                text.0 = launch_label.to_string();
+                color.0 = if available {
+                    Color::srgb(0.86, 0.98, 0.92)
+                } else {
+                    Color::srgb(0.64, 0.66, 0.66)
+                };
+            }
+            _ => {}
+        }
+    }
+    for (interaction, mut background, mut outline) in &mut launch_buttons {
+        background.0 = action_button_color(available, false, interaction);
+        outline.color = action_button_outline(available, false, interaction);
+    }
+    for (button, interaction, mut background, mut outline) in &mut preset_buttons {
+        let selected = button.preset == management.transport_cargo;
+        background.0 = action_button_color(true, selected, interaction);
+        outline.color = action_button_outline(true, selected, interaction);
+    }
+}
+
 fn toggle_colony_management(
     management: &mut ColonyManagementState,
     simulation: &mut SimulationResource,
@@ -3201,6 +3514,107 @@ fn colony_list_label(simulation: &Simulation) -> String {
         "COLONIES : aucune".to_string()
     } else {
         format!("COLONIES : {}", entries.join("   "))
+    }
+}
+
+fn sync_transport_destination(management: &mut ColonyManagementState, simulation: &Simulation) {
+    let state = simulation.state();
+    let origin = state.active_colony_id;
+    let destinations = state
+        .player_colony_ids()
+        .into_iter()
+        .filter(|colony_id| Some(*colony_id) != origin)
+        .collect::<Vec<_>>();
+    if management
+        .transport_destination_id
+        .is_some_and(|current| destinations.contains(&current))
+    {
+        return;
+    }
+    management.transport_destination_id = destinations.first().copied();
+}
+
+fn cycle_transport_destination(
+    management: &mut ColonyManagementState,
+    simulation: &Simulation,
+    reverse: bool,
+) {
+    sync_transport_destination(management, simulation);
+    let origin = simulation.state().active_colony_id;
+    let destinations = simulation
+        .state()
+        .player_colony_ids()
+        .into_iter()
+        .filter(|colony_id| Some(*colony_id) != origin)
+        .collect::<Vec<_>>();
+    if destinations.is_empty() {
+        management.transport_destination_id = None;
+        return;
+    }
+    let current = management
+        .transport_destination_id
+        .and_then(|active| destinations.iter().position(|id| *id == active))
+        .unwrap_or(0);
+    let next = if reverse {
+        current.checked_sub(1).unwrap_or(destinations.len() - 1)
+    } else {
+        (current + 1) % destinations.len()
+    };
+    management.transport_destination_id = Some(destinations[next]);
+    management.feedback.clear();
+}
+
+fn launch_selected_transport(
+    management: &mut ColonyManagementState,
+    simulation: &mut SimulationResource,
+) {
+    sync_transport_destination(management, simulation.simulation());
+    let Some(origin_colony_id) = simulation.simulation().state().active_colony_id else {
+        management.feedback = "Aucune colonie active.".to_string();
+        return;
+    };
+    let Some(destination_colony_id) = management.transport_destination_id else {
+        management.feedback = "Une deuxième colonie est nécessaire.".to_string();
+        return;
+    };
+    apply_simulation_command(
+        simulation,
+        GameAction::LaunchTransport {
+            origin_colony_id,
+            destination_colony_id,
+            cargo: management.transport_cargo.cargo(),
+        },
+    );
+}
+
+fn transport_cargo_label(cargo: ResourceStock) -> String {
+    format!(
+        "{} métal, {} cristal, {} carburant",
+        cargo.metal, cargo.crystal, cargo.fuel,
+    )
+}
+
+fn transport_result_label(result: galactic_sim::TransportMissionResult) -> String {
+    match result.status {
+        galactic_sim::TransportDeliveryStatus::Delivered => format!(
+            "Livraison terminée vers C{} : {}.",
+            result.destination_colony_id.raw(),
+            transport_cargo_label(result.delivered),
+        ),
+        galactic_sim::TransportDeliveryStatus::PartiallyDelivered => format!(
+            "Livraison partielle vers C{} : {} livrés, {} revenus, {} encore en soute.",
+            result.destination_colony_id.raw(),
+            transport_cargo_label(result.delivered),
+            transport_cargo_label(result.returned),
+            transport_cargo_label(result.retained),
+        ),
+        galactic_sim::TransportDeliveryStatus::DestinationInvalid => format!(
+            "Destination C{} invalide : {} revenus, {} encore en soute.",
+            result.destination_colony_id.raw(),
+            transport_cargo_label(result.returned),
+            transport_cargo_label(result.retained),
+        ),
+        galactic_sim::TransportDeliveryStatus::Pending => "Transport encore en cours.".to_string(),
     }
 }
 
@@ -6250,6 +6664,7 @@ fn event_label(event: GameEvent) -> String {
                     result.target.index(),
                 ),
             },
+            MissionResult::Transport(result) => transport_result_label(result),
             MissionResult::Colonize(result) => match result.outcome {
                 ColonizationMissionOutcome::FoundationPrepared => format!(
                     "fondation prête sur le corps {} : Arche Pionnière et chargement déployés",
@@ -6352,6 +6767,38 @@ fn mission_error_text(error: galactic_sim::MissionError) -> String {
         galactic_sim::MissionError::Attack(
             galactic_sim::CombatSnapshotError::FleetNotCombatCapable(_),
         ) => "la flotte doit être composée de vaisseaux militaires".to_string(),
+        galactic_sim::MissionError::TransportOrderRequired => {
+            "utilisez l'ordre logistique avec une origine, une destination et une cargaison"
+                .to_string()
+        }
+        galactic_sim::MissionError::TransportCargoEmpty => {
+            "la cargaison de transport ne peut pas être vide".to_string()
+        }
+        galactic_sim::MissionError::TransportCargoAmountOverflow => {
+            "la cargaison demandée est trop importante".to_string()
+        }
+        galactic_sim::MissionError::UnknownTransportDestination(_) => {
+            "la colonie de destination n'existe plus".to_string()
+        }
+        galactic_sim::MissionError::TransportDestinationIsOrigin(_) => {
+            "l'origine et la destination du transport doivent être différentes".to_string()
+        }
+        galactic_sim::MissionError::TransportDestinationTargetMismatch { .. } => {
+            "la destination ne correspond plus à la colonie choisie".to_string()
+        }
+        galactic_sim::MissionError::TransportFleetUnavailable {
+            required_capacity,
+            available_capacity,
+            ..
+        } => format!(
+            "capacité cargo insuffisante : {required_capacity} requise, {available_capacity} disponible ; construisez des Caboteurs Sillage"
+        ),
+        galactic_sim::MissionError::TransportFleetHasCargo(_) => {
+            "la flotte sélectionnée transporte déjà une cargaison".to_string()
+        }
+        galactic_sim::MissionError::TransportCargoExceedsCapacity { capacity, .. } => {
+            format!("la cargaison dépasse la capacité de la flotte ({capacity})")
+        }
         galactic_sim::MissionError::ColonizationPlanetTargetRequired => {
             "une colonisation doit cibler une planète".to_string()
         }
@@ -6411,6 +6858,14 @@ mod tests {
     use bevy::text::{
         LayoutCx, RemSize, ScaleCx, TextIterScratch, TextPipeline, detect_text_needs_rerender,
     };
+
+    #[test]
+    fn transport_management_queries_are_disjoint() {
+        let mut world = World::new();
+        let mut system = IntoSystem::into_system(update_colony_management_transport);
+
+        system.initialize(&mut world);
+    }
 
     #[test]
     fn renderer_favors_bounded_memory_allocations() {
@@ -7262,8 +7717,10 @@ VmSwap:\t      2048 kB
             phase_started_at: galactic_sim::StrategicTick::new(10),
             fuel_reservation: None,
             foundation_reservation: None,
+            cargo_reservation: None,
             attack: None,
             colonization: None,
+            transport: None,
             result: None,
         };
 
