@@ -87,12 +87,15 @@ une implémentation Rust.
 
 `planetary_analysis.ron` configure le seuil minimal d'habitabilité, la limite
 de colonies, l'investissement de fondation, le `CraftableId` du vaisseau-colonie
-et, pour chaque `PlanetKind`, le milieu, les potentiels de base, l'éligibilité à
-une implantation et les contraintes reconnues. Le vaisseau référencé doit
-exister, appartenir à la classe `Colony` et disposer d'une capacité cargo au
-moins égale au chargement de fondation. Le moteur applique ensuite une
-variation déterministe bornée à chaque potentiel afin que deux mondes de même
-type ne soient pas strictement identiques.
+et le socle économique d'une nouvelle colonie : population et niveaux de
+bâtiments. Pour chaque `PlanetKind`, il définit aussi le milieu, les potentiels
+de base, l'éligibilité à une implantation et les contraintes reconnues. Le
+vaisseau référencé doit exister, appartenir à la classe `Colony` et disposer
+d'une capacité cargo au moins égale au chargement de fondation. Les bâtiments
+initiaux doivent respecter le catalogue et fournir une capacité suffisante
+pour ce chargement. Le moteur applique ensuite une variation déterministe
+bornée à chaque potentiel afin que deux mondes de même type ne soient pas
+strictement identiques.
 
 Les contraintes reconnues sont `ThinAtmosphere`, `GlobalOcean`,
 `AridClimate`, `CryogenicClimate`, `ExtremeVolcanism` et `NoSolidSurface`.
@@ -103,7 +106,9 @@ séparément et produisent chacune un motif de refus explicite.
 Le ruleset par défaut associe cette fonction à `colony_ship`. Sa capacité cargo
 est de 1 400 unités pour un chargement de 1 330 unités. La mission réserve ce
 chargement au lancement mais ne le consomme qu'après validation de la cible à
-l'arrivée.
+l'arrivée. Au succès, ce chargement devient le stock local de la colonie ;
+l'énergie et la capacité de stockage sont dérivées de ses bâtiments, tandis que
+son profil de production reprend le rapport d'analyse de la planète.
 
 ## Présences planétaires
 

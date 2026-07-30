@@ -9,13 +9,13 @@ use galactic_domain::{
 use crate::{
     AttackMissionCommitment, AttackMissionOutcome, AttackMissionResult, AuthorizationError,
     ColonizationBlocker, ColonizationMissionCommitment, ColonizationMissionOutcome,
-    ColonizationMissionResult, ColonyFoundation, CombatApplicationError, CombatSnapshotError,
-    CraftableId, FleetAssignment, FleetComposition, FleetCompositionError, FleetCreated,
-    FleetError, FleetLocation, GameState, KnowledgeChange, KnowledgeLevel, KnowledgeTarget,
-    PlanetaryIntelPrecision, ShipStack, StrategicDuration, StrategicTick, UniverseRepository,
-    assess_planet_colonizability, colonization_arrival_blocker, combat_rules, form_fleet,
-    planetary_analysis_rules, prepare_attack_commitment, refresh_planetary_intelligence,
-    resolve_and_apply_attack,
+    ColonizationMissionResult, ColonyEstablished, ColonyFoundation, CombatApplicationError,
+    CombatSnapshotError, CraftableId, FleetAssignment, FleetComposition, FleetCompositionError,
+    FleetCreated, FleetError, FleetLocation, GameState, KnowledgeChange, KnowledgeLevel,
+    KnowledgeTarget, PlanetaryIntelPrecision, ShipStack, StrategicDuration, StrategicTick,
+    UniverseRepository, assess_planet_colonizability, colonization_arrival_blocker, combat_rules,
+    form_fleet, initialize_colony_from_foundation, planetary_analysis_rules,
+    prepare_attack_commitment, refresh_planetary_intelligence, resolve_and_apply_attack,
 };
 
 /// Abstract distance crossed by a fleet for one route hop.
@@ -350,6 +350,10 @@ pub(crate) enum MissionEngineEvent {
     Foundation {
         recipient: FactionId,
         foundation: ColonyFoundation,
+    },
+    Colony {
+        recipient: FactionId,
+        colony: ColonyEstablished,
     },
 }
 
@@ -1328,6 +1332,7 @@ pub(crate) fn advance_missions(
             let mut knowledge_changes = Vec::new();
             let mut resolution = None;
             let mut prepared_foundation = None;
+            let mut established_colony = None;
 
             validate_mission_transition(from, next_phase)
                 .expect("engine transitions must follow the mission state machine");
@@ -1492,8 +1497,12 @@ pub(crate) fn advance_missions(
                             state
                                 .colony_foundations
                                 .sort_by_key(|entry| (entry.planet_id, entry.mission_id));
+                            let (colony, colony_knowledge_changes) =
+                                initialize_colony_from_foundation(state, universe, foundation);
+                            knowledge_changes.extend(colony_knowledge_changes);
                             state.fleets.retain(|fleet| fleet.id != fleet_id);
                             prepared_foundation = Some(foundation);
+                            established_colony = Some(colony);
                             ColonizationMissionResult {
                                 target: commitment.planet_id,
                                 outcome: ColonizationMissionOutcome::FoundationPrepared,
@@ -1581,6 +1590,12 @@ pub(crate) fn advance_missions(
                 events.push(MissionEngineEvent::Foundation {
                     recipient: owner,
                     foundation,
+                });
+            }
+            if let Some(colony) = established_colony {
+                events.push(MissionEngineEvent::Colony {
+                    recipient: owner,
+                    colony,
                 });
             }
             if matches!(next_phase, MissionPhase::Completed | MissionPhase::Failed) {
@@ -1691,7 +1706,8 @@ mod tests {
     use crate::{
         AttackInvalidReason, AttackMissionOutcome, CombatOutcome, CombatReportStatus, CraftableId,
         FleetComposition, GameAction, KnowledgeLevel, PlanetaryForceLoss, ResearchState, ShipStack,
-        Simulation, TechnologyId, analyze_planet, apply_planetary_force_losses, form_fleet,
+        Simulation, TechnologyId, analyze_planet, apply_planetary_force_losses,
+        default_building_catalog, enqueue_building_upgrade, form_fleet,
     };
 
     use super::*;
@@ -2479,11 +2495,91 @@ mod tests {
                 ..
             } if *mission_id == launched.mission_id && *planet_id == target
         )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            MissionEngineEvent::Colony {
+                colony: ColonyEstablished {
+                    mission_id,
+                    planet_id,
+                    ..
+                },
+                ..
+            } if *mission_id == launched.mission_id && *planet_id == target
+        )));
         assert!(simulation.state().fleet(launched.fleet_id).is_none());
         assert_eq!(simulation.state().colony_foundations.len(), 1);
         assert_eq!(
             simulation.state().colony_foundations[0].payload,
             planetary_analysis_rules().foundation_cost().as_stock(),
+        );
+        assert_eq!(simulation.state().colonies.len(), 2);
+        let established = simulation
+            .state()
+            .colony_on_planet(target)
+            .expect("the prepared foundation becomes a playable colony");
+        assert_eq!(established.id, ColonyId::new(1));
+        assert_eq!(established.founding_mission_id, Some(launched.mission_id));
+        assert_eq!(
+            established.resources.stock(),
+            planetary_analysis_rules().foundation_cost().as_stock(),
+        );
+        assert_eq!(
+            established.buildings,
+            planetary_analysis_rules().colony_initialization().buildings,
+        );
+        assert_eq!(
+            established.energy,
+            default_building_catalog().energy_grid_for_levels(established.buildings),
+        );
+        assert_eq!(
+            established.resource_profile,
+            simulation
+                .state()
+                .planet_analysis_report(target)
+                .expect("the target analysis remains available")
+                .resource_profile,
+        );
+        assert_eq!(
+            simulation.state().planet_knowledge_level(target),
+            KnowledgeLevel::Colonized,
+        );
+        let presence = simulation
+            .state()
+            .planetary_presence(target)
+            .expect("the colony controls its planet");
+        assert_eq!(
+            presence.occupant,
+            Owner::Faction(simulation.state().player_faction)
+        );
+        assert_eq!(
+            presence.population,
+            planetary_analysis_rules()
+                .colony_initialization()
+                .population,
+        );
+        assert!(presence.forces.is_empty());
+        let home_stock_before_upgrade = simulation.state().colonies[0].resources.stock();
+        let new_colony_id = established.id;
+        let actor = simulation.state().player_faction;
+        enqueue_building_upgrade(
+            simulation.state_mut(),
+            actor,
+            new_colony_id,
+            crate::BuildingKind::METAL_MINE,
+        )
+        .expect("the new colony can queue its first independent construction");
+        assert_eq!(
+            simulation.state().colonies[0].resources.stock(),
+            home_stock_before_upgrade,
+        );
+        assert_eq!(
+            simulation
+                .state()
+                .colony(new_colony_id)
+                .expect("the new colony remains available")
+                .construction_queue
+                .len(),
+            1,
         );
         assert!(matches!(
             simulation.state().missions[0].result,
@@ -2502,16 +2598,15 @@ mod tests {
                 })
                 .expect("the prepared mission consumes fuel and payload"),
         );
-        assert!(
-            assess_planet_colonizability(
-                simulation.state(),
-                simulation.universe_repository(),
-                simulation.state().player_faction,
-                target,
-            )
-            .blockers
-            .contains(&ColonizationBlocker::FoundationAlreadyPrepared)
-        );
+        let blockers = assess_planet_colonizability(
+            simulation.state(),
+            simulation.universe_repository(),
+            simulation.state().player_faction,
+            target,
+        )
+        .blockers;
+        assert!(blockers.contains(&ColonizationBlocker::AlreadyColonized));
+        assert!(!blockers.contains(&ColonizationBlocker::FoundationAlreadyPrepared));
         let events = simulation.advance(Duration::from_secs(120));
         assert_eq!(simulation.state().colony_foundations.len(), 1);
         assert!(!events.iter().any(|event| matches!(

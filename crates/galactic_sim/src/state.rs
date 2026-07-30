@@ -16,8 +16,8 @@ use crate::{
 
 /// Version of the mutable in-memory state contract.
 ///
-/// Version 22 persists colonization commitments and prepared foundations.
-pub const GAME_STATE_VERSION: u32 = 22;
+/// Version 23 persists initialized colonies and their stable identity counter.
+pub const GAME_STATE_VERSION: u32 = 23;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemVisibility {
@@ -56,6 +56,7 @@ pub struct GameState {
     pub diplomacy: DiplomacyState,
     pub player_faction: FactionId,
     pub colonies: Vec<ColonyState>,
+    pub next_colony_id: u64,
     pub fleets: Vec<FleetState>,
     pub next_fleet_id: u64,
     pub missions: Vec<MissionState>,
@@ -114,6 +115,7 @@ impl GameState {
                 owner: home.owner,
                 system_id: home.system_id,
                 planet_id: home.planet_id,
+                founding_mission_id: None,
                 resources: ResourceLedger::new(home.initial_stock),
                 energy: home.initial_energy,
                 production_remainder: ProductionRemainder::ZERO,
@@ -124,6 +126,11 @@ impl GameState {
                 buildings: home.buildings,
                 resource_profile: home.resource_profile,
             }],
+            next_colony_id: home
+                .id
+                .raw()
+                .checked_add(1)
+                .expect("the starting colony identity remains representable"),
             fleets: Vec::new(),
             next_fleet_id: 0,
             missions: Vec::new(),
@@ -614,6 +621,7 @@ pub struct ColonyState {
     pub owner: Owner,
     pub system_id: SystemId,
     pub planet_id: PlanetId,
+    pub founding_mission_id: Option<MissionId>,
     pub resources: ResourceLedger,
     pub energy: EnergyGrid,
     pub production_remainder: ProductionRemainder,

@@ -1356,3 +1356,36 @@ Versions après ce checkpoint :
 - `GAME_STATE_VERSION = 22` ;
 - `SAVE_VERSION = 23` ;
 - `RULESET_SCHEMA_VERSION = 9`.
+
+## MVP-027 — Initialisation d'une colonie jouable
+
+À l'arrivée réussie, la fondation est conservée comme provenance immuable et
+produit immédiatement un `ColonyState`. `GameState::next_colony_id` alloue
+l'identité stable ; la colonie référence sa mission fondatrice afin que le
+chargement puisse vérifier la chaîne mission → fondation → colonie sans
+dépendre d'une `Entity` Bevy.
+
+Le stock initial est exactement le chargement consommé par la mission. Les
+bâtiments et la population initiale viennent de `planetary_analysis.ron`,
+l'énergie et la capacité sont dérivées du catalogue de bâtiments, et le profil
+de production vient du rapport d'analyse persistant. Aucun contenu économique
+initial n'est dupliqué dans le moteur Rust.
+
+L'initialisation met atomiquement à jour :
+
+- la présence réelle et le contrôle territorial ;
+- les connaissances planète et système au niveau `Colonized` ;
+- le renseignement local exact ;
+- les files de construction et de craft indépendantes ;
+- l'événement `ColonyEstablished`.
+
+La fondation historique n'est plus comptée séparément lorsque sa colonie
+existe. L'écran de gestion sait déjà énumérer les colonies possédées ; le
+travail de navigation et de synthèse explicitement multi-colonies reste dans
+MVP-028.
+
+Versions après ce checkpoint :
+
+- `GAME_STATE_VERSION = 23` ;
+- `SAVE_VERSION = 24` ;
+- `RULESET_SCHEMA_VERSION = 10`.

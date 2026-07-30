@@ -5,10 +5,10 @@ use galactic_domain::{FactionId, Owner, Planet, PlanetId, PlanetKind, ResourceCo
 use serde::Deserialize;
 
 use crate::{
-    AuthorizationError, CraftableCatalog, CraftableId, DiplomaticRelation, GameState,
-    KnowledgeChange, KnowledgeLevel, PlanetResourceProfile, PlanetaryIntelPrecision, ShipClass,
-    StrategicTick, TechnologyUnlock, UniverseRepository, default_ruleset,
-    refresh_planetary_intelligence,
+    AuthorizationError, BuildingCatalog, BuildingCatalogError, BuildingLevels, CraftableCatalog,
+    CraftableId, DiplomaticRelation, GameState, KnowledgeChange, KnowledgeLevel,
+    PlanetResourceProfile, PlanetaryIntelPrecision, ShipClass, StrategicTick, TechnologyUnlock,
+    UniverseRepository, default_ruleset, refresh_planetary_intelligence,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -86,6 +86,12 @@ pub struct PlanetTypeAnalysisRule {
     pub constraints: InstallationConstraints,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ColonyInitializationRules {
+    pub population: u64,
+    pub buildings: BuildingLevels,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlanetaryAnalysisRules {
     version: u32,
@@ -93,6 +99,7 @@ pub struct PlanetaryAnalysisRules {
     maximum_colonies: usize,
     foundation_cost: ResourceCost,
     colony_ship: CraftableId,
+    colony_initialization: ColonyInitializationRules,
     kinds: Vec<PlanetTypeAnalysisRule>,
 }
 
@@ -100,8 +107,9 @@ impl PlanetaryAnalysisRules {
     pub(crate) fn from_config(
         config: PlanetaryAnalysisRulesConfig,
         craftables: &CraftableCatalog,
+        buildings: &BuildingCatalog,
     ) -> Result<Self, PlanetaryAnalysisRulesError> {
-        if config.version != 2 {
+        if config.version != 3 {
             return Err(PlanetaryAnalysisRulesError::UnsupportedVersion(
                 config.version,
             ));
@@ -142,6 +150,38 @@ impl PlanetaryAnalysisRules {
                 required: foundation_cargo,
                 available: ship.cargo_capacity,
             });
+        }
+        if config.new_colony.population == 0 {
+            return Err(PlanetaryAnalysisRulesError::InvalidNewColonyPopulation);
+        }
+        let mut initial_buildings = BuildingLevels::EMPTY;
+        let mut configured_buildings = BTreeSet::new();
+        for configured in config.new_colony.buildings {
+            if !configured_buildings.insert(configured.id.clone()) {
+                return Err(PlanetaryAnalysisRulesError::DuplicateNewColonyBuilding);
+            }
+            let Some(kind) = buildings.kind_by_key(&configured.id) else {
+                return Err(PlanetaryAnalysisRulesError::UnknownNewColonyBuilding);
+            };
+            initial_buildings.set_level(kind, configured.level);
+        }
+        buildings
+            .validate_levels(initial_buildings)
+            .map_err(PlanetaryAnalysisRulesError::InvalidNewColonyBuildings)?;
+        let initial_energy = buildings.energy_grid_for_levels(initial_buildings);
+        if initial_energy.is_deficit() {
+            return Err(PlanetaryAnalysisRulesError::InvalidNewColonyEnergy);
+        }
+        let foundation_cost = ResourceCost::new(
+            config.foundation_cost.metal,
+            config.foundation_cost.crystal,
+            config.foundation_cost.fuel,
+        );
+        if !foundation_cost
+            .as_stock()
+            .is_within(buildings.storage_capacity_for_levels(initial_buildings))
+        {
+            return Err(PlanetaryAnalysisRulesError::FoundationExceedsNewColonyStorage);
         }
 
         let mut configured_kinds = BTreeSet::new();
@@ -189,12 +229,12 @@ impl PlanetaryAnalysisRules {
             version: config.version,
             minimum_habitability: config.minimum_habitability,
             maximum_colonies: config.maximum_colonies,
-            foundation_cost: ResourceCost::new(
-                config.foundation_cost.metal,
-                config.foundation_cost.crystal,
-                config.foundation_cost.fuel,
-            ),
+            foundation_cost,
             colony_ship,
+            colony_initialization: ColonyInitializationRules {
+                population: config.new_colony.population,
+                buildings: initial_buildings,
+            },
             kinds,
         })
     }
@@ -217,6 +257,10 @@ impl PlanetaryAnalysisRules {
 
     pub const fn colony_ship(&self) -> CraftableId {
         self.colony_ship
+    }
+
+    pub const fn colony_initialization(&self) -> ColonyInitializationRules {
+        self.colony_initialization
     }
 
     pub fn rule_for(&self, kind: PlanetKind) -> PlanetTypeAnalysisRule {
@@ -242,6 +286,16 @@ impl PlanetaryAnalysisRules {
         output.push_str(&self.foundation_cost.fuel.to_string());
         output.push(':');
         output.push_str(self.colony_ship.key());
+        output.push(':');
+        output.push_str(&self.colony_initialization.population.to_string());
+        output.push('[');
+        for (kind, level) in self.colony_initialization.buildings.iter() {
+            output.push_str(kind.key());
+            output.push('=');
+            output.push_str(&level.to_string());
+            output.push(',');
+        }
+        output.push(']');
         output.push(';');
         for rule in &self.kinds {
             output.push_str(&kind_fingerprint_tag(rule.kind).to_string());
@@ -379,6 +433,12 @@ pub enum PlanetaryAnalysisRulesError {
         required: u64,
         available: u64,
     },
+    InvalidNewColonyPopulation,
+    DuplicateNewColonyBuilding,
+    UnknownNewColonyBuilding,
+    InvalidNewColonyBuildings(BuildingCatalogError),
+    InvalidNewColonyEnergy,
+    FoundationExceedsNewColonyStorage,
     DuplicatePlanetKind(PlanetKind),
     MissingPlanetKind(PlanetKind),
     InvalidResourceProfile(PlanetKind),
@@ -472,7 +532,9 @@ pub fn assess_planet_colonizability(
     if state.colony_on_planet(planet_id).is_some() {
         blockers.push(ColonizationBlocker::AlreadyColonized);
     }
-    if state.colony_foundation_on_planet(planet_id).is_some() {
+    if state.colony_on_planet(planet_id).is_none()
+        && state.colony_foundation_on_planet(planet_id).is_some()
+    {
         blockers.push(ColonizationBlocker::FoundationAlreadyPrepared);
     }
     if let Some(Owner::Faction(occupant)) = state
@@ -513,7 +575,9 @@ pub fn assess_planet_colonizability(
     let actor_foundations = state
         .colony_foundations
         .iter()
-        .filter(|foundation| foundation.owner == actor)
+        .filter(|foundation| {
+            foundation.owner == actor && state.colony_on_planet(foundation.planet_id).is_none()
+        })
         .count();
     if actor_colonies.len().saturating_add(actor_foundations) >= rules.maximum_colonies() {
         blockers.push(ColonizationBlocker::ColonyLimitReached {
@@ -715,7 +779,20 @@ pub(crate) struct PlanetaryAnalysisRulesConfig {
     maximum_colonies: usize,
     foundation_cost: ResourceCostConfig,
     colony_ship_id: String,
+    new_colony: NewColonyConfig,
     kinds: Vec<PlanetTypeAnalysisRuleConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NewColonyConfig {
+    population: u64,
+    buildings: Vec<NewColonyBuildingConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NewColonyBuildingConfig {
+    id: String,
+    level: u8,
 }
 
 #[derive(Debug, Deserialize)]
@@ -803,7 +880,7 @@ mod tests {
     fn default_rules_cover_every_planet_kind() {
         let rules = planetary_analysis_rules();
 
-        assert_eq!(rules.version(), 2);
+        assert_eq!(rules.version(), 3);
         for kind in PlanetKind::ALL {
             assert_eq!(rules.rule_for(kind).kind, kind);
         }

@@ -1,13 +1,17 @@
-// MVP-026: persistent colony foundations prepared by deterministic missions.
+// MVP-027: persistent foundations initialize deterministic playable colonies.
 use std::collections::BTreeSet;
 
 use galactic_domain::{
-    ColonyId, FactionId, MissionId, Owner, PlanetId, ResourceCost, ResourceStock, SystemId,
+    ColonyId, FactionId, MissionId, Owner, PlanetId, ResourceCost, ResourceLedger, ResourceStock,
+    SystemId,
 };
 
 use crate::{
-    ColonizationBlocker, CraftableId, GameState, MissionKind, MissionPhase, MissionResult,
-    StrategicTick, UniverseRepository, assess_planet_colonizability, planetary_analysis_rules,
+    ColonizationBlocker, ColonyState, ConstructionQueue, CraftInventory, CraftQueue, CraftableId,
+    GameState, KnowledgeChange, KnowledgeLevel, MissionKind, MissionPhase, MissionResult,
+    PlanetaryIntelPrecision, ProductionRemainder, StrategicTick, UniverseRepository,
+    assess_planet_colonizability, default_building_catalog, planetary_analysis_rules,
+    refresh_planetary_intelligence,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,6 +46,16 @@ pub struct ColonyFoundation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ColonyEstablished {
+    pub colony_id: ColonyId,
+    pub mission_id: MissionId,
+    pub owner: FactionId,
+    pub system_id: SystemId,
+    pub planet_id: PlanetId,
+    pub established_at: StrategicTick,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColonyFoundationStateError {
     DuplicateMission(MissionId),
     DuplicatePlanet(PlanetId),
@@ -57,13 +71,94 @@ pub enum ColonyFoundationStateError {
         expected: SystemId,
         found: SystemId,
     },
-    AlreadyColonized(PlanetId),
+    MissingColony(MissionId),
+    ColonyMismatch(MissionId),
+    MissingFoundationProvenance {
+        colony_id: ColonyId,
+        mission_id: MissionId,
+    },
     InvalidPayload(MissionId),
     PreparedInFuture {
         mission_id: MissionId,
         prepared_at: StrategicTick,
         current_tick: StrategicTick,
     },
+}
+
+pub(crate) fn initialize_colony_from_foundation(
+    state: &mut GameState,
+    universe: &UniverseRepository,
+    foundation: ColonyFoundation,
+) -> (ColonyEstablished, Vec<KnowledgeChange>) {
+    let initialization = planetary_analysis_rules().colony_initialization();
+    let resource_profile = state
+        .planet_analysis_report(foundation.planet_id)
+        .expect("a validated colonization target has an analysis report")
+        .resource_profile;
+    let planet_name = universe
+        .planet(foundation.planet_id)
+        .expect("a validated foundation targets an existing planet")
+        .name
+        .clone();
+    let colony_id = ColonyId::new(state.next_colony_id);
+    state.next_colony_id = state
+        .next_colony_id
+        .checked_add(1)
+        .expect("the configured colony limit keeps identities representable");
+    let buildings = initialization.buildings;
+    let owner = Owner::Faction(foundation.owner);
+
+    let presence = state
+        .planetary_presence_mut(foundation.planet_id)
+        .expect("every generated planet has a validated presence");
+    presence.occupant = owner;
+    presence.population = initialization.population;
+    presence.forces.clear();
+    presence.revision = presence
+        .revision
+        .checked_add(1)
+        .expect("planetary presence revision remains representable");
+
+    let knowledge_changes =
+        state.advance_planet_knowledge(universe, foundation.planet_id, KnowledgeLevel::Colonized);
+    refresh_planetary_intelligence(
+        state,
+        foundation.planet_id,
+        PlanetaryIntelPrecision::Exact,
+        foundation.prepared_at,
+    )
+    .expect("a newly established colony has a planetary presence");
+
+    state.colonies.push(ColonyState {
+        id: colony_id,
+        name: planet_name,
+        owner,
+        system_id: foundation.system_id,
+        planet_id: foundation.planet_id,
+        founding_mission_id: Some(foundation.mission_id),
+        resources: ResourceLedger::new(foundation.payload),
+        energy: default_building_catalog().energy_grid_for_levels(buildings),
+        production_remainder: ProductionRemainder::ZERO,
+        production_pending_ticks: 0,
+        construction_queue: ConstructionQueue::default(),
+        craft_queue: CraftQueue::default(),
+        inventory: CraftInventory::default(),
+        buildings,
+        resource_profile,
+    });
+    state.colonies.sort_by_key(|colony| colony.id);
+
+    (
+        ColonyEstablished {
+            colony_id,
+            mission_id: foundation.mission_id,
+            owner: foundation.owner,
+            system_id: foundation.system_id,
+            planet_id: foundation.planet_id,
+            established_at: foundation.prepared_at,
+        },
+        knowledge_changes,
+    )
 }
 
 pub(crate) fn colonization_arrival_blocker(
@@ -150,9 +245,17 @@ pub fn validate_colony_foundations(
                 found: foundation.system_id,
             });
         }
-        if state.colony_on_planet(foundation.planet_id).is_some() {
-            return Err(ColonyFoundationStateError::AlreadyColonized(
-                foundation.planet_id,
+        let Some(colony) = state.colony_on_planet(foundation.planet_id) else {
+            return Err(ColonyFoundationStateError::MissingColony(
+                foundation.mission_id,
+            ));
+        };
+        if colony.founding_mission_id != Some(foundation.mission_id)
+            || colony.owner != Owner::Faction(foundation.owner)
+            || colony.system_id != foundation.system_id
+        {
+            return Err(ColonyFoundationStateError::ColonyMismatch(
+                foundation.mission_id,
             ));
         }
         if foundation.payload != expected_payload {
@@ -179,6 +282,16 @@ pub fn validate_colony_foundations(
         ) && !mission_ids.contains(&mission.id)
         {
             return Err(ColonyFoundationStateError::MissingFoundation(mission.id));
+        }
+    }
+    for colony in &state.colonies {
+        if let Some(mission_id) = colony.founding_mission_id
+            && !mission_ids.contains(&mission_id)
+        {
+            return Err(ColonyFoundationStateError::MissingFoundationProvenance {
+                colony_id: colony.id,
+                mission_id,
+            });
         }
     }
     Ok(())

@@ -41,10 +41,17 @@ pub enum SimulationBuildError {
     InvalidDiplomacy(DiplomacyError),
     UnknownRelationFaction(FactionId),
     DuplicateColony(ColonyId),
+    DuplicateColonyPlanet(PlanetId),
+    InvalidNextColonyId {
+        next_colony_id: u64,
+        existing_colony_id: ColonyId,
+    },
+    EmptyColonyName(ColonyId),
     InvalidColonyBuildings {
         colony_id: ColonyId,
         error: BuildingCatalogError,
     },
+    InvalidColonyEnergy(ColonyId),
     InvalidProductionWindow {
         colony_id: ColonyId,
         pending_ticks: u16,
@@ -560,6 +567,11 @@ impl Simulation {
                     foundation.prepared_at,
                     GameEventKind::ColonyFoundationPrepared(foundation),
                 )),
+                MissionEngineEvent::Colony { recipient, colony } => events.push(GameEvent::new(
+                    recipient,
+                    colony.established_at,
+                    GameEventKind::ColonyEstablished(colony),
+                )),
             }
         }
         events
@@ -785,15 +797,33 @@ fn validate_state(
         .map_err(SimulationBuildError::InvalidPlanetAnalysisState)?;
 
     let mut colony_ids = HashSet::with_capacity(state.colonies.len());
+    let mut colony_planet_ids = HashSet::with_capacity(state.colonies.len());
     for colony in &state.colonies {
         if !colony_ids.insert(colony.id) {
             return Err(SimulationBuildError::DuplicateColony(colony.id));
+        }
+        if !colony_planet_ids.insert(colony.planet_id) {
+            return Err(SimulationBuildError::DuplicateColonyPlanet(
+                colony.planet_id,
+            ));
+        }
+        if colony.id.raw() >= state.next_colony_id {
+            return Err(SimulationBuildError::InvalidNextColonyId {
+                next_colony_id: state.next_colony_id,
+                existing_colony_id: colony.id,
+            });
+        }
+        if colony.name.trim().is_empty() {
+            return Err(SimulationBuildError::EmptyColonyName(colony.id));
         }
         if let Err(error) = default_building_catalog().validate_levels(colony.buildings) {
             return Err(SimulationBuildError::InvalidColonyBuildings {
                 colony_id: colony.id,
                 error,
             });
+        }
+        if colony.energy != default_building_catalog().energy_grid_for_levels(colony.buildings) {
+            return Err(SimulationBuildError::InvalidColonyEnergy(colony.id));
         }
         if u64::from(colony.production_pending_ticks) >= crate::production_refresh_ticks() {
             return Err(SimulationBuildError::InvalidProductionWindow {

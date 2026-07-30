@@ -1,9 +1,20 @@
 (
-    version: 2,
+    version: 3,
     minimum_habitability: 50,
     maximum_colonies: 3,
     foundation_cost: (metal: 650, crystal: 420, fuel: 260),
     colony_ship_id: "colony_ship",
+    new_colony: (
+        population: 1200,
+        buildings: [
+            (id: "metal_mine", level: 1),
+            (id: "crystal_extractor", level: 1),
+            (id: "fuel_refinery", level: 1),
+            (id: "power_plant", level: 1),
+            (id: "warehouse", level: 1),
+            (id: "construction_center", level: 1),
+        ],
+    ),
     kinds: [
         (
             kind: Rocky,

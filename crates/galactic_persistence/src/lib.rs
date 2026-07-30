@@ -1,7 +1,8 @@
 // MVP-023: persist reconnaissance results and progressive discovery frontiers.
 use galactic_domain::{
-    ColonyId, EnergyGrid, FactionId, FleetId, Owner, PlanetId, ResourceLedger, ResourceLedgerError,
-    ResourceReservation, ResourceStock, SystemId, UniverseConfig, UniverseId, generate_universe,
+    ColonyId, EnergyGrid, FactionId, FleetId, MissionId, Owner, PlanetId, ResourceLedger,
+    ResourceLedgerError, ResourceReservation, ResourceStock, SystemId, UniverseConfig, UniverseId,
+    generate_universe,
 };
 use galactic_sim::{
     BuildingLevels, ColonyFoundation, ColonyState, CombatReport, ConstructionQueue, CraftInventory,
@@ -13,8 +14,8 @@ use galactic_sim::{
     TimeSpeed, default_ruleset, production_refresh_ticks,
 };
 
-/// Version 23 persists colonization commitments and prepared foundations.
-pub const SAVE_VERSION: u32 = 23;
+/// Version 24 persists initialized colonies and their stable identity counter.
+pub const SAVE_VERSION: u32 = 24;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SaveGame {
@@ -47,6 +48,7 @@ pub struct MutableGameSave {
     pub system_knowledge: Vec<SystemKnowledge>,
     pub planet_knowledge: Vec<PlanetKnowledge>,
     pub colonies: Vec<ColonySave>,
+    pub next_colony_id: u64,
     pub fleets: Vec<FleetSave>,
     pub next_fleet_id: u64,
     pub missions: Vec<MissionState>,
@@ -83,6 +85,7 @@ pub struct ColonySave {
     pub owner: Owner,
     pub system_id: SystemId,
     pub planet_id: PlanetId,
+    pub founding_mission_id: Option<MissionId>,
     pub stock: ResourceStock,
     pub reservations: Vec<ResourceReservation>,
     pub next_reservation_id: u64,
@@ -199,6 +202,7 @@ pub fn snapshot_from_simulation(simulation: &Simulation) -> SaveGame {
                     owner: colony.owner,
                     system_id: colony.system_id,
                     planet_id: colony.planet_id,
+                    founding_mission_id: colony.founding_mission_id,
                     stock: colony.resources.stock(),
                     reservations: colony.resources.reservations().to_vec(),
                     next_reservation_id: colony.resources.next_reservation_id(),
@@ -215,6 +219,7 @@ pub fn snapshot_from_simulation(simulation: &Simulation) -> SaveGame {
                     resource_profile: colony.resource_profile,
                 })
                 .collect(),
+            next_colony_id: state.next_colony_id,
             fleets: state
                 .fleets
                 .iter()
@@ -330,6 +335,7 @@ pub fn restore_from_snapshot(save: &SaveGame) -> Result<Simulation, SaveError> {
                 owner: colony.owner,
                 system_id: colony.system_id,
                 planet_id: colony.planet_id,
+                founding_mission_id: colony.founding_mission_id,
                 resources,
                 energy: EnergyGrid::new(colony.energy_production, colony.energy_consumption),
                 production_remainder,
@@ -359,6 +365,7 @@ pub fn restore_from_snapshot(save: &SaveGame) -> Result<Simulation, SaveError> {
         diplomacy: save.state.diplomacy.clone(),
         player_faction: save.state.player_faction,
         colonies,
+        next_colony_id: save.state.next_colony_id,
         fleets: save
             .state
             .fleets
@@ -746,7 +753,7 @@ mod tests {
     }
 
     #[test]
-    fn colonization_resumes_identically_and_keeps_its_foundation() {
+    fn colonization_resumes_identically_and_keeps_its_playable_colony() {
         let (mut uninterrupted, target) = simulation_with_launched_colonization();
         uninterrupted.advance(Duration::from_secs(3));
         assert_eq!(
@@ -764,6 +771,23 @@ mod tests {
         assert_eq!(restored.state(), uninterrupted.state());
         assert_eq!(restored.state().colony_foundations.len(), 1);
         assert_eq!(restored.state().colony_foundations[0].planet_id, target);
+        assert_eq!(restored.state().colonies.len(), 2);
+        let established = restored
+            .state()
+            .colony_on_planet(target)
+            .expect("the restored colonization creates a playable colony");
+        assert_eq!(established.id, ColonyId::new(1));
+        assert_eq!(
+            established.founding_mission_id,
+            Some(restored.state().missions[0].id),
+        );
+        assert_eq!(
+            established.resources.stock(),
+            galactic_sim::planetary_analysis_rules()
+                .foundation_cost()
+                .as_stock(),
+        );
+        assert_eq!(restored.state().next_colony_id, 2);
         assert!(matches!(
             restored.state().missions[0].result,
             Some(MissionResult::Colonize(
@@ -781,6 +805,11 @@ mod tests {
         assert_eq!(
             reloaded.state().colony_foundations,
             restored.state().colony_foundations,
+        );
+        assert_eq!(reloaded.state().colonies, restored.state().colonies);
+        assert_eq!(
+            reloaded.state().next_colony_id,
+            restored.state().next_colony_id,
         );
     }
 
@@ -1015,7 +1044,7 @@ mod tests {
     }
 
     #[test]
-    fn state_and_save_versions_match_mvp_026() {
+    fn state_and_save_versions_match_mvp_027() {
         let simulation = Simulation::new(UniverseConfig::mvp());
         let save = snapshot_from_simulation(&simulation);
 

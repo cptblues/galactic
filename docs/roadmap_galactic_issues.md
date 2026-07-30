@@ -5,8 +5,8 @@
 ## Vue d’ensemble
 
 - **45 issues** au total
-- **20 terminées**
-- **25 à faire**
+- **21 terminées**
+- **24 à faire**
 
 ## Sommaire de la roadmap
 
@@ -43,7 +43,7 @@
 | ✅ | [MVP-025](#eng-33) — Ajouter les occupants, forces et défenses planétaires | [ENG-33](https://cadylo.app/galactic/issue/ENG-33) | P1 | 5 |
 | ✅ | [MVP-025-B](#eng-52) — Ajouter les attaques, le combat V1 et les rapports | [ENG-52](https://cadylo.app/galactic/issue/ENG-52) | P1 | — |
 | ✅ | [MVP-026](#eng-34) — Implémenter le vaisseau-colonie et la mission de colonisation | [ENG-34](https://cadylo.app/galactic/issue/ENG-34) | P1 | 8 |
-| ⬜ | [MVP-027](#eng-35) — Initialiser une nouvelle colonie jouable | [ENG-35](https://cadylo.app/galactic/issue/ENG-35) | P1 | 8 |
+| ✅ | [MVP-027](#eng-35) — Initialiser une nouvelle colonie jouable | [ENG-35](https://cadylo.app/galactic/issue/ENG-35) | P1 | 8 |
 | ⬜ | [MVP-028](#eng-36) — Ajouter la gestion multi-colonies | [ENG-36](https://cadylo.app/galactic/issue/ENG-36) | P1 | 8 |
 | ⬜ | [MVP-029](#eng-37) — Ajouter les missions de transport entre colonies | [ENG-37](https://cadylo.app/galactic/issue/ENG-37) | P1 | 5 |
 | ⬜ | [MVP-029-B](#eng-53) — Ajouter les sites d'extraction et la récolte distante | [ENG-53](https://cadylo.app/galactic/issue/ENG-53) | P1 | — |
@@ -1314,7 +1314,7 @@ sans transformer automatiquement une victoire militaire en colonie.
 | Métadonnée | Valeur |
 |---|---|
 | Issue | [ENG-35](https://cadylo.app/galactic/issue/ENG-35) |
-| Statut | À faire |
+| Statut | Terminée |
 | Priorité | P1 |
 | Estimation | 8 points |
 | Créée le | 23/07/2026 |
@@ -1336,9 +1336,11 @@ de colonisation.
 
 ### Critères d'acceptation
 
-- La nouvelle colonie fonctionne avec les mêmes règles qu'une colonie initiale.
-- Aucune donnée initiale de contenu n'est dupliquée en dur dans le code Rust.
-- Une sauvegarde/reprise conserve exactement son état.
+- [x] La nouvelle colonie fonctionne avec les mêmes règles qu'une colonie
+  initiale.
+- [x] Aucune donnée initiale de contenu n'est dupliquée en dur dans le code
+  Rust.
+- [x] Une sauvegarde/reprise conserve exactement son état.
 
 [↑ Retour au sommaire](#sommaire-de-la-roadmap)
 

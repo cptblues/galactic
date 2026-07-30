@@ -179,3 +179,17 @@ la cible devient occupée ou qu'une autre fondation prend la place, le vaisseau
 revient et le chargement est libéré. Un succès crée une fondation persistante
 et un événement métier ; la colonie jouable elle-même reste le périmètre de
 MVP-027.
+
+## MVP-027 — Nouvelle colonie jouable
+
+Une fondation réussie devient immédiatement une colonie complète avec un
+`ColonyId` stable, le nom de sa planète, des stocks et des files indépendants,
+un profil de production issu du rapport d'analyse et un socle de bâtiments
+défini dans `planetary_analysis.ron`.
+
+Le chargement de fondation devient le stock local de la colonie. La planète et
+son système passent au niveau `Colonized`, la présence territoriale appartient
+au joueur et les renseignements locaux deviennent exacts. La colonie apparaît
+dans l'inspecteur et dans l'écran de gestion existant, où elle peut lancer ses
+premières constructions. La fondation reste conservée comme provenance de la
+mission, sans compter deux fois dans la limite de colonies.

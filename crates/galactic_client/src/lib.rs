@@ -6245,6 +6245,11 @@ fn event_label(event: GameEvent) -> String {
             foundation.planet_id.index(),
             foundation.prepared_at.value(),
         ),
+        GameEventKind::ColonyEstablished(colony) => format!(
+            "nouvelle colonie établie sur le corps {} : colonie {} opérationnelle",
+            colony.planet_id.index(),
+            colony.colony_id.raw(),
+        ),
         GameEventKind::MissionReported(report) => format!(
             "rapport mission {:?} : {:?}",
             report.mission_id, report.outcome,
@@ -7381,6 +7386,25 @@ VmSwap:\t      2048 kB
             simulation_shortcut(&keyboard),
             Some(UiAction::LaunchColonization),
         );
+    }
+
+    #[test]
+    fn colony_creation_event_is_player_facing() {
+        let label = event_label(GameEvent::new(
+            galactic_domain::FactionId::new(0),
+            galactic_sim::StrategicTick::new(420),
+            GameEventKind::ColonyEstablished(galactic_sim::ColonyEstablished {
+                colony_id: galactic_domain::ColonyId::new(1),
+                mission_id: galactic_domain::MissionId::new(3),
+                owner: galactic_domain::FactionId::new(0),
+                system_id: SystemId::new(4),
+                planet_id: PlanetId::from_system_index(SystemId::new(4), 2),
+                established_at: galactic_sim::StrategicTick::new(420),
+            }),
+        ));
+
+        assert!(label.contains("nouvelle colonie"));
+        assert!(label.contains("colonie 1 opérationnelle"));
     }
 
     #[test]
