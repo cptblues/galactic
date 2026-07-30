@@ -1,8 +1,9 @@
 (
-    version: 1,
+    version: 2,
     minimum_habitability: 50,
     maximum_colonies: 3,
     foundation_cost: (metal: 650, crystal: 420, fuel: 260),
+    colony_ship_id: "colony_ship",
     kinds: [
         (
             kind: Rocky,

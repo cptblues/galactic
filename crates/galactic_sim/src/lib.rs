@@ -1,5 +1,6 @@
 pub mod analysis;
 pub mod building_catalog;
+pub mod colonization;
 pub mod combat;
 pub mod command;
 pub mod construction;
@@ -21,6 +22,7 @@ pub mod universe;
 
 pub use analysis::*;
 pub use building_catalog::*;
+pub use colonization::*;
 pub use combat::*;
 pub use command::*;
 pub use construction::*;

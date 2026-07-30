@@ -165,3 +165,17 @@ trajet invalide proprement l'attaque sans appliquer l'ancien instantané. Afin
 que cette boucle soit immédiatement testable, chaque système voisin du départ
 contient au moins une petite patrouille hostile ; les autres planètes
 conservent leur distribution déterministe et peuvent légitimement être vides.
+
+## MVP-026 — Arche Pionnière et mission de colonisation
+
+Une planète analysée, habitable et libre peut recevoir une mission de
+colonisation avec `N`. Le raccourci réutilise une flotte d'une Arche Pionnière
+ou en forme une depuis l'inventaire du chantier. La portée, le trajet et le
+carburant passent par le moteur de missions existant.
+
+Le chargement de fondation est réservé au lancement, puis l'Arche et les
+ressources ne sont consommées qu'après une nouvelle validation à l'arrivée. Si
+la cible devient occupée ou qu'une autre fondation prend la place, le vaisseau
+revient et le chargement est libéré. Un succès crée une fondation persistante
+et un événement métier ; la colonie jouable elle-même reste le périmètre de
+MVP-027.

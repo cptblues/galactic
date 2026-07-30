@@ -8,20 +8,22 @@ use galactic_domain::{
 };
 
 use crate::{
-    AttackMissionOutcome, BuildingCatalogError, CombatReportStatus, CommandRejection,
-    ConstructionQueueError, CraftStateError, DiplomacyError, DiplomacyState, FactionKind,
-    FleetAssignment, FleetStateError, GAME_STATE_VERSION, GameAction, GameCommand, GameEvent,
-    GameEventKind, GameState, KnowledgeLevel, MissionEngineEvent, MissionKind, MissionPhase,
-    MissionResult, MissionStateError, PlanetAnalysisStateError, PlanetaryIntelPrecision,
+    AttackMissionOutcome, BuildingCatalogError, ColonizationMissionOutcome,
+    ColonyFoundationStateError, CombatReportStatus, CommandRejection, ConstructionQueueError,
+    CraftStateError, DiplomacyError, DiplomacyState, FactionKind, FleetAssignment, FleetStateError,
+    GAME_STATE_VERSION, GameAction, GameCommand, GameEvent, GameEventKind, GameState,
+    KnowledgeLevel, MissionEngineEvent, MissionKind, MissionPhase, MissionResult,
+    MissionStateError, PlanetAnalysisStateError, PlanetaryIntelPrecision,
     PlanetaryPresenceStateError, ResearchStateError, SelectionTarget, StartingScenario,
     StartingScenarioError, StrategicDuration, TimeSpeed, UniverseIndexError, UniverseRepository,
     advance_colony_construction, advance_colony_craft, advance_missions, advance_research,
     analyze_planet, build_planet_analysis_report, cancel_mission, default_building_catalog,
     enqueue_building_upgrade, enqueue_craft, enqueue_research, form_fleet, launch_attack_mission,
-    launch_mission, launch_probe_mission, planetary_analysis_rules, queue_colony_production,
-    refresh_planetary_intelligence, storage_capacity, validate_construction_queue,
-    validate_craft_state, validate_fleet_state, validate_mission_state,
-    validate_planet_analysis_state, validate_planetary_presence_state, validate_research_state,
+    launch_colonization_mission, launch_mission, launch_probe_mission, planetary_analysis_rules,
+    queue_colony_production, refresh_planetary_intelligence, storage_capacity,
+    validate_colony_foundations, validate_construction_queue, validate_craft_state,
+    validate_fleet_state, validate_mission_state, validate_planet_analysis_state,
+    validate_planetary_presence_state, validate_research_state,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +60,7 @@ pub enum SimulationBuildError {
     InvalidResearchState(ResearchStateError),
     InvalidPlanetAnalysisState(PlanetAnalysisStateError),
     InvalidPlanetaryPresenceState(PlanetaryPresenceStateError),
+    InvalidColonyFoundationState(ColonyFoundationStateError),
     InvalidColonyResourceLedger {
         colony_id: ColonyId,
         error: ResourceLedgerError,
@@ -141,6 +144,12 @@ pub enum SimulationBuildError {
         mission_id: MissionId,
     },
     MissionFuelReservationMismatch {
+        mission_id: MissionId,
+    },
+    MissingMissionFoundationReservation {
+        mission_id: MissionId,
+    },
+    MissionFoundationReservationMismatch {
         mission_id: MissionId,
     },
     FleetAssignedToUnknownMission {
@@ -372,6 +381,30 @@ impl Simulation {
                     )],
                 }
             }
+            GameAction::LaunchColonization { colony_id, target } => {
+                match launch_colonization_mission(
+                    &mut self.state,
+                    &self.universe,
+                    issuer,
+                    colony_id,
+                    target,
+                ) {
+                    Ok((created, launched)) => {
+                        let mut events = Vec::with_capacity(2);
+                        if let Some(created) = created {
+                            events.push(GameEventKind::FleetCreated(created));
+                        }
+                        events.push(GameEventKind::MissionLaunched(launched));
+                        events
+                    }
+                    Err(error) => vec![GameEventKind::MissionLaunchRejected(
+                        crate::MissionLaunchRejected {
+                            fleet_id: None,
+                            error,
+                        },
+                    )],
+                }
+            }
             GameAction::AnalyzePlanet { planet_id } => {
                 match analyze_planet(&mut self.state, &self.universe, issuer, planet_id) {
                     Ok(outcome) => {
@@ -518,6 +551,14 @@ impl Simulation {
                     recipient,
                     resolution.occurred_at,
                     GameEventKind::MissionResolved(resolution),
+                )),
+                MissionEngineEvent::Foundation {
+                    recipient,
+                    foundation,
+                } => events.push(GameEvent::new(
+                    recipient,
+                    foundation.prepared_at,
+                    GameEventKind::ColonyFoundationPrepared(foundation),
                 )),
             }
         }
@@ -926,8 +967,16 @@ fn validate_state(
                 ..
             }))
         ) && mission.phase == MissionPhase::Failed;
+        let consumed_colony_ship = matches!(
+            mission.result,
+            Some(MissionResult::Colonize(crate::ColonizationMissionResult {
+                outcome: ColonizationMissionOutcome::FoundationPrepared,
+                colony_ship_consumed: true,
+                ..
+            }))
+        ) && mission.phase == MissionPhase::Completed;
         let fleet = state.fleet(mission.order.fleet_id);
-        if fleet.is_none() && !destroyed_attacker {
+        if fleet.is_none() && !destroyed_attacker && !consumed_colony_ship {
             return Err(SimulationBuildError::UnknownMissionFleet {
                 mission_id: mission.id,
                 fleet_id: mission.order.fleet_id,
@@ -998,6 +1047,28 @@ fn validate_state(
             };
             if reservation.cost != mission.plan.fuel_cost {
                 return Err(SimulationBuildError::MissionFuelReservationMismatch {
+                    mission_id: mission.id,
+                });
+            }
+        }
+        if let Some(reservation_id) = mission.foundation_reservation {
+            let Some(reservation) = origin_colony
+                .resources
+                .reservations()
+                .iter()
+                .find(|reservation| reservation.id == reservation_id)
+            else {
+                return Err(SimulationBuildError::MissingMissionFoundationReservation {
+                    mission_id: mission.id,
+                });
+            };
+            let Some(commitment) = mission.colonization else {
+                return Err(SimulationBuildError::MissionFoundationReservationMismatch {
+                    mission_id: mission.id,
+                });
+            };
+            if reservation.cost != commitment.foundation_cost {
+                return Err(SimulationBuildError::MissionFoundationReservationMismatch {
                     mission_id: mission.id,
                 });
             }
@@ -1093,6 +1164,9 @@ fn validate_state(
             return Err(SimulationBuildError::MissingCombatReport(mission.id));
         }
     }
+
+    validate_colony_foundations(state, universe)
+        .map_err(SimulationBuildError::InvalidColonyFoundationState)?;
 
     match state.selected {
         SelectionTarget::None => {}

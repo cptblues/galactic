@@ -21,7 +21,7 @@ use crate::{
     TechnologyCatalog, TechnologyCatalogConfig, TechnologyCatalogError,
 };
 
-pub const RULESET_SCHEMA_VERSION: u32 = 8;
+pub const RULESET_SCHEMA_VERSION: u32 = 9;
 pub const RULESET_DIRECTORY_ENV: &str = "GALACTIC_RULESET_DIR";
 pub const DEFAULT_RULESET_DIRECTORY: &str = "assets/rulesets/default";
 
@@ -82,8 +82,9 @@ impl Ruleset {
             .map_err(RulesetLoadError::Craftables)?;
         let planetary_analysis_config: PlanetaryAnalysisRulesConfig =
             read_ron(directory, "planetary_analysis.ron")?;
-        let planetary_analysis = PlanetaryAnalysisRules::from_config(planetary_analysis_config)
-            .map_err(RulesetLoadError::PlanetaryAnalysis)?;
+        let planetary_analysis =
+            PlanetaryAnalysisRules::from_config(planetary_analysis_config, &craftables)
+                .map_err(RulesetLoadError::PlanetaryAnalysis)?;
         let planetary_presence_config: PlanetaryPresenceRulesConfig =
             read_ron(directory, "planetary_presence.ron")?;
         let planetary_presence = PlanetaryPresenceRules::from_config(
@@ -753,7 +754,7 @@ mod tests {
         assert_eq!(ruleset.buildings().definitions().count(), 8);
         assert_eq!(ruleset.technologies().definitions().count(), 6);
         assert_eq!(ruleset.craftables().definitions().count(), 4);
-        assert_eq!(ruleset.planetary_analysis().version(), 1,);
+        assert_eq!(ruleset.planetary_analysis().version(), 2,);
         assert_eq!(ruleset.planetary_presence().version(), 2);
         assert_eq!(ruleset.planetary_presence().definitions().count(), 5);
         assert_eq!(ruleset.combat().version(), 1);

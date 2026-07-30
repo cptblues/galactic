@@ -1329,3 +1329,30 @@ Versions après ce checkpoint :
 - `GAME_STATE_VERSION = 21` ;
 - `SAVE_VERSION = 22` ;
 - `RULESET_SCHEMA_VERSION = 8`.
+
+## MVP-026 — Mission de colonisation et fondation préparée
+
+`MissionKind::Colonize` exige une cible planétaire analysée, déclarée éligible
+par `assess_planet_colonizability`, et une flotte composée exactement d'une
+Arche Pionnière. Le raccourci joueur forme cette flotte depuis l'inventaire si
+aucune arche inactive n'est déjà amarrée.
+
+Le carburant et le chargement suivent deux engagements distincts. Le carburant
+est consommé au départ comme pour les autres missions. Le coût de fondation
+reste réservé dans la colonie d'origine pendant le trajet : il est validé et
+consommé seulement lorsque la planète reste libre, habitable, technologiquement
+accessible et sous la limite de colonies à l'arrivée. Un refus conserve
+l'Arche, puis libère le chargement à son retour.
+
+Un succès consomme l'Arche et crée un `ColonyFoundation` persistant contenant
+la mission source, le propriétaire, la cible, le chargement et le tick de
+préparation. Cette fondation verrouille la planète contre une seconde mission
+mais ne crée ni `ColonyId`, ni économie, ni bâtiments : MVP-027 la transformera
+en colonie jouable. Le chargeur vérifie l'unicité, la mission de succès, la
+cible, le propriétaire, le chargement et l'horodatage.
+
+Versions après ce checkpoint :
+
+- `GAME_STATE_VERSION = 22` ;
+- `SAVE_VERSION = 23` ;
+- `RULESET_SCHEMA_VERSION = 9`.

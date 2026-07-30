@@ -42,7 +42,7 @@
 | ✅ | [MVP-024](#eng-32) — Ajouter l'analyse planétaire et les règles de colonisabilité | [ENG-32](https://cadylo.app/galactic/issue/ENG-32) | P1 | 8 |
 | ✅ | [MVP-025](#eng-33) — Ajouter les occupants, forces et défenses planétaires | [ENG-33](https://cadylo.app/galactic/issue/ENG-33) | P1 | 5 |
 | ✅ | [MVP-025-B](#eng-52) — Ajouter les attaques, le combat V1 et les rapports | [ENG-52](https://cadylo.app/galactic/issue/ENG-52) | P1 | — |
-| ⬜ | [MVP-026](#eng-34) — Implémenter le vaisseau-colonie et la mission de colonisation | [ENG-34](https://cadylo.app/galactic/issue/ENG-34) | P1 | 8 |
+| ✅ | [MVP-026](#eng-34) — Implémenter le vaisseau-colonie et la mission de colonisation | [ENG-34](https://cadylo.app/galactic/issue/ENG-34) | P1 | 8 |
 | ⬜ | [MVP-027](#eng-35) — Initialiser une nouvelle colonie jouable | [ENG-35](https://cadylo.app/galactic/issue/ENG-35) | P1 | 8 |
 | ⬜ | [MVP-028](#eng-36) — Ajouter la gestion multi-colonies | [ENG-36](https://cadylo.app/galactic/issue/ENG-36) | P1 | 8 |
 | ⬜ | [MVP-029](#eng-37) — Ajouter les missions de transport entre colonies | [ENG-37](https://cadylo.app/galactic/issue/ENG-37) | P1 | 5 |
@@ -1221,7 +1221,7 @@ l'attaque sans figer encore la formule de combat.
 | Métadonnée | Valeur |
 |---|---|
 | Issue | [ENG-52](https://cadylo.app/galactic/issue/ENG-52) |
-| Statut | À faire |
+| Statut | Terminée |
 | Priorité | P1 |
 | Estimation | Non estimée |
 | Créée le | 27/07/2026 |
@@ -1270,7 +1270,7 @@ forces d'une planète, avec un rapport exploitable par la sécurisation future.
 | Métadonnée | Valeur |
 |---|---|
 | Issue | [ENG-34](https://cadylo.app/galactic/issue/ENG-34) |
-| Statut | À faire |
+| Statut | Terminée |
 | Priorité | P1 |
 | Estimation | 8 points |
 | Créée le | 23/07/2026 |
@@ -1297,10 +1297,11 @@ sans transformer automatiquement une victoire militaire en colonie.
 
 ### Critères d'acceptation
 
-- Une planète hostile non sécurisée refuse la colonisation avec un motif clair.
-- Les ressources et le vaisseau ne sont consommés qu'au moment défini par la
-  règle de mission.
-- La mission est déterministe et sauvegardable.
+- [x] Une planète hostile non sécurisée refuse la colonisation avec un motif
+  clair.
+- [x] Les ressources et le vaisseau ne sont consommés qu'au moment défini par
+  la règle de mission.
+- [x] La mission est déterministe et sauvegardable.
 
 [↑ Retour au sommaire](#sommaire-de-la-roadmap)
 

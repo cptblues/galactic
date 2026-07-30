@@ -21,13 +21,13 @@ use galactic_domain::{
     WorldPosition,
 };
 use galactic_sim::{
-    AttackMissionOutcome, ColonizationBlocker, CombatControlChange, CombatOutcome,
-    CombatReportStatus, DiplomaticRelation, EstimateRange, GameAction, GameEvent, GameEventKind,
-    InstallationConstraint, KnowledgeLevel, KnowledgeTarget, MVP_HOME_SYSTEM_ID, MissionKind,
-    MissionPhase, MissionResult, MissionTarget, PlanetAnalysisError, PlanetEnvironment,
-    PlanetaryForceDomain, PlanetaryIntelPrecision, PlanetaryOccupancyIntel, SelectionTarget,
-    Simulation, SystemVisibility, TechnologyUnlock, TimeSpeed, assess_planet_colonizability,
-    default_ruleset,
+    AttackMissionOutcome, ColonizationBlocker, ColonizationMissionOutcome, CombatControlChange,
+    CombatOutcome, CombatReportStatus, DiplomaticRelation, EstimateRange, GameAction, GameEvent,
+    GameEventKind, InstallationConstraint, KnowledgeLevel, KnowledgeTarget, MVP_HOME_SYSTEM_ID,
+    MissionKind, MissionPhase, MissionResult, MissionTarget, PlanetAnalysisError,
+    PlanetEnvironment, PlanetaryForceDomain, PlanetaryIntelPrecision, PlanetaryOccupancyIntel,
+    SelectionTarget, Simulation, SystemVisibility, TechnologyUnlock, TimeSpeed,
+    assess_planet_colonizability, default_ruleset,
 };
 
 const UNIVERSE_VERTICAL_EXAGGERATION: f32 = 3.4;
@@ -879,6 +879,7 @@ enum UiAction {
     ExitSystem,
     LaunchProbe,
     LaunchAttack,
+    LaunchColonization,
     AnalyzePlanet,
     ToggleProjection,
     ToggleDebugGraph,
@@ -1682,6 +1683,12 @@ fn spawn_ui(mut commands: Commands) {
             spawn_action_button(parent, UiAction::LaunchAttack, "Lancer attaque", "M");
             spawn_action_button(
                 parent,
+                UiAction::LaunchColonization,
+                "Lancer colonisation",
+                "N",
+            );
+            spawn_action_button(
+                parent,
                 UiAction::ToggleProjection,
                 "Projection 3D / 2,5D",
                 "P",
@@ -1726,7 +1733,7 @@ fn spawn_ui(mut commands: Commands) {
 
     commands.spawn((
         Text::new(
-            "Clic sélectionner | Double-clic ouvrir/recentrer | K sonder | L analyser | M attaquer | P projection | droit orbite | milieu déplacer | molette zoom",
+            "Clic sélectionner | Double-clic ouvrir/recentrer | K sonder | L analyser | M attaquer | N coloniser | P projection | droit orbite | milieu déplacer | molette zoom",
         ),
         ui_text_font(12.0),
         TextColor(Color::srgb(0.76, 0.84, 0.90)),
@@ -3771,6 +3778,8 @@ fn simulation_shortcut(keyboard: &ButtonInput<KeyCode>) -> Option<UiAction> {
         Some(UiAction::AnalyzePlanet)
     } else if keyboard.just_pressed(KeyCode::KeyM) {
         Some(UiAction::LaunchAttack)
+    } else if keyboard.just_pressed(KeyCode::KeyN) {
+        Some(UiAction::LaunchColonization)
     } else {
         None
     }
@@ -3852,6 +3861,16 @@ fn apply_ui_action(
                 );
             }
         }
+        UiAction::LaunchColonization => {
+            if let Some((colony_id, target)) =
+                selected_colonization_context(simulation.simulation())
+            {
+                apply_simulation_command(
+                    simulation,
+                    GameAction::LaunchColonization { colony_id, target },
+                );
+            }
+        }
         UiAction::ToggleProjection => {
             navigation.toggle_projection();
         }
@@ -3905,6 +3924,9 @@ fn action_available(
         UiAction::ExitSystem => matches!(navigation.mode, StrategicViewMode::System(_)),
         UiAction::LaunchProbe => selected_probe_context(simulation.simulation()).is_some(),
         UiAction::LaunchAttack => selected_attack_context(simulation.simulation()).is_some(),
+        UiAction::LaunchColonization => {
+            selected_colonization_context(simulation.simulation()).is_some()
+        }
         UiAction::AnalyzePlanet => selected_analysis_target(simulation.simulation()).is_some(),
     }
 }
@@ -3981,6 +4003,34 @@ fn selected_attack_context(
     }
     Some((
         state.player_home_colony()?.id,
+        MissionTarget::Planet {
+            system_id,
+            planet_id,
+        },
+    ))
+}
+
+fn selected_colonization_context(
+    simulation: &Simulation,
+) -> Option<(galactic_domain::ColonyId, MissionTarget)> {
+    let state = simulation.state();
+    let SelectionTarget::Planet {
+        system_id,
+        planet_id,
+    } = state.selected
+    else {
+        return None;
+    };
+    let colony_id = state.player_home_colony()?.id;
+    assess_planet_colonizability(
+        state,
+        simulation.universe_repository(),
+        state.player_faction,
+        planet_id,
+    )
+    .is_colonizable()
+    .then_some((
+        colony_id,
         MissionTarget::Planet {
             system_id,
             planet_id,
@@ -5672,10 +5722,26 @@ fn colonizability_text(
 ) -> String {
     let cost = assessment.foundation_cost;
     if assessment.is_colonizable() {
+        let colony_ship = default_ruleset().planetary_analysis().colony_ship();
+        let ship_ready = state.player_home_colony().is_some_and(|colony| {
+            colony.inventory.quantity(colony_ship) > 0
+                || state.fleets.iter().any(|fleet| {
+                    fleet.is_idle()
+                        && fleet.location == galactic_sim::FleetLocation::Docked(colony.id)
+                        && fleet.composition.total_ships() == 1
+                        && fleet.composition.quantity(colony_ship) == 1
+                })
+        });
+        let ship_status = if ship_ready {
+            "Arche Pionnière disponible — appuyez sur N pour lancer la mission."
+        } else {
+            "Arche Pionnière manquante — construisez-en une au chantier orbital."
+        };
         return format!(
             "COLONISABILITÉ — ÉLIGIBLE
 Conditions remplies : analyse, environnement, habitabilité, route, technologie, limite et cargaison.
-Investissement requis : {} métal, {} cristal, {} carburant",
+Investissement requis : {} métal, {} cristal, {} carburant
+{ship_status}",
             cost.metal, cost.crystal, cost.fuel,
         );
     }
@@ -5708,6 +5774,9 @@ fn colonization_blocker_label(
             "rapport d'analyse persistant introuvable".to_string()
         }
         ColonizationBlocker::AlreadyColonized => "planète déjà colonisée".to_string(),
+        ColonizationBlocker::FoundationAlreadyPrepared => {
+            "une fondation coloniale attend son initialisation".to_string()
+        }
         ColonizationBlocker::OccupiedPlanet { occupant, relation } => {
             let name = state
                 .faction(occupant)
@@ -6159,7 +6228,23 @@ fn event_label(event: GameEvent) -> String {
                     result.target.index(),
                 ),
             },
+            MissionResult::Colonize(result) => match result.outcome {
+                ColonizationMissionOutcome::FoundationPrepared => format!(
+                    "fondation prête sur le corps {} : Arche Pionnière et chargement déployés",
+                    result.target.index(),
+                ),
+                ColonizationMissionOutcome::TargetInvalid(blocker) => format!(
+                    "colonisation annulée sur le corps {} : {}",
+                    result.target.index(),
+                    colonization_arrival_failure_label(blocker),
+                ),
+            },
         },
+        GameEventKind::ColonyFoundationPrepared(foundation) => format!(
+            "fondation coloniale préparée sur le corps {} au tick {}",
+            foundation.planet_id.index(),
+            foundation.prepared_at.value(),
+        ),
         GameEventKind::MissionReported(report) => format!(
             "rapport mission {:?} : {:?}",
             report.mission_id, report.outcome,
@@ -6187,6 +6272,26 @@ fn planet_analysis_error_text(error: PlanetAnalysisError) -> String {
         }
         PlanetAnalysisError::AlreadyAnalyzed(_) => {
             "cette planète possède déjà un rapport d'analyse exact".to_string()
+        }
+    }
+}
+
+fn colonization_arrival_failure_label(blocker: ColonizationBlocker) -> &'static str {
+    match blocker {
+        ColonizationBlocker::UnknownPlanet(_) => "planète inconnue",
+        ColonizationBlocker::NotAnalyzed { .. } | ColonizationBlocker::MissingAnalysisReport => {
+            "analyse planétaire invalide"
+        }
+        ColonizationBlocker::AlreadyColonized => "planète déjà colonisée",
+        ColonizationBlocker::FoundationAlreadyPrepared => "fondation déjà préparée",
+        ColonizationBlocker::OccupiedPlanet { .. } => "présence étrangère détectée",
+        ColonizationBlocker::MissingTechnology(_) => "technologie de colonisation manquante",
+        ColonizationBlocker::UnsupportedEnvironment(_) => "environnement non compatible",
+        ColonizationBlocker::HabitabilityTooLow { .. } => "habitabilité insuffisante",
+        ColonizationBlocker::NoAccessibleRoute => "route devenue inaccessible",
+        ColonizationBlocker::ColonyLimitReached { .. } => "limite de colonies atteinte",
+        ColonizationBlocker::InsufficientFoundationResources { .. } => {
+            "chargement de fondation indisponible"
         }
     }
 }
@@ -6220,6 +6325,21 @@ fn mission_error_text(error: galactic_sim::MissionError) -> String {
         galactic_sim::MissionError::Attack(
             galactic_sim::CombatSnapshotError::FleetNotCombatCapable(_),
         ) => "la flotte doit être composée de vaisseaux militaires".to_string(),
+        galactic_sim::MissionError::ColonizationPlanetTargetRequired => {
+            "une colonisation doit cibler une planète".to_string()
+        }
+        galactic_sim::MissionError::ColonizationShipUnavailable(_) => {
+            "aucune Arche Pionnière disponible ; construisez-en une au chantier orbital".to_string()
+        }
+        galactic_sim::MissionError::ColonizationFleetRequired(_) => {
+            "la flotte de colonisation doit contenir exactement une Arche Pionnière".to_string()
+        }
+        galactic_sim::MissionError::ColonizationBlocked(blocker) => {
+            format!(
+                "colonisation impossible : {}",
+                colonization_arrival_failure_label(blocker)
+            )
+        }
         galactic_sim::MissionError::NoAccessibleRoute { .. } => {
             "aucune route connue ne permet d'atteindre cette destination".to_string()
         }
@@ -6230,7 +6350,8 @@ fn mission_error_text(error: galactic_sim::MissionError) -> String {
             "portée insuffisante : {required_hops} sauts requis, {available_hops} disponibles"
         ),
         galactic_sim::MissionError::Resources(_) => {
-            "carburant insuffisant dans la colonie d'origine".to_string()
+            "ressources insuffisantes dans la colonie d'origine (carburant ou cargaison)"
+                .to_string()
         }
         galactic_sim::MissionError::FleetBusy { .. } => {
             "la flotte est déjà affectée à une mission".to_string()
@@ -7095,7 +7216,9 @@ VmSwap:\t      2048 kB
             phase: MissionPhase::Outbound,
             phase_started_at: galactic_sim::StrategicTick::new(10),
             fuel_reservation: None,
+            foundation_reservation: None,
             attack: None,
+            colonization: None,
             result: None,
         };
 
@@ -7247,6 +7370,17 @@ VmSwap:\t      2048 kB
         keyboard.press(KeyCode::KeyM);
 
         assert_eq!(simulation_shortcut(&keyboard), Some(UiAction::LaunchAttack));
+    }
+
+    #[test]
+    fn colonization_shortcut_uses_n() {
+        let mut keyboard = ButtonInput::<KeyCode>::default();
+        keyboard.press(KeyCode::KeyN);
+
+        assert_eq!(
+            simulation_shortcut(&keyboard),
+            Some(UiAction::LaunchColonization),
+        );
     }
 
     #[test]

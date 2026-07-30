@@ -43,6 +43,10 @@ pub enum GameAction {
         colony_id: ColonyId,
         target: MissionTarget,
     },
+    LaunchColonization {
+        colony_id: ColonyId,
+        target: MissionTarget,
+    },
     AnalyzePlanet {
         planet_id: PlanetId,
     },

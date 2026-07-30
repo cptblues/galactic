@@ -1,12 +1,12 @@
 use galactic_domain::{FactionId, PlanetId, SystemId};
 
 use crate::{
-    ColonyProductionReport, CommandRejection, ConstructionCompleted, ConstructionQueued,
-    ConstructionRejected, CraftCompleted, CraftQueued, CraftRejected, FleetCreated,
-    FleetCreationRejected, KnowledgeChange, MissionCancellationRejected, MissionLaunchRejected,
-    MissionLaunched, MissionReport, MissionResolution, MissionTransition, PlanetAnalysisRejected,
-    PlanetAnalysisReport, ResearchCompleted, ResearchQueued, ResearchRejected, StrategicDuration,
-    StrategicTick, TimeSpeed,
+    ColonyFoundation, ColonyProductionReport, CommandRejection, ConstructionCompleted,
+    ConstructionQueued, ConstructionRejected, CraftCompleted, CraftQueued, CraftRejected,
+    FleetCreated, FleetCreationRejected, KnowledgeChange, MissionCancellationRejected,
+    MissionLaunchRejected, MissionLaunched, MissionReport, MissionResolution, MissionTransition,
+    PlanetAnalysisRejected, PlanetAnalysisReport, ResearchCompleted, ResearchQueued,
+    ResearchRejected, StrategicDuration, StrategicTick, TimeSpeed,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -70,6 +70,7 @@ pub enum GameEventKind {
     MissionLaunchRejected(MissionLaunchRejected),
     MissionTransitioned(MissionTransition),
     MissionResolved(MissionResolution),
+    ColonyFoundationPrepared(ColonyFoundation),
     MissionReported(MissionReport),
     MissionCancellationRejected(MissionCancellationRejected),
 }

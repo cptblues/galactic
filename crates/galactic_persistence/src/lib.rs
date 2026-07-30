@@ -4,17 +4,17 @@ use galactic_domain::{
     ResourceReservation, ResourceStock, SystemId, UniverseConfig, UniverseId, generate_universe,
 };
 use galactic_sim::{
-    BuildingLevels, ColonyState, CombatReport, ConstructionQueue, CraftInventory, CraftQueue,
-    DiplomacyState, FactionData, FactionKind, FleetAssignment, FleetComposition, FleetLocation,
-    FleetState, GameState, MissionReport, MissionState, PlanetAnalysisReport, PlanetKnowledge,
-    PlanetResourceProfile, PlanetaryIntelligenceReport, PlanetaryPresence, ProductionRemainder,
-    ProductionRemainderError, ResearchState, SelectionTarget, Simulation, SimulationBuildError,
-    StrategicClock, StrategicClockError, StrategicTick, SystemKnowledge, TimeSpeed,
-    default_ruleset, production_refresh_ticks,
+    BuildingLevels, ColonyFoundation, ColonyState, CombatReport, ConstructionQueue, CraftInventory,
+    CraftQueue, DiplomacyState, FactionData, FactionKind, FleetAssignment, FleetComposition,
+    FleetLocation, FleetState, GameState, MissionReport, MissionState, PlanetAnalysisReport,
+    PlanetKnowledge, PlanetResourceProfile, PlanetaryIntelligenceReport, PlanetaryPresence,
+    ProductionRemainder, ProductionRemainderError, ResearchState, SelectionTarget, Simulation,
+    SimulationBuildError, StrategicClock, StrategicClockError, StrategicTick, SystemKnowledge,
+    TimeSpeed, default_ruleset, production_refresh_ticks,
 };
 
-/// Version 22 persists attack commitments and detailed combat reports.
-pub const SAVE_VERSION: u32 = 22;
+/// Version 23 persists colonization commitments and prepared foundations.
+pub const SAVE_VERSION: u32 = 23;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SaveGame {
@@ -53,6 +53,7 @@ pub struct MutableGameSave {
     pub next_mission_id: u64,
     pub mission_reports: Vec<MissionReport>,
     pub combat_reports: Vec<CombatReport>,
+    pub colony_foundations: Vec<ColonyFoundation>,
     pub planet_analysis_reports: Vec<PlanetAnalysisReport>,
     pub planetary_presences: Vec<PlanetaryPresence>,
     pub planetary_intelligence_reports: Vec<PlanetaryIntelligenceReport>,
@@ -231,6 +232,7 @@ pub fn snapshot_from_simulation(simulation: &Simulation) -> SaveGame {
             next_mission_id: state.next_mission_id,
             mission_reports: state.mission_reports.clone(),
             combat_reports: state.combat_reports.clone(),
+            colony_foundations: state.colony_foundations.clone(),
             planet_analysis_reports: state.planet_analysis_reports.clone(),
             planetary_presences: state.planetary_presences.clone(),
             planetary_intelligence_reports: state.planetary_intelligence_reports.clone(),
@@ -375,6 +377,7 @@ pub fn restore_from_snapshot(save: &SaveGame) -> Result<Simulation, SaveError> {
         next_mission_id: save.state.next_mission_id,
         mission_reports: save.state.mission_reports.clone(),
         combat_reports: save.state.combat_reports.clone(),
+        colony_foundations: save.state.colony_foundations.clone(),
         planet_analysis_reports: save.state.planet_analysis_reports.clone(),
         planetary_presences: save.state.planetary_presences.clone(),
         planetary_intelligence_reports: save.state.planetary_intelligence_reports.clone(),
@@ -480,6 +483,104 @@ mod tests {
             },
         });
         assert_eq!(simulation.state().missions.len(), 1);
+        (simulation, target)
+    }
+
+    fn simulation_with_launched_colonization() -> (Simulation, PlanetId) {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+        let actor = simulation.state().player_faction;
+        let colony_id = simulation.state().colonies[0].id;
+        let origin = simulation.state().colonies[0].system_id;
+        let neighboring_systems = simulation
+            .universe_repository()
+            .neighboring_systems(origin)
+            .to_vec();
+        let rules = galactic_sim::planetary_analysis_rules();
+        let target = simulation
+            .universe()
+            .systems
+            .iter()
+            .filter(|system| neighboring_systems.contains(&system.id))
+            .flat_map(|system| system.planets.iter())
+            .find(|planet| {
+                rules.rule_for(planet.kind).colonizable
+                    && planet.habitability >= rules.minimum_habitability()
+            })
+            .expect("a neighboring planet supports colonization")
+            .id;
+        let presence = simulation
+            .state_mut()
+            .planetary_presence_mut(target)
+            .expect("every planet has a presence");
+        presence.occupant = Owner::Unowned;
+        presence.population = 0;
+        presence.forces.clear();
+        presence.revision = presence
+            .revision
+            .checked_add(1)
+            .expect("test revision remains representable");
+
+        let repository = simulation.universe_repository().clone();
+        simulation.state_mut().advance_system_knowledge(
+            &repository,
+            target.system_id(),
+            KnowledgeLevel::Probed,
+        );
+        simulation.state_mut().advance_planet_knowledge(
+            &repository,
+            target,
+            KnowledgeLevel::Probed,
+        );
+        simulation.state_mut().research = ResearchState::from_completed([
+            TechnologyId::SPATIAL_DETECTION,
+            TechnologyId::PROPULSION,
+            TechnologyId::CARGO_CAPACITY,
+            TechnologyId::PLANETARY_ANALYSIS,
+            TechnologyId::COLONIZATION,
+        ]);
+        simulation.apply_player_action(GameAction::AnalyzePlanet { planet_id: target });
+        {
+            let colony = &mut simulation.state_mut().colonies[0];
+            colony
+                .buildings
+                .set_level(BuildingKind::CONSTRUCTION_CENTER, 2);
+            colony.buildings.set_level(BuildingKind::METAL_MINE, 2);
+            colony
+                .buildings
+                .set_level(BuildingKind::CRYSTAL_EXTRACTOR, 2);
+            colony.buildings.set_level(BuildingKind::WAREHOUSE, 1);
+            colony.buildings.set_level(BuildingKind::POWER_PLANT, 2);
+            colony.buildings.set_level(BuildingKind::SHIPYARD, 2);
+            colony.energy = default_building_catalog().energy_grid_for_levels(colony.buildings);
+            colony
+                .resources
+                .credit(ResourceStock::new(2_000, 2_000, 2_000))
+                .expect("test funding fits the configured storage");
+        }
+        simulation.apply_player_action(GameAction::QueueCraft {
+            colony_id,
+            craftable: CraftableId::COLONY_SHIP,
+        });
+        simulation.advance(Duration::from_secs(240));
+        assert_eq!(
+            simulation.state().colonies[0]
+                .inventory
+                .quantity(CraftableId::COLONY_SHIP),
+            1,
+        );
+        simulation.apply_player_action(GameAction::LaunchColonization {
+            colony_id,
+            target: MissionTarget::Planet {
+                system_id: target.system_id(),
+                planet_id: target,
+            },
+        });
+        assert_eq!(simulation.state().missions.len(), 1);
+        assert_eq!(
+            simulation.state().missions[0].phase,
+            MissionPhase::Preparation
+        );
+        assert_eq!(simulation.state().missions[0].owner, Owner::Faction(actor),);
         (simulation, target)
     }
 
@@ -641,6 +742,45 @@ mod tests {
         assert_eq!(
             reloaded.state().combat_reports,
             restored.state().combat_reports
+        );
+    }
+
+    #[test]
+    fn colonization_resumes_identically_and_keeps_its_foundation() {
+        let (mut uninterrupted, target) = simulation_with_launched_colonization();
+        uninterrupted.advance(Duration::from_secs(3));
+        assert_eq!(
+            uninterrupted.state().missions[0].phase,
+            MissionPhase::Outbound
+        );
+        let in_flight = snapshot_from_simulation(&uninterrupted);
+        let mut restored =
+            restore_from_snapshot(&in_flight).expect("an in-flight colonization is compatible");
+
+        assert_eq!(restored.state(), uninterrupted.state());
+        uninterrupted.advance(Duration::from_secs(120));
+        restored.advance(Duration::from_secs(120));
+
+        assert_eq!(restored.state(), uninterrupted.state());
+        assert_eq!(restored.state().colony_foundations.len(), 1);
+        assert_eq!(restored.state().colony_foundations[0].planet_id, target);
+        assert!(matches!(
+            restored.state().missions[0].result,
+            Some(MissionResult::Colonize(
+                galactic_sim::ColonizationMissionResult {
+                    outcome: galactic_sim::ColonizationMissionOutcome::FoundationPrepared,
+                    colony_ship_consumed: true,
+                    ..
+                }
+            ))
+        ));
+        let resolved = snapshot_from_simulation(&restored);
+        let reloaded =
+            restore_from_snapshot(&resolved).expect("a prepared foundation is compatible");
+        assert_eq!(reloaded.state(), restored.state());
+        assert_eq!(
+            reloaded.state().colony_foundations,
+            restored.state().colony_foundations,
         );
     }
 
@@ -875,7 +1015,7 @@ mod tests {
     }
 
     #[test]
-    fn state_and_save_versions_match_mvp_025_b() {
+    fn state_and_save_versions_match_mvp_026() {
         let simulation = Simulation::new(UniverseConfig::mvp());
         let save = snapshot_from_simulation(&simulation);
 

@@ -8,11 +8,14 @@ use galactic_domain::{
 
 use crate::{
     AttackMissionCommitment, AttackMissionOutcome, AttackMissionResult, AuthorizationError,
-    CombatApplicationError, CombatSnapshotError, CraftableId, FleetAssignment, FleetComposition,
-    FleetCompositionError, FleetCreated, FleetError, FleetLocation, GameState, KnowledgeChange,
-    KnowledgeLevel, KnowledgeTarget, PlanetaryIntelPrecision, ShipStack, StrategicDuration,
-    StrategicTick, UniverseRepository, combat_rules, form_fleet, prepare_attack_commitment,
-    refresh_planetary_intelligence, resolve_and_apply_attack,
+    ColonizationBlocker, ColonizationMissionCommitment, ColonizationMissionOutcome,
+    ColonizationMissionResult, ColonyFoundation, CombatApplicationError, CombatSnapshotError,
+    CraftableId, FleetAssignment, FleetComposition, FleetCompositionError, FleetCreated,
+    FleetError, FleetLocation, GameState, KnowledgeChange, KnowledgeLevel, KnowledgeTarget,
+    PlanetaryIntelPrecision, ShipStack, StrategicDuration, StrategicTick, UniverseRepository,
+    assess_planet_colonizability, colonization_arrival_blocker, combat_rules, form_fleet,
+    planetary_analysis_rules, prepare_attack_commitment, refresh_planetary_intelligence,
+    resolve_and_apply_attack,
 };
 
 /// Abstract distance crossed by a fleet for one route hop.
@@ -105,7 +108,9 @@ pub struct MissionState {
     pub phase: MissionPhase,
     pub phase_started_at: StrategicTick,
     pub fuel_reservation: Option<ReservationId>,
+    pub foundation_reservation: Option<ReservationId>,
     pub attack: Option<AttackMissionCommitment>,
+    pub colonization: Option<ColonizationMissionCommitment>,
     pub result: Option<MissionResult>,
 }
 
@@ -156,6 +161,7 @@ pub struct ProbeMissionResult {
 pub enum MissionResult {
     Probe(ProbeMissionResult),
     Attack(AttackMissionResult),
+    Colonize(ColonizationMissionResult),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -218,6 +224,10 @@ pub enum MissionError {
     },
     AttackFleetUnavailable(ColonyId),
     Attack(CombatSnapshotError),
+    ColonizationPlanetTargetRequired,
+    ColonizationShipUnavailable(ColonyId),
+    ColonizationFleetRequired(FleetId),
+    ColonizationBlocked(ColonizationBlocker),
     DepartureInPast {
         current: StrategicTick,
         requested: StrategicTick,
@@ -298,6 +308,24 @@ pub enum MissionStateError {
         expected: PlanetId,
         found: PlanetId,
     },
+    MissingFoundationReservation,
+    UnexpectedFoundationReservation,
+    MissingColonizationCommitment,
+    UnexpectedColonizationCommitment,
+    ColonizationCommitmentTargetMismatch {
+        expected: PlanetId,
+        found: PlanetId,
+    },
+    ColonizationCommitmentShipMismatch {
+        expected: CraftableId,
+        found: CraftableId,
+    },
+    ColonizationCommitmentCostMismatch,
+    MissingColonizationResult,
+    ColonizationResultTargetMismatch {
+        expected: PlanetId,
+        found: PlanetId,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -318,6 +346,10 @@ pub(crate) enum MissionEngineEvent {
     Resolution {
         recipient: FactionId,
         resolution: MissionResolution,
+    },
+    Foundation {
+        recipient: FactionId,
+        foundation: ColonyFoundation,
     },
 }
 
@@ -400,6 +432,22 @@ pub fn plan_mission(
             return Err(MissionError::AttackTargetNotAnalyzed { planet_id, current });
         }
         prepare_attack_commitment(state, fleet.id, planet_id, 0).map_err(MissionError::Attack)?;
+    }
+    if order.kind == MissionKind::Colonize {
+        let Some(planet_id) = order.target.planet_id() else {
+            return Err(MissionError::ColonizationPlanetTargetRequired);
+        };
+        let colony_ship = planetary_analysis_rules().colony_ship();
+        if fleet.composition.total_ships() != 1 || fleet.composition.quantity(colony_ship) != 1 {
+            return Err(MissionError::ColonizationFleetRequired(fleet.id));
+        }
+        if let Some(blocker) = assess_planet_colonizability(state, universe, actor, planet_id)
+            .blockers
+            .into_iter()
+            .next()
+        {
+            return Err(MissionError::ColonizationBlocked(blocker));
+        }
     }
     let hops = u16::try_from(route.len().saturating_sub(1))
         .map_err(|_| MissionError::TravelDurationOverflow)?;
@@ -542,12 +590,45 @@ pub fn launch_mission(
     } else {
         None
     };
-    let reservation = state
+    let colonization = if order.kind == MissionKind::Colonize {
+        Some(ColonizationMissionCommitment {
+            planet_id: order
+                .target
+                .planet_id()
+                .expect("a planned colonization always targets a planet"),
+            colony_ship: planetary_analysis_rules().colony_ship(),
+            foundation_cost: planetary_analysis_rules().foundation_cost(),
+        })
+    } else {
+        None
+    };
+    let fuel_reservation = state
         .colony_mut(origin_colony_id)
         .expect("mission origin was validated")
         .resources
         .reserve(plan.fuel_cost)
         .map_err(MissionError::Resources)?;
+    let foundation_reservation = if let Some(commitment) = colonization {
+        match state
+            .colony_mut(origin_colony_id)
+            .expect("mission origin was validated")
+            .resources
+            .reserve(commitment.foundation_cost)
+        {
+            Ok(reservation) => Some(reservation),
+            Err(error) => {
+                state
+                    .colony_mut(origin_colony_id)
+                    .expect("mission origin was validated")
+                    .resources
+                    .release(fuel_reservation)
+                    .expect("the fresh fuel reservation can be rolled back");
+                return Err(MissionError::Resources(error));
+            }
+        }
+    } else {
+        None
+    };
     let owner = state
         .fleet(order.fleet_id)
         .expect("mission fleet was validated")
@@ -565,8 +646,10 @@ pub fn launch_mission(
         plan: plan.clone(),
         phase: MissionPhase::Preparation,
         phase_started_at: state.clock.current_tick(),
-        fuel_reservation: Some(reservation),
+        fuel_reservation: Some(fuel_reservation),
+        foundation_reservation,
         attack,
+        colonization,
         result: None,
     });
     state.missions.sort_by_key(|mission| mission.id);
@@ -654,6 +737,87 @@ pub fn launch_attack_mission(
             origin,
             target,
             kind: MissionKind::Attack,
+            departure_at,
+        },
+    )?;
+    *state = candidate;
+    Ok((created, launched))
+}
+
+/// Launches a colony ship atomically from an analyzed, eligible planet.
+///
+/// The foundation payload remains reserved at the origin while the ship is in
+/// flight. It is committed together with the ship only when the target still
+/// passes every arrival rule.
+pub fn launch_colonization_mission(
+    state: &mut GameState,
+    universe: &UniverseRepository,
+    actor: FactionId,
+    origin_colony_id: ColonyId,
+    target: MissionTarget,
+) -> Result<(Option<FleetCreated>, MissionLaunched), MissionError> {
+    let origin_colony = state
+        .colony(origin_colony_id)
+        .ok_or(MissionError::UnknownOriginColony(origin_colony_id))?;
+    state
+        .authorize_management(actor, origin_colony.owner)
+        .map_err(MissionError::Access)?;
+    let origin = origin_colony.system_id;
+    let Some(planet_id) = target.planet_id() else {
+        return Err(MissionError::ColonizationPlanetTargetRequired);
+    };
+    if let Some(blocker) = assess_planet_colonizability(state, universe, actor, planet_id)
+        .blockers
+        .into_iter()
+        .next()
+    {
+        return Err(MissionError::ColonizationBlocked(blocker));
+    }
+
+    let colony_ship = planetary_analysis_rules().colony_ship();
+    let mut candidate = state.clone();
+    let existing_fleet = candidate
+        .fleets
+        .iter()
+        .filter(|fleet| {
+            candidate.can_manage(actor, fleet.owner)
+                && fleet.is_idle()
+                && fleet.location == FleetLocation::Docked(origin_colony_id)
+                && fleet.composition.total_ships() == 1
+                && fleet.composition.quantity(colony_ship) == 1
+        })
+        .map(|fleet| fleet.id)
+        .min();
+
+    let (fleet_id, created) = if let Some(fleet_id) = existing_fleet {
+        (fleet_id, None)
+    } else {
+        let available = candidate
+            .colony(origin_colony_id)
+            .expect("the origin colony was validated")
+            .inventory
+            .quantity(colony_ship);
+        if available == 0 {
+            return Err(MissionError::ColonizationShipUnavailable(origin_colony_id));
+        }
+        let composition = FleetComposition::from_stacks([ShipStack::new(colony_ship, 1)])
+            .map_err(FleetError::InvalidComposition)
+            .map_err(MissionError::Fleet)?;
+        let created = form_fleet(&mut candidate, actor, origin_colony_id, composition)
+            .map_err(MissionError::Fleet)?;
+        (created.fleet_id, Some(created))
+    };
+
+    let departure_at = candidate.clock.current_tick();
+    let launched = launch_mission(
+        &mut candidate,
+        universe,
+        actor,
+        MissionOrder {
+            fleet_id,
+            origin,
+            target,
+            kind: MissionKind::Colonize,
             departure_at,
         },
     )?;
@@ -769,6 +933,7 @@ pub fn cancel_mission(
     let reservation = mission
         .fuel_reservation
         .expect("validated preparation mission must hold its fuel reservation");
+    let foundation_reservation = mission.foundation_reservation;
     let origin_colony_id = mission.origin_colony_id;
     let fleet_id = mission.order.fleet_id;
     let kind = mission.order.kind;
@@ -778,6 +943,14 @@ pub fn cancel_mission(
         .resources
         .release(reservation)
         .map_err(MissionError::Resources)?;
+    if let Some(reservation) = foundation_reservation {
+        state
+            .colony_mut(origin_colony_id)
+            .expect("validated mission origin must exist")
+            .resources
+            .release(reservation)
+            .map_err(MissionError::Resources)?;
+    }
     state
         .fleet_mut(fleet_id)
         .expect("validated mission fleet must exist")
@@ -788,6 +961,7 @@ pub fn cancel_mission(
     mission.phase = MissionPhase::Cancelled;
     mission.phase_started_at = occurred_at;
     mission.fuel_reservation = None;
+    mission.foundation_reservation = None;
     let transition = MissionTransition {
         mission_id,
         from: MissionPhase::Preparation,
@@ -818,6 +992,7 @@ pub const fn validate_mission_transition(
             | (MissionPhase::Outbound, MissionPhase::OnSite)
             | (MissionPhase::Outbound, MissionPhase::Failed)
             | (MissionPhase::OnSite, MissionPhase::Returning)
+            | (MissionPhase::OnSite, MissionPhase::Completed)
             | (MissionPhase::OnSite, MissionPhase::Failed)
             | (MissionPhase::Returning, MissionPhase::Completed)
             | (MissionPhase::Returning, MissionPhase::Failed)
@@ -925,6 +1100,20 @@ pub fn validate_mission_state(
     if mission.phase != MissionPhase::Preparation && mission.fuel_reservation.is_some() {
         return Err(MissionStateError::UnexpectedFuelReservation);
     }
+    let colonization_reservation_expected = mission.order.kind == MissionKind::Colonize
+        && matches!(
+            mission.phase,
+            MissionPhase::Preparation
+                | MissionPhase::Outbound
+                | MissionPhase::OnSite
+                | MissionPhase::Returning
+        );
+    if colonization_reservation_expected && mission.foundation_reservation.is_none() {
+        return Err(MissionStateError::MissingFoundationReservation);
+    }
+    if !colonization_reservation_expected && mission.foundation_reservation.is_some() {
+        return Err(MissionStateError::UnexpectedFoundationReservation);
+    }
     match (mission.order.kind, mission.phase, mission.result) {
         (
             MissionKind::Probe,
@@ -970,9 +1159,48 @@ pub fn validate_mission_state(
                 });
             }
         }
+        (
+            MissionKind::Colonize,
+            MissionPhase::OnSite | MissionPhase::Returning | MissionPhase::Completed,
+            None,
+        ) => return Err(MissionStateError::MissingColonizationResult),
+        (
+            MissionKind::Colonize,
+            MissionPhase::Preparation | MissionPhase::Outbound | MissionPhase::Cancelled,
+            Some(_),
+        ) => return Err(MissionStateError::UnexpectedMissionResult),
+        (MissionKind::Colonize, _, Some(MissionResult::Colonize(result))) => {
+            let expected = mission
+                .order
+                .target
+                .planet_id()
+                .ok_or(MissionStateError::MissingColonizationCommitment)?;
+            if result.target != expected {
+                return Err(MissionStateError::ColonizationResultTargetMismatch {
+                    expected,
+                    found: result.target,
+                });
+            }
+            if matches!(
+                result.outcome,
+                ColonizationMissionOutcome::FoundationPrepared
+            ) && (!result.colony_ship_consumed || mission.phase != MissionPhase::Completed)
+            {
+                return Err(MissionStateError::UnexpectedMissionResult);
+            }
+            if matches!(result.outcome, ColonizationMissionOutcome::TargetInvalid(_))
+                && result.colony_ship_consumed
+            {
+                return Err(MissionStateError::UnexpectedMissionResult);
+            }
+        }
         (MissionKind::Attack, _, Some(MissionResult::Probe(_)))
+        | (MissionKind::Attack, _, Some(MissionResult::Colonize(_)))
         | (MissionKind::Probe, _, Some(MissionResult::Attack(_)))
-        | (MissionKind::Transport | MissionKind::Harvest | MissionKind::Colonize, _, Some(_)) => {
+        | (MissionKind::Probe, _, Some(MissionResult::Colonize(_)))
+        | (MissionKind::Colonize, _, Some(MissionResult::Attack(_)))
+        | (MissionKind::Colonize, _, Some(MissionResult::Probe(_)))
+        | (MissionKind::Transport | MissionKind::Harvest, _, Some(_)) => {
             return Err(MissionStateError::UnexpectedMissionResult);
         }
         _ => {}
@@ -999,6 +1227,36 @@ pub fn validate_mission_state(
         }
         (MissionKind::Attack, None) => return Err(MissionStateError::MissingAttackCommitment),
         (_, Some(_)) => return Err(MissionStateError::UnexpectedAttackCommitment),
+        (_, None) => {}
+    }
+    match (mission.order.kind, mission.colonization) {
+        (MissionKind::Colonize, Some(commitment)) => {
+            let expected_planet = mission
+                .order
+                .target
+                .planet_id()
+                .ok_or(MissionStateError::MissingColonizationCommitment)?;
+            if commitment.planet_id != expected_planet {
+                return Err(MissionStateError::ColonizationCommitmentTargetMismatch {
+                    expected: expected_planet,
+                    found: commitment.planet_id,
+                });
+            }
+            let rules = planetary_analysis_rules();
+            if commitment.colony_ship != rules.colony_ship() {
+                return Err(MissionStateError::ColonizationCommitmentShipMismatch {
+                    expected: rules.colony_ship(),
+                    found: commitment.colony_ship,
+                });
+            }
+            if commitment.foundation_cost != rules.foundation_cost() {
+                return Err(MissionStateError::ColonizationCommitmentCostMismatch);
+            }
+        }
+        (MissionKind::Colonize, None) => {
+            return Err(MissionStateError::MissingColonizationCommitment);
+        }
+        (_, Some(_)) => return Err(MissionStateError::UnexpectedColonizationCommitment),
         (_, None) => {}
     }
     Ok(())
@@ -1031,6 +1289,17 @@ pub(crate) fn advance_missions(
                 {
                     (MissionPhase::Failed, mission.phase_started_at)
                 }
+                MissionPhase::OnSite
+                    if matches!(
+                        mission.result,
+                        Some(MissionResult::Colonize(ColonizationMissionResult {
+                            outcome: ColonizationMissionOutcome::FoundationPrepared,
+                            ..
+                        }))
+                    ) =>
+                {
+                    (MissionPhase::Completed, mission.phase_started_at)
+                }
                 MissionPhase::OnSite if current_tick >= mission.plan.return_departure_at => {
                     (MissionPhase::Returning, mission.plan.return_departure_at)
                 }
@@ -1047,6 +1316,7 @@ pub(crate) fn advance_missions(
             let target_system = target.system_id();
             let origin_colony_id = mission.origin_colony_id;
             let reservation = mission.fuel_reservation;
+            let foundation_reservation = mission.foundation_reservation;
             let owner = mission
                 .owner
                 .faction()
@@ -1054,8 +1324,10 @@ pub(crate) fn advance_missions(
             let kind = mission.order.kind;
             let mission_result = mission.result;
             let attack = mission.attack.clone();
+            let colonization = mission.colonization;
             let mut knowledge_changes = Vec::new();
             let mut resolution = None;
+            let mut prepared_foundation = None;
 
             validate_mission_transition(from, next_phase)
                 .expect("engine transitions must follow the mission state machine");
@@ -1183,15 +1455,86 @@ pub(crate) fn advance_missions(
                             result: MissionResult::Attack(result),
                             occurred_at: transition_at,
                         });
+                    } else if kind == MissionKind::Colonize {
+                        let commitment =
+                            colonization.expect("a validated colonization has a commitment");
+                        let result = if let Some(blocker) = colonization_arrival_blocker(
+                            state,
+                            universe,
+                            owner,
+                            commitment.planet_id,
+                        ) {
+                            ColonizationMissionResult {
+                                target: commitment.planet_id,
+                                outcome: ColonizationMissionOutcome::TargetInvalid(blocker),
+                                colony_ship_consumed: false,
+                            }
+                        } else {
+                            state
+                                .colony_mut(origin_colony_id)
+                                .expect("validated mission origin exists")
+                                .resources
+                                .commit(
+                                    foundation_reservation
+                                        .expect("an active colonization reserves its payload"),
+                                )
+                                .expect("validated foundation reservation commits");
+                            let foundation = ColonyFoundation {
+                                mission_id,
+                                owner,
+                                source_colony_id: origin_colony_id,
+                                system_id: target_system,
+                                planet_id: commitment.planet_id,
+                                payload: commitment.foundation_cost.as_stock(),
+                                prepared_at: transition_at,
+                            };
+                            state.colony_foundations.push(foundation);
+                            state
+                                .colony_foundations
+                                .sort_by_key(|entry| (entry.planet_id, entry.mission_id));
+                            state.fleets.retain(|fleet| fleet.id != fleet_id);
+                            prepared_foundation = Some(foundation);
+                            ColonizationMissionResult {
+                                target: commitment.planet_id,
+                                outcome: ColonizationMissionOutcome::FoundationPrepared,
+                                colony_ship_consumed: true,
+                            }
+                        };
+                        resolution = Some(MissionResolution {
+                            mission_id,
+                            result: MissionResult::Colonize(result),
+                            occurred_at: transition_at,
+                        });
                     }
                 }
                 MissionPhase::Returning => {}
                 MissionPhase::Completed => {
-                    let fleet = state
-                        .fleet_mut(fleet_id)
-                        .expect("validated mission fleet exists");
-                    fleet.location = FleetLocation::Docked(origin_colony_id);
-                    fleet.assignment = FleetAssignment::Idle;
+                    if matches!(
+                        mission_result,
+                        Some(MissionResult::Colonize(ColonizationMissionResult {
+                            outcome: ColonizationMissionOutcome::FoundationPrepared,
+                            ..
+                        }))
+                    ) {
+                        debug_assert!(state.fleet(fleet_id).is_none());
+                    } else {
+                        if kind == MissionKind::Colonize {
+                            state
+                                .colony_mut(origin_colony_id)
+                                .expect("validated mission origin exists")
+                                .resources
+                                .release(
+                                    foundation_reservation
+                                        .expect("a returning colonization retains its payload"),
+                                )
+                                .expect("validated foundation reservation releases");
+                        }
+                        let fleet = state
+                            .fleet_mut(fleet_id)
+                            .expect("validated mission fleet exists");
+                        fleet.location = FleetLocation::Docked(origin_colony_id);
+                        fleet.assignment = FleetAssignment::Idle;
+                    }
                 }
                 MissionPhase::Failed => {}
                 MissionPhase::Preparation | MissionPhase::Cancelled => {
@@ -1204,6 +1547,9 @@ pub(crate) fn advance_missions(
             mission.phase_started_at = transition_at;
             if next_phase == MissionPhase::Outbound {
                 mission.fuel_reservation = None;
+            }
+            if next_phase.is_terminal() {
+                mission.foundation_reservation = None;
             }
             if let Some(resolution) = resolution {
                 mission.result = Some(resolution.result);
@@ -1231,12 +1577,21 @@ pub(crate) fn advance_missions(
                     resolution,
                 });
             }
+            if let Some(foundation) = prepared_foundation {
+                events.push(MissionEngineEvent::Foundation {
+                    recipient: owner,
+                    foundation,
+                });
+            }
             if matches!(next_phase, MissionPhase::Completed | MissionPhase::Failed) {
                 let outcome = if next_phase == MissionPhase::Failed
                     || matches!(
                         mission_result,
                         Some(MissionResult::Attack(AttackMissionResult {
                             outcome: AttackMissionOutcome::TargetInvalid(_),
+                            ..
+                        })) | Some(MissionResult::Colonize(ColonizationMissionResult {
+                            outcome: ColonizationMissionOutcome::TargetInvalid(_),
                             ..
                         }))
                     ) {
@@ -1331,12 +1686,12 @@ fn checked_tick_add(tick: StrategicTick, duration: u64) -> Result<StrategicTick,
 mod tests {
     use std::time::Duration;
 
-    use galactic_domain::{Owner, PlanetId, ResourceStock, UniverseConfig};
+    use galactic_domain::{FactionId, Owner, PlanetId, ResourceStock, UniverseConfig};
 
     use crate::{
         AttackInvalidReason, AttackMissionOutcome, CombatOutcome, CombatReportStatus, CraftableId,
-        FleetComposition, GameAction, KnowledgeLevel, PlanetaryForceLoss, ShipStack, Simulation,
-        apply_planetary_force_losses, form_fleet,
+        FleetComposition, GameAction, KnowledgeLevel, PlanetaryForceLoss, ResearchState, ShipStack,
+        Simulation, TechnologyId, analyze_planet, apply_planetary_force_losses, form_fleet,
     };
 
     use super::*;
@@ -1398,6 +1753,69 @@ mod tests {
         (simulation, target)
     }
 
+    fn simulation_with_colonization_target() -> (Simulation, PlanetId) {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+        let actor = simulation.state().player_faction;
+        let origin = simulation.state().colonies[0].system_id;
+        let neighboring_systems = simulation
+            .universe_repository()
+            .neighboring_systems(origin)
+            .to_vec();
+        let rules = planetary_analysis_rules();
+        let target = simulation
+            .universe()
+            .systems
+            .iter()
+            .filter(|system| neighboring_systems.contains(&system.id))
+            .flat_map(|system| system.planets.iter())
+            .find(|planet| {
+                rules.rule_for(planet.kind).colonizable
+                    && planet.habitability >= rules.minimum_habitability()
+            })
+            .expect("a neighboring planet supports the colonization mission")
+            .id;
+        let presence = simulation
+            .state_mut()
+            .planetary_presence_mut(target)
+            .expect("every planet has a mutable presence");
+        presence.occupant = Owner::Unowned;
+        presence.population = 0;
+        presence.forces.clear();
+        presence.revision = presence
+            .revision
+            .checked_add(1)
+            .expect("test presence revision remains representable");
+
+        let repository = simulation.universe_repository().clone();
+        simulation.state_mut().research = ResearchState::from_completed([
+            TechnologyId::SPATIAL_DETECTION,
+            TechnologyId::PROPULSION,
+            TechnologyId::CARGO_CAPACITY,
+            TechnologyId::PLANETARY_ANALYSIS,
+            TechnologyId::COLONIZATION,
+        ]);
+        simulation.state_mut().advance_system_knowledge(
+            &repository,
+            target.system_id(),
+            KnowledgeLevel::Probed,
+        );
+        simulation.state_mut().advance_planet_knowledge(
+            &repository,
+            target,
+            KnowledgeLevel::Probed,
+        );
+        analyze_planet(simulation.state_mut(), &repository, actor, target)
+            .expect("the target follows the real analysis path");
+        simulation.state_mut().colonies[0]
+            .resources
+            .credit(ResourceStock::new(100, 300, 200))
+            .expect("test resources fit the ledger");
+        simulation.state_mut().colonies[0]
+            .inventory
+            .add(CraftableId::COLONY_SHIP, 1);
+        (simulation, target)
+    }
+
     fn detected_planets_in_origin(simulation: &Simulation) -> Vec<(usize, PlanetId)> {
         let origin = simulation.state().colonies[0].system_id;
         simulation
@@ -1415,12 +1833,11 @@ mod tests {
     }
 
     #[test]
-    fn non_combat_mission_kinds_use_the_generic_planner() {
+    fn generic_non_colonization_missions_use_the_shared_planner() {
         for kind in [
             MissionKind::Probe,
             MissionKind::Transport,
             MissionKind::Harvest,
-            MissionKind::Colonize,
         ] {
             let (simulation, fleet_id) = simulation_with_probe_fleet();
             let origin = simulation.state().colonies[0].system_id;
@@ -1768,7 +2185,7 @@ mod tests {
                     fleet_id,
                     origin,
                     target: MissionTarget::System(target),
-                    kind: MissionKind::Colonize,
+                    kind: MissionKind::Transport,
                     departure_at: StrategicTick::ZERO,
                 },
             ),
@@ -1934,6 +2351,278 @@ mod tests {
                 ..
             }))
         ));
+    }
+
+    #[test]
+    fn colonization_launch_reserves_payload_and_is_atomic_without_a_ship() {
+        let (mut simulation, target) = simulation_with_colonization_target();
+        let actor = simulation.state().player_faction;
+        let colony_id = simulation.state().colonies[0].id;
+        let repository = simulation.universe_repository().clone();
+        let mission_target = MissionTarget::Planet {
+            system_id: target.system_id(),
+            planet_id: target,
+        };
+        simulation.state_mut().colonies[0]
+            .inventory
+            .take(CraftableId::COLONY_SHIP, 1);
+        let before = simulation.state().clone();
+
+        assert_eq!(
+            launch_colonization_mission(
+                simulation.state_mut(),
+                &repository,
+                actor,
+                colony_id,
+                mission_target,
+            ),
+            Err(MissionError::ColonizationShipUnavailable(colony_id)),
+        );
+        assert_eq!(simulation.state(), &before);
+
+        simulation.state_mut().colonies[0]
+            .inventory
+            .add(CraftableId::COLONY_SHIP, 1);
+        let stock_before = simulation.state().colonies[0].resources.stock();
+        let (_, launched) = launch_colonization_mission(
+            simulation.state_mut(),
+            &repository,
+            actor,
+            colony_id,
+            mission_target,
+        )
+        .expect("an eligible target accepts one colony ship");
+
+        let reserved = simulation.state().colonies[0].resources.reserved_total();
+        assert_eq!(
+            reserved,
+            launched
+                .fuel_cost
+                .as_stock()
+                .checked_add(planetary_analysis_rules().foundation_cost().as_stock())
+                .expect("the mission reservation remains representable"),
+        );
+        assert_eq!(
+            simulation.state().colonies[0].resources.stock(),
+            stock_before,
+        );
+        assert_eq!(
+            simulation
+                .state()
+                .fleet(launched.fleet_id)
+                .expect("the colony ship has formed a fleet")
+                .composition
+                .quantity(CraftableId::COLONY_SHIP),
+            1,
+        );
+
+        cancel_mission(simulation.state_mut(), actor, launched.mission_id)
+            .expect("a colony ship can be recalled before departure");
+        assert_eq!(
+            simulation.state().colonies[0].resources.stock(),
+            stock_before,
+        );
+        assert!(
+            simulation.state().colonies[0]
+                .resources
+                .reservations()
+                .is_empty()
+        );
+        assert!(
+            simulation
+                .state()
+                .fleet(launched.fleet_id)
+                .expect("a cancelled colony ship remains available")
+                .is_idle()
+        );
+    }
+
+    #[test]
+    fn successful_colonization_consumes_ship_and_payload_once() {
+        let (mut simulation, target) = simulation_with_colonization_target();
+        let colony_id = simulation.state().colonies[0].id;
+        let stock_before = simulation.state().colonies[0].resources.stock();
+        let events = simulation.apply_player_action(GameAction::LaunchColonization {
+            colony_id,
+            target: MissionTarget::Planet {
+                system_id: target.system_id(),
+                planet_id: target,
+            },
+        });
+        let launched = events
+            .iter()
+            .find_map(|event| match event.kind {
+                crate::GameEventKind::MissionLaunched(launched) => Some(launched),
+                _ => None,
+            })
+            .expect("the colonization mission launches");
+        let repository = simulation.universe_repository().clone();
+        advance_missions(simulation.state_mut(), &repository, launched.departure_at);
+        assert_eq!(
+            simulation.state().colonies[0].resources.stock(),
+            stock_before
+                .checked_sub(launched.fuel_cost)
+                .expect("departure consumes only mission fuel"),
+        );
+        let arrival_at = simulation.state().missions[0].plan.outbound_arrival_at;
+
+        let events = advance_missions(simulation.state_mut(), &repository, arrival_at);
+
+        assert!(events.iter().any(|event| matches!(
+            event,
+            MissionEngineEvent::Foundation {
+                foundation: ColonyFoundation {
+                    mission_id,
+                    planet_id,
+                    ..
+                },
+                ..
+            } if *mission_id == launched.mission_id && *planet_id == target
+        )));
+        assert!(simulation.state().fleet(launched.fleet_id).is_none());
+        assert_eq!(simulation.state().colony_foundations.len(), 1);
+        assert_eq!(
+            simulation.state().colony_foundations[0].payload,
+            planetary_analysis_rules().foundation_cost().as_stock(),
+        );
+        assert!(matches!(
+            simulation.state().missions[0].result,
+            Some(MissionResult::Colonize(ColonizationMissionResult {
+                outcome: ColonizationMissionOutcome::FoundationPrepared,
+                colony_ship_consumed: true,
+                ..
+            }))
+        ));
+        assert_eq!(
+            simulation.state().colonies[0].resources.stock(),
+            stock_before
+                .checked_sub(launched.fuel_cost)
+                .and_then(|stock| {
+                    stock.checked_sub(planetary_analysis_rules().foundation_cost())
+                })
+                .expect("the prepared mission consumes fuel and payload"),
+        );
+        assert!(
+            assess_planet_colonizability(
+                simulation.state(),
+                simulation.universe_repository(),
+                simulation.state().player_faction,
+                target,
+            )
+            .blockers
+            .contains(&ColonizationBlocker::FoundationAlreadyPrepared)
+        );
+        let events = simulation.advance(Duration::from_secs(120));
+        assert_eq!(simulation.state().colony_foundations.len(), 1);
+        assert!(!events.iter().any(|event| matches!(
+            event.kind,
+            crate::GameEventKind::ColonyFoundationPrepared(_)
+        )));
+    }
+
+    #[test]
+    fn hostile_planet_refuses_colonization_without_mutating_state() {
+        let (mut simulation, target) = simulation_with_colonization_target();
+        let actor = simulation.state().player_faction;
+        let colony_id = simulation.state().colonies[0].id;
+        let repository = simulation.universe_repository().clone();
+        let foreign = FactionId::new(2);
+        let presence = simulation
+            .state_mut()
+            .planetary_presence_mut(target)
+            .expect("the target presence exists");
+        presence.occupant = Owner::Faction(foreign);
+        presence.population = 2_000;
+        presence.revision = presence
+            .revision
+            .checked_add(1)
+            .expect("test revision remains representable");
+        let before = simulation.state().clone();
+
+        assert!(matches!(
+            launch_colonization_mission(
+                simulation.state_mut(),
+                &repository,
+                actor,
+                colony_id,
+                MissionTarget::Planet {
+                    system_id: target.system_id(),
+                    planet_id: target,
+                },
+            ),
+            Err(MissionError::ColonizationBlocked(
+                ColonizationBlocker::OccupiedPlanet { occupant, .. }
+            )) if occupant == foreign
+        ));
+        assert_eq!(simulation.state(), &before);
+    }
+
+    #[test]
+    fn invalidated_colonization_returns_ship_and_releases_payload() {
+        let (mut simulation, target) = simulation_with_colonization_target();
+        let colony_id = simulation.state().colonies[0].id;
+        let stock_before = simulation.state().colonies[0].resources.stock();
+        let events = simulation.apply_player_action(GameAction::LaunchColonization {
+            colony_id,
+            target: MissionTarget::Planet {
+                system_id: target.system_id(),
+                planet_id: target,
+            },
+        });
+        let launched = events
+            .iter()
+            .find_map(|event| match event.kind {
+                crate::GameEventKind::MissionLaunched(launched) => Some(launched),
+                _ => None,
+            })
+            .expect("the colonization mission launches");
+        let repository = simulation.universe_repository().clone();
+        let foreign = FactionId::new(2);
+        let presence = simulation
+            .state_mut()
+            .planetary_presence_mut(target)
+            .expect("the target presence exists");
+        presence.occupant = Owner::Faction(foreign);
+        presence.population = 2_000;
+        presence.revision = presence
+            .revision
+            .checked_add(1)
+            .expect("test revision remains representable");
+
+        advance_missions(simulation.state_mut(), &repository, launched.departure_at);
+        let return_at = simulation.state().missions[0].plan.return_arrival_at;
+        advance_missions(simulation.state_mut(), &repository, return_at);
+
+        assert!(simulation.state().colony_foundations.is_empty());
+        let fleet = simulation
+            .state()
+            .fleet(launched.fleet_id)
+            .expect("a rejected foundation returns its colony ship");
+        assert!(fleet.is_idle());
+        assert_eq!(fleet.location, FleetLocation::Docked(colony_id));
+        assert_eq!(fleet.composition.quantity(CraftableId::COLONY_SHIP), 1);
+        assert!(matches!(
+            simulation.state().missions[0].result,
+            Some(MissionResult::Colonize(ColonizationMissionResult {
+                outcome: ColonizationMissionOutcome::TargetInvalid(
+                    ColonizationBlocker::OccupiedPlanet { occupant, .. }
+                ),
+                colony_ship_consumed: false,
+                ..
+            })) if occupant == foreign
+        ));
+        assert_eq!(
+            simulation.state().colonies[0].resources.stock(),
+            stock_before
+                .checked_sub(launched.fuel_cost)
+                .expect("only mission fuel is consumed"),
+        );
+        assert!(
+            simulation.state().colonies[0]
+                .resources
+                .reservations()
+                .is_empty()
+        );
     }
 
     #[test]

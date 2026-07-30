@@ -5,9 +5,10 @@ use galactic_domain::{FactionId, Owner, Planet, PlanetId, PlanetKind, ResourceCo
 use serde::Deserialize;
 
 use crate::{
-    AuthorizationError, DiplomaticRelation, GameState, KnowledgeChange, KnowledgeLevel,
-    PlanetResourceProfile, PlanetaryIntelPrecision, StrategicTick, TechnologyUnlock,
-    UniverseRepository, default_ruleset, refresh_planetary_intelligence,
+    AuthorizationError, CraftableCatalog, CraftableId, DiplomaticRelation, GameState,
+    KnowledgeChange, KnowledgeLevel, PlanetResourceProfile, PlanetaryIntelPrecision, ShipClass,
+    StrategicTick, TechnologyUnlock, UniverseRepository, default_ruleset,
+    refresh_planetary_intelligence,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -91,14 +92,16 @@ pub struct PlanetaryAnalysisRules {
     minimum_habitability: u8,
     maximum_colonies: usize,
     foundation_cost: ResourceCost,
+    colony_ship: CraftableId,
     kinds: Vec<PlanetTypeAnalysisRule>,
 }
 
 impl PlanetaryAnalysisRules {
     pub(crate) fn from_config(
         config: PlanetaryAnalysisRulesConfig,
+        craftables: &CraftableCatalog,
     ) -> Result<Self, PlanetaryAnalysisRulesError> {
-        if config.version != 1 {
+        if config.version != 2 {
             return Err(PlanetaryAnalysisRulesError::UnsupportedVersion(
                 config.version,
             ));
@@ -116,6 +119,29 @@ impl PlanetaryAnalysisRules {
             && config.foundation_cost.fuel == 0
         {
             return Err(PlanetaryAnalysisRulesError::EmptyFoundationCost);
+        }
+        let Some(colony_ship) = craftables.id_by_key(&config.colony_ship_id) else {
+            return Err(PlanetaryAnalysisRulesError::UnknownColonyShip);
+        };
+        let colony_ship_definition = craftables.definition(colony_ship);
+        let Some(ship) = colony_ship_definition.ship else {
+            return Err(PlanetaryAnalysisRulesError::InvalidColonyShip(colony_ship));
+        };
+        if ship.class != ShipClass::Colony {
+            return Err(PlanetaryAnalysisRulesError::InvalidColonyShip(colony_ship));
+        }
+        let foundation_cargo = config
+            .foundation_cost
+            .metal
+            .checked_add(config.foundation_cost.crystal)
+            .and_then(|total| total.checked_add(config.foundation_cost.fuel))
+            .ok_or(PlanetaryAnalysisRulesError::FoundationCargoOverflow)?;
+        if ship.cargo_capacity < foundation_cargo {
+            return Err(PlanetaryAnalysisRulesError::FoundationCargoTooSmall {
+                colony_ship,
+                required: foundation_cargo,
+                available: ship.cargo_capacity,
+            });
         }
 
         let mut configured_kinds = BTreeSet::new();
@@ -168,6 +194,7 @@ impl PlanetaryAnalysisRules {
                 config.foundation_cost.crystal,
                 config.foundation_cost.fuel,
             ),
+            colony_ship,
             kinds,
         })
     }
@@ -186,6 +213,10 @@ impl PlanetaryAnalysisRules {
 
     pub const fn foundation_cost(&self) -> ResourceCost {
         self.foundation_cost
+    }
+
+    pub const fn colony_ship(&self) -> CraftableId {
+        self.colony_ship
     }
 
     pub fn rule_for(&self, kind: PlanetKind) -> PlanetTypeAnalysisRule {
@@ -209,6 +240,8 @@ impl PlanetaryAnalysisRules {
         output.push_str(&self.foundation_cost.crystal.to_string());
         output.push(',');
         output.push_str(&self.foundation_cost.fuel.to_string());
+        output.push(':');
+        output.push_str(self.colony_ship.key());
         output.push(';');
         for rule in &self.kinds {
             output.push_str(&kind_fingerprint_tag(rule.kind).to_string());
@@ -277,6 +310,7 @@ pub enum ColonizationBlocker {
     },
     MissingAnalysisReport,
     AlreadyColonized,
+    FoundationAlreadyPrepared,
     OccupiedPlanet {
         occupant: FactionId,
         relation: DiplomaticRelation,
@@ -337,6 +371,14 @@ pub enum PlanetaryAnalysisRulesError {
     InvalidMinimumHabitability(u8),
     InvalidMaximumColonies,
     EmptyFoundationCost,
+    UnknownColonyShip,
+    InvalidColonyShip(CraftableId),
+    FoundationCargoOverflow,
+    FoundationCargoTooSmall {
+        colony_ship: CraftableId,
+        required: u64,
+        available: u64,
+    },
     DuplicatePlanetKind(PlanetKind),
     MissingPlanetKind(PlanetKind),
     InvalidResourceProfile(PlanetKind),
@@ -430,6 +472,9 @@ pub fn assess_planet_colonizability(
     if state.colony_on_planet(planet_id).is_some() {
         blockers.push(ColonizationBlocker::AlreadyColonized);
     }
+    if state.colony_foundation_on_planet(planet_id).is_some() {
+        blockers.push(ColonizationBlocker::FoundationAlreadyPrepared);
+    }
     if let Some(Owner::Faction(occupant)) = state
         .planetary_presence(planet_id)
         .map(|presence| presence.occupant)
@@ -465,7 +510,12 @@ pub fn assess_planet_colonizability(
         .iter()
         .filter(|colony| state.can_manage(actor, colony.owner))
         .collect::<Vec<_>>();
-    if actor_colonies.len() >= rules.maximum_colonies() {
+    let actor_foundations = state
+        .colony_foundations
+        .iter()
+        .filter(|foundation| foundation.owner == actor)
+        .count();
+    if actor_colonies.len().saturating_add(actor_foundations) >= rules.maximum_colonies() {
         blockers.push(ColonizationBlocker::ColonyLimitReached {
             maximum: rules.maximum_colonies(),
         });
@@ -664,6 +714,7 @@ pub(crate) struct PlanetaryAnalysisRulesConfig {
     minimum_habitability: u8,
     maximum_colonies: usize,
     foundation_cost: ResourceCostConfig,
+    colony_ship_id: String,
     kinds: Vec<PlanetTypeAnalysisRuleConfig>,
 }
 
@@ -752,7 +803,7 @@ mod tests {
     fn default_rules_cover_every_planet_kind() {
         let rules = planetary_analysis_rules();
 
-        assert_eq!(rules.version(), 1);
+        assert_eq!(rules.version(), 2);
         for kind in PlanetKind::ALL {
             assert_eq!(rules.rule_for(kind).kind, kind);
         }

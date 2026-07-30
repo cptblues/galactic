@@ -5,9 +5,9 @@ use galactic_domain::{
 };
 
 use crate::{
-    BuildingLevels, CombatReport, ConstructionQueue, CraftInventory, CraftQueue, DiplomacyError,
-    DiplomacyState, DiplomaticRelation, DiscoveryFrontier, FleetState, KnowledgeChange,
-    KnowledgeCounts, KnowledgeLevel, KnowledgeTarget, MissionReport, MissionState,
+    BuildingLevels, ColonyFoundation, CombatReport, ConstructionQueue, CraftInventory, CraftQueue,
+    DiplomacyError, DiplomacyState, DiplomaticRelation, DiscoveryFrontier, FleetState,
+    KnowledgeChange, KnowledgeCounts, KnowledgeLevel, KnowledgeTarget, MissionReport, MissionState,
     PlanetAnalysisReport, PlanetKnowledge, PlanetResourceProfile, PlanetaryIntelligenceReport,
     PlanetaryPresence, ProductionRemainder, ResearchState, SelectionTarget, StartingScenario,
     StartingScenarioError, StrategicClock, StrategicTick, SystemKnowledge, UniverseRepository,
@@ -16,8 +16,8 @@ use crate::{
 
 /// Version of the mutable in-memory state contract.
 ///
-/// Version 21 persists attack commitments and detailed combat reports.
-pub const GAME_STATE_VERSION: u32 = 21;
+/// Version 22 persists colonization commitments and prepared foundations.
+pub const GAME_STATE_VERSION: u32 = 22;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemVisibility {
@@ -62,6 +62,7 @@ pub struct GameState {
     pub next_mission_id: u64,
     pub mission_reports: Vec<MissionReport>,
     pub combat_reports: Vec<CombatReport>,
+    pub colony_foundations: Vec<ColonyFoundation>,
     pub planet_analysis_reports: Vec<PlanetAnalysisReport>,
     pub planetary_presences: Vec<PlanetaryPresence>,
     pub planetary_intelligence_reports: Vec<PlanetaryIntelligenceReport>,
@@ -129,6 +130,7 @@ impl GameState {
             next_mission_id: 0,
             mission_reports: Vec::new(),
             combat_reports: Vec::new(),
+            colony_foundations: Vec::new(),
             planet_analysis_reports: Vec::new(),
             planetary_presences,
             planetary_intelligence_reports: Vec::new(),
@@ -294,6 +296,12 @@ impl GameState {
             .iter()
             .filter(|report| report.planet_id == planet_id)
             .max_by_key(|report| (report.resolved_at, report.mission_id))
+    }
+
+    pub fn colony_foundation_on_planet(&self, planet_id: PlanetId) -> Option<&ColonyFoundation> {
+        self.colony_foundations
+            .iter()
+            .find(|foundation| foundation.planet_id == planet_id)
     }
 
     pub fn planet_analysis_report(&self, planet_id: PlanetId) -> Option<&PlanetAnalysisReport> {

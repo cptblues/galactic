@@ -86,17 +86,24 @@ une implémentation Rust.
 ## Analyse planétaire
 
 `planetary_analysis.ron` configure le seuil minimal d'habitabilité, la limite
-de colonies, l'investissement de fondation et, pour chaque `PlanetKind`, le
-milieu, les potentiels de base, l'éligibilité à une implantation et les
-contraintes reconnues. Le moteur applique ensuite une variation déterministe
-bornée à chaque potentiel afin que deux mondes de même type ne soient pas
-strictement identiques.
+de colonies, l'investissement de fondation, le `CraftableId` du vaisseau-colonie
+et, pour chaque `PlanetKind`, le milieu, les potentiels de base, l'éligibilité à
+une implantation et les contraintes reconnues. Le vaisseau référencé doit
+exister, appartenir à la classe `Colony` et disposer d'une capacité cargo au
+moins égale au chargement de fondation. Le moteur applique ensuite une
+variation déterministe bornée à chaque potentiel afin que deux mondes de même
+type ne soient pas strictement identiques.
 
 Les contraintes reconnues sont `ThinAtmosphere`, `GlobalOcean`,
 `AridClimate`, `CryogenicClimate`, `ExtremeVolcanism` et `NoSolidSurface`.
 Elles sont informatives ; l'éligibilité du type, l'habitabilité, la route, la
 technologie, la limite de colonies et la cargaison de fondation sont évaluées
 séparément et produisent chacune un motif de refus explicite.
+
+Le ruleset par défaut associe cette fonction à `colony_ship`. Sa capacité cargo
+est de 1 400 unités pour un chargement de 1 330 unités. La mission réserve ce
+chargement au lancement mais ne le consomme qu'après validation de la cible à
+l'arrivée.
 
 ## Présences planétaires
 

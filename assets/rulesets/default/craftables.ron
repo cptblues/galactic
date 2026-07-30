@@ -73,7 +73,7 @@
                 class: Colony,
                 cruise_speed: 70,
                 range_hops: 2,
-                cargo_capacity: 300,
+                cargo_capacity: 1400,
                 fuel_per_hop: 30,
             )),
         ),
