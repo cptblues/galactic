@@ -5,8 +5,8 @@
 ## Vue d’ensemble
 
 - **45 issues** au total
-- **21 terminées**
-- **24 à faire**
+- **22 terminées**
+- **23 à faire**
 
 ## Sommaire de la roadmap
 
@@ -44,7 +44,7 @@
 | ✅ | [MVP-025-B](#eng-52) — Ajouter les attaques, le combat V1 et les rapports | [ENG-52](https://cadylo.app/galactic/issue/ENG-52) | P1 | — |
 | ✅ | [MVP-026](#eng-34) — Implémenter le vaisseau-colonie et la mission de colonisation | [ENG-34](https://cadylo.app/galactic/issue/ENG-34) | P1 | 8 |
 | ✅ | [MVP-027](#eng-35) — Initialiser une nouvelle colonie jouable | [ENG-35](https://cadylo.app/galactic/issue/ENG-35) | P1 | 8 |
-| ⬜ | [MVP-028](#eng-36) — Ajouter la gestion multi-colonies | [ENG-36](https://cadylo.app/galactic/issue/ENG-36) | P1 | 8 |
+| ✅ | [MVP-028](#eng-36) — Ajouter la gestion multi-colonies | [ENG-36](https://cadylo.app/galactic/issue/ENG-36) | P1 | 8 |
 | ⬜ | [MVP-029](#eng-37) — Ajouter les missions de transport entre colonies | [ENG-37](https://cadylo.app/galactic/issue/ENG-37) | P1 | 5 |
 | ⬜ | [MVP-029-B](#eng-53) — Ajouter les sites d'extraction et la récolte distante | [ENG-53](https://cadylo.app/galactic/issue/ENG-53) | P1 | — |
 | ⬜ | [MVP-030](#eng-38) — Créer le HUD des flottes et missions | [ENG-38](https://cadylo.app/galactic/issue/ENG-38) | P2 | 8 |
@@ -1353,7 +1353,7 @@ de colonisation.
 | Métadonnée | Valeur |
 |---|---|
 | Issue | [ENG-36](https://cadylo.app/galactic/issue/ENG-36) |
-| Statut | À faire |
+| Statut | Terminée |
 | Priorité | P1 |
 | Estimation | 8 points |
 | Créée le | 23/07/2026 |
@@ -1381,10 +1381,11 @@ Permettre au joueur de gérer plusieurs colonies sans dupliquer les systèmes
 
 ### Critères d'acceptation
 
-- Une action sur une colonie ne modifie pas silencieusement une autre colonie.
-- Les productions scientifiques de toutes les colonies contribuent à la même
-  recherche globale.
-- La navigation entre colonies ne change pas leur simulation déterministe.
+- [x] Une action sur une colonie ne modifie pas silencieusement une autre
+  colonie.
+- [x] Les productions scientifiques de toutes les colonies contribuent à la
+  même recherche globale.
+- [x] La navigation entre colonies ne change pas leur simulation déterministe.
 
 [↑ Retour au sommaire](#sommaire-de-la-roadmap)
 

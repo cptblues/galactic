@@ -14,8 +14,8 @@ use galactic_sim::{
     TimeSpeed, default_ruleset, production_refresh_ticks,
 };
 
-/// Version 24 persists initialized colonies and their stable identity counter.
-pub const SAVE_VERSION: u32 = 24;
+/// Version 25 persists the player's active colony selection.
+pub const SAVE_VERSION: u32 = 25;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SaveGame {
@@ -49,6 +49,7 @@ pub struct MutableGameSave {
     pub planet_knowledge: Vec<PlanetKnowledge>,
     pub colonies: Vec<ColonySave>,
     pub next_colony_id: u64,
+    pub active_colony_id: Option<ColonyId>,
     pub fleets: Vec<FleetSave>,
     pub next_fleet_id: u64,
     pub missions: Vec<MissionState>,
@@ -220,6 +221,7 @@ pub fn snapshot_from_simulation(simulation: &Simulation) -> SaveGame {
                 })
                 .collect(),
             next_colony_id: state.next_colony_id,
+            active_colony_id: state.active_colony_id,
             fleets: state
                 .fleets
                 .iter()
@@ -366,6 +368,7 @@ pub fn restore_from_snapshot(save: &SaveGame) -> Result<Simulation, SaveError> {
         player_faction: save.state.player_faction,
         colonies,
         next_colony_id: save.state.next_colony_id,
+        active_colony_id: save.state.active_colony_id,
         fleets: save
             .state
             .fleets
@@ -814,6 +817,44 @@ mod tests {
     }
 
     #[test]
+    fn active_colony_selection_survives_round_trip() {
+        let (mut simulation, _) = simulation_with_launched_colonization();
+        simulation.advance(Duration::from_secs(123));
+        assert_eq!(simulation.state().colonies.len(), 2);
+
+        simulation.apply_player_action(GameAction::SelectColony {
+            colony_id: ColonyId::new(1),
+        });
+        let save = snapshot_from_simulation(&simulation);
+        let restored = restore_from_snapshot(&save).expect("active colony save is compatible");
+
+        assert_eq!(save.state.active_colony_id, Some(ColonyId::new(1)));
+        assert_eq!(restored.state().active_colony_id, Some(ColonyId::new(1)));
+        assert_eq!(
+            restored
+                .state()
+                .active_player_colony()
+                .map(|colony| colony.id),
+            Some(ColonyId::new(1)),
+        );
+        assert_eq!(restored.state(), simulation.state());
+    }
+
+    #[test]
+    fn unknown_active_colony_is_rejected_during_restore() {
+        let simulation = Simulation::new(UniverseConfig::mvp());
+        let mut save = snapshot_from_simulation(&simulation);
+        save.state.active_colony_id = Some(ColonyId::new(999));
+
+        assert!(matches!(
+            restore_from_snapshot(&save),
+            Err(SaveError::InvalidState(
+                SimulationBuildError::UnknownActiveColony(colony_id),
+            )) if colony_id == ColonyId::new(999)
+        ));
+    }
+
+    #[test]
     fn catalog_changes_are_detected() {
         let simulation = Simulation::new(UniverseConfig::mvp());
         let mut save = snapshot_from_simulation(&simulation);
@@ -1044,7 +1085,7 @@ mod tests {
     }
 
     #[test]
-    fn state_and_save_versions_match_mvp_027() {
+    fn state_and_save_versions_match_mvp_028() {
         let simulation = Simulation::new(UniverseConfig::mvp());
         let save = snapshot_from_simulation(&simulation);
 

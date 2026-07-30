@@ -1,13 +1,13 @@
-use galactic_domain::{FactionId, PlanetId, SystemId};
+use galactic_domain::{ColonyId, FactionId, PlanetId, SystemId};
 
 use crate::{
-    ColonyEstablished, ColonyFoundation, ColonyProductionReport, CommandRejection,
-    ConstructionCompleted, ConstructionQueued, ConstructionRejected, CraftCompleted, CraftQueued,
-    CraftRejected, FleetCreated, FleetCreationRejected, KnowledgeChange,
-    MissionCancellationRejected, MissionLaunchRejected, MissionLaunched, MissionReport,
-    MissionResolution, MissionTransition, PlanetAnalysisRejected, PlanetAnalysisReport,
-    ResearchCompleted, ResearchQueued, ResearchRejected, StrategicDuration, StrategicTick,
-    TimeSpeed,
+    ColonyEstablished, ColonyFoundation, ColonyProductionReport, ColonySelectionRejected,
+    CommandRejection, ConstructionCompleted, ConstructionQueued, ConstructionRejected,
+    CraftCompleted, CraftQueued, CraftRejected, FleetCreated, FleetCreationRejected,
+    KnowledgeChange, MissionCancellationRejected, MissionLaunchRejected, MissionLaunched,
+    MissionReport, MissionResolution, MissionTransition, PlanetAnalysisRejected,
+    PlanetAnalysisReport, ResearchCompleted, ResearchQueued, ResearchRejected, StrategicDuration,
+    StrategicTick, TimeSpeed,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -48,6 +48,8 @@ pub enum GameEventKind {
     CommandRejected(CommandRejection),
     SpeedChanged(TimeSpeed),
     SelectionChanged(SelectionTarget),
+    ActiveColonyChanged(ColonyId),
+    ActiveColonySelectionRejected(ColonySelectionRejected),
     KnowledgeChanged(KnowledgeChange),
     PlanetAnalyzed(PlanetAnalysisReport),
     PlanetAnalysisRejected(PlanetAnalysisRejected),

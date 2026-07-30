@@ -1,8 +1,8 @@
 use galactic_domain::{ColonyId, FactionId, MissionId, PlanetId, SystemId};
 
 use crate::{
-    BuildingKind, CraftableId, FleetComposition, MissionOrder, MissionTarget, StrategicTick,
-    TechnologyId, TimeSpeed,
+    AuthorizationError, BuildingKind, CraftableId, FleetComposition, MissionOrder, MissionTarget,
+    StrategicTick, TechnologyId, TimeSpeed,
 };
 
 /// An action requested from the deterministic simulation.
@@ -18,6 +18,9 @@ pub enum GameAction {
     SelectPlanet {
         system_id: SystemId,
         planet_id: PlanetId,
+    },
+    SelectColony {
+        colony_id: ColonyId,
     },
     ClearSelection,
     QueueBuildingUpgrade {
@@ -64,6 +67,19 @@ pub struct GameCommand {
     pub issuer: FactionId,
     pub issued_at: StrategicTick,
     pub action: GameAction,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColonySelectionError {
+    NotPlayerFaction(FactionId),
+    UnknownColony(ColonyId),
+    Access(AuthorizationError),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ColonySelectionRejected {
+    pub colony_id: ColonyId,
+    pub error: ColonySelectionError,
 }
 
 impl GameCommand {

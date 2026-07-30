@@ -1,6 +1,5 @@
 // MVP-017: dedicated minimal shipyard screen.
 use bevy::prelude::*;
-use galactic_domain::ColonyId;
 use galactic_sim::{
     CraftError, CraftQuote, CraftableId, GameAction, GameEventKind, StrategicDuration,
     craft_progress_ratio, craft_quote, craftable_catalog, craftable_definition, max_craft_queue,
@@ -52,7 +51,6 @@ impl Plugin for CraftUiPlugin {
 #[derive(Resource)]
 pub(crate) struct CraftUiState {
     pub(crate) open: bool,
-    active_colony_id: Option<ColonyId>,
     selected: CraftableId,
     feedback: String,
 }
@@ -61,7 +59,6 @@ impl Default for CraftUiState {
     fn default() -> Self {
         Self {
             open: false,
-            active_colony_id: None,
             selected: craftable_catalog()
                 .ids()
                 .next()
@@ -454,7 +451,6 @@ fn spawn_craft_queue(row: &mut ChildSpawnerCommands) {
 
 fn handle_craft_shortcuts(
     keyboard: Res<ButtonInput<KeyCode>>,
-    simulation: Res<SimulationResource>,
     mut ui: ResMut<CraftUiState>,
     mut management: ResMut<ColonyManagementState>,
     mut research: ResMut<ResearchUiState>,
@@ -463,7 +459,6 @@ fn handle_craft_shortcuts(
         ui.open = !ui.open;
         ui.feedback.clear();
         if ui.open {
-            sync_craft_colony(&mut ui, simulation.simulation());
             management.open = false;
             research.open = false;
         }
@@ -492,17 +487,16 @@ fn handle_craft_buttons(
                 ui.open = !ui.open;
                 ui.feedback.clear();
                 if ui.open {
-                    sync_craft_colony(&mut ui, simulation.simulation());
                     management.open = false;
                     research.open = false;
                 }
             }
             CraftButtonAction::Close => ui.open = false,
             CraftButtonAction::PreviousColony => {
-                cycle_craft_colony(&mut ui, simulation.simulation(), true);
+                cycle_craft_colony(&mut ui, &mut simulation, true);
             }
             CraftButtonAction::NextColony => {
-                cycle_craft_colony(&mut ui, simulation.simulation(), false);
+                cycle_craft_colony(&mut ui, &mut simulation, false);
             }
             CraftButtonAction::Select(craftable) => {
                 ui.selected = craftable;
@@ -514,14 +508,15 @@ fn handle_craft_buttons(
 }
 
 fn capture_craft_feedback(simulation: Res<SimulationResource>, mut ui: ResMut<CraftUiState>) {
+    let active_colony_id = simulation.simulation().state().active_colony_id;
     for event in &simulation.pending_events {
         match event.kind {
-            GameEventKind::CraftQueued(queued) if Some(queued.colony_id) == ui.active_colony_id => {
+            GameEventKind::CraftQueued(queued) if Some(queued.colony_id) == active_colony_id => {
                 let definition = craftable_definition(queued.order.craftable);
                 ui.feedback = format!("{} ajouté à la file.", definition.name);
             }
             GameEventKind::CraftCompleted(completed)
-                if Some(completed.colony_id) == ui.active_colony_id =>
+                if Some(completed.colony_id) == active_colony_id =>
             {
                 let definition = craftable_definition(completed.craftable);
                 ui.feedback = format!(
@@ -530,7 +525,7 @@ fn capture_craft_feedback(simulation: Res<SimulationResource>, mut ui: ResMut<Cr
                 );
             }
             GameEventKind::CraftRejected(rejected)
-                if Some(rejected.colony_id) == ui.active_colony_id =>
+                if Some(rejected.colony_id) == active_colony_id =>
             {
                 ui.feedback = format!("Fabrication refusée : {}", craft_error_text(rejected.error));
             }
@@ -570,14 +565,13 @@ fn update_craft_visibility(
 
 fn update_craft_summary(
     simulation: Res<SimulationResource>,
-    mut ui: ResMut<CraftUiState>,
+    ui: Res<CraftUiState>,
     mut texts: Query<(&CraftTextRole, &mut Text)>,
 ) {
     if !ui.open {
         return;
     }
-    sync_craft_colony(&mut ui, simulation.simulation());
-    let colony = active_colony(&ui, simulation.simulation());
+    let colony = active_colony(simulation.simulation());
 
     for (role, mut text) in &mut texts {
         match role {
@@ -623,7 +617,7 @@ fn update_craftable_buttons(
     if !ui.open {
         return;
     }
-    let colony = active_colony(&ui, simulation.simulation());
+    let colony = active_colony(simulation.simulation());
 
     for (button, interaction, mut background, mut outline) in &mut buttons {
         let selected = button.craftable == ui.selected;
@@ -658,7 +652,7 @@ fn update_craft_detail(
         return;
     }
     let state = simulation.simulation().state();
-    let quote = ui
+    let quote = state
         .active_colony_id
         .map(|colony_id| craft_quote(state, state.player_faction, colony_id, ui.selected))
         .unwrap_or(Err(CraftError::NoShipyardCapacity));
@@ -702,7 +696,7 @@ fn update_craft_queue(
     if !ui.open {
         return;
     }
-    let colony = active_colony(&ui, simulation.simulation());
+    let colony = active_colony(simulation.simulation());
     let label = colony.map_or_else(|| "Aucune colonie contrôlée.".to_string(), craft_queue_text);
 
     for (role, mut text) in &mut texts {
@@ -722,7 +716,7 @@ fn update_craft_queue(
 }
 
 fn queue_selected_craft(simulation: &mut SimulationResource, ui: &mut CraftUiState) {
-    let Some(colony_id) = ui.active_colony_id else {
+    let Some(colony_id) = simulation.simulation().state().active_colony_id else {
         ui.feedback = "Aucune colonie contrôlée.".to_string();
         return;
     };
@@ -903,37 +897,18 @@ fn craft_error_text(error: CraftError) -> String {
     }
 }
 
-fn active_colony<'a>(
-    ui: &CraftUiState,
-    simulation: &'a galactic_sim::Simulation,
-) -> Option<&'a galactic_sim::ColonyState> {
-    ui.active_colony_id
-        .and_then(|colony_id| simulation.state().colony(colony_id))
+fn active_colony(simulation: &galactic_sim::Simulation) -> Option<&galactic_sim::ColonyState> {
+    simulation.state().active_player_colony()
 }
 
-fn sync_craft_colony(ui: &mut CraftUiState, simulation: &galactic_sim::Simulation) {
-    let state = simulation.state();
-    if ui
-        .active_colony_id
-        .and_then(|colony_id| state.colony(colony_id))
-        .is_some_and(|colony| state.can_manage(state.player_faction, colony.owner))
-    {
-        return;
-    }
-    ui.active_colony_id = state.player_colonies().next().map(|colony| colony.id);
-}
-
-fn cycle_craft_colony(ui: &mut CraftUiState, simulation: &galactic_sim::Simulation, reverse: bool) {
-    let colonies = simulation
-        .state()
-        .player_colonies()
-        .map(|colony| colony.id)
-        .collect::<Vec<_>>();
+fn cycle_craft_colony(ui: &mut CraftUiState, simulation: &mut SimulationResource, reverse: bool) {
+    let colonies = simulation.simulation().state().player_colony_ids();
     if colonies.is_empty() {
-        ui.active_colony_id = None;
         return;
     }
-    let current = ui
+    let current = simulation
+        .simulation()
+        .state()
         .active_colony_id
         .and_then(|active| colonies.iter().position(|colony| *colony == active))
         .unwrap_or(0);
@@ -942,8 +917,13 @@ fn cycle_craft_colony(ui: &mut CraftUiState, simulation: &galactic_sim::Simulati
     } else {
         (current + 1) % colonies.len()
     };
-    ui.active_colony_id = Some(colonies[next]);
     ui.feedback.clear();
+    apply_simulation_command(
+        simulation,
+        GameAction::SelectColony {
+            colony_id: colonies[next],
+        },
+    );
 }
 
 fn craftable_button_color(selected: bool, interaction: &Interaction) -> Color {

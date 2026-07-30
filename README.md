@@ -193,3 +193,16 @@ au joueur et les renseignements locaux deviennent exacts. La colonie apparaît
 dans l'inspecteur et dans l'écran de gestion existant, où elle peut lancer ses
 premières constructions. La fondation reste conservée comme provenance de la
 mission, sans compter deux fois dans la limite de colonies.
+
+## MVP-028 — Gestion multi-colonies
+
+La colonie active fait désormais partie de l'état déterministe et persistant.
+Les écrans de gestion planétaire et de chantier orbital partagent la même
+sélection, parcourent une liste ordonnée par `ColonyId` et adressent chaque
+commande économique à la colonie choisie.
+
+Les raccourcis de reconnaissance, d'attaque et de colonisation utilisent cette
+colonie comme origine explicite. Changer de colonie centre la sélection
+stratégique sur sa planète sans modifier ses stocks, bâtiments, énergie ou
+files. La recherche reste globale et additionne les laboratoires de toutes les
+colonies du joueur.

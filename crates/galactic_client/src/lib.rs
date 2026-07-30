@@ -664,7 +664,6 @@ struct AmbiguityPanelText;
 #[derive(Resource)]
 struct ColonyManagementState {
     open: bool,
-    active_colony_id: Option<galactic_domain::ColonyId>,
     selected_building: galactic_sim::BuildingKind,
     feedback: String,
 }
@@ -673,7 +672,6 @@ impl Default for ColonyManagementState {
     fn default() -> Self {
         Self {
             open: false,
-            active_colony_id: None,
             selected_building: galactic_sim::default_building_catalog()
                 .definitions()
                 .next()
@@ -738,6 +736,7 @@ enum ManagementTextRole {
     ToggleLabel,
     Title,
     Colony,
+    ColonyList,
     Feedback,
     BuildingDetail,
     UpgradeLabel,
@@ -1869,6 +1868,16 @@ fn spawn_colony_management_screen(commands: &mut Commands) {
         ))
         .with_children(|root| {
             spawn_management_header(root);
+            root.spawn((
+                Text::new(""),
+                ui_text_font(11.0),
+                TextColor(Color::srgb(0.70, 0.84, 0.88)),
+                Node {
+                    min_height: Val::Px(18.0),
+                    ..default()
+                },
+                ManagementTextRole::ColonyList,
+            ));
             spawn_management_resource_row(root);
             spawn_management_main_row(root);
             root.spawn((
@@ -2882,9 +2891,12 @@ fn capture_colony_management_feedback(
     simulation: Res<SimulationResource>,
     mut management: ResMut<ColonyManagementState>,
 ) {
+    let active_colony_id = simulation.simulation().state().active_colony_id;
     for event in &simulation.pending_events {
         match event.kind {
-            GameEventKind::ConstructionQueued(queued) => {
+            GameEventKind::ConstructionQueued(queued)
+                if Some(queued.colony_id) == active_colony_id =>
+            {
                 let name = &galactic_sim::default_building_catalog()
                     .definition(queued.order.kind)
                     .name;
@@ -2893,13 +2905,17 @@ fn capture_colony_management_feedback(
                     name, queued.order.target_level,
                 );
             }
-            GameEventKind::ConstructionCompleted(completed) => {
+            GameEventKind::ConstructionCompleted(completed)
+                if Some(completed.colony_id) == active_colony_id =>
+            {
                 let name = &galactic_sim::default_building_catalog()
                     .definition(completed.kind)
                     .name;
                 management.feedback = format!("{} niveau {} terminé.", name, completed.new_level,);
             }
-            GameEventKind::ConstructionRejected(rejected) => {
+            GameEventKind::ConstructionRejected(rejected)
+                if Some(rejected.colony_id) == active_colony_id =>
+            {
                 management.feedback = format!(
                     "Amélioration refusée : {}",
                     construction_error_text(rejected.error),
@@ -2912,14 +2928,10 @@ fn capture_colony_management_feedback(
 
 fn update_colony_management_visibility(
     simulation: Res<SimulationResource>,
-    mut management: ResMut<ColonyManagementState>,
+    management: Res<ColonyManagementState>,
     mut roots: Query<&mut Visibility, With<ColonyManagementRoot>>,
     mut texts: Query<(&ManagementTextRole, &mut Text)>,
 ) {
-    if management.open {
-        sync_management_colony(&mut management, simulation.simulation());
-    }
-
     for mut visibility in &mut roots {
         let next = if management.open {
             Visibility::Visible
@@ -2931,7 +2943,7 @@ fn update_colony_management_visibility(
         }
     }
 
-    let colony = active_management_colony(&management, simulation.simulation());
+    let colony = active_management_colony(simulation.simulation());
     let colonies = player_colony_ids(simulation.simulation());
     let current_index = colony.and_then(|active| {
         colonies
@@ -2965,6 +2977,7 @@ fn update_colony_management_visibility(
                     })
                     .unwrap_or_else(|| "Aucune colonie".to_string()),
             ),
+            ManagementTextRole::ColonyList => Some(colony_list_label(simulation.simulation())),
             ManagementTextRole::Feedback => Some(management.feedback.clone()),
             ManagementTextRole::BuildingDetail
             | ManagementTextRole::UpgradeLabel
@@ -2991,7 +3004,7 @@ fn update_colony_management_resources(
     if !management.open {
         return;
     }
-    let Some(colony) = active_management_colony(&management, simulation.simulation()) else {
+    let Some(colony) = active_management_colony(simulation.simulation()) else {
         return;
     };
     let production = galactic_sim::colony_production_snapshot(colony);
@@ -3022,7 +3035,7 @@ fn update_colony_management_buildings(
     if !management.open {
         return;
     }
-    let Some(colony) = active_management_colony(&management, simulation.simulation()) else {
+    let Some(colony) = active_management_colony(simulation.simulation()) else {
         return;
     };
     let catalog = galactic_sim::default_building_catalog();
@@ -3068,7 +3081,7 @@ fn update_colony_management_detail(
     if !management.open {
         return;
     }
-    let Some(colony) = active_management_colony(&management, simulation.simulation()) else {
+    let Some(colony) = active_management_colony(simulation.simulation()) else {
         return;
     };
 
@@ -3115,7 +3128,7 @@ fn update_colony_management_queue(
     if !management.open {
         return;
     }
-    let Some(colony) = active_management_colony(&management, simulation.simulation()) else {
+    let Some(colony) = active_management_colony(simulation.simulation()) else {
         return;
     };
 
@@ -3138,25 +3151,11 @@ fn toggle_colony_management(
 ) {
     management.open = !management.open;
     management.feedback.clear();
-    if management.open {
-        sync_management_colony(management, simulation.simulation());
-        select_active_management_colony(management, simulation);
+    if management.open
+        && let Some(colony_id) = selected_player_colony_id(simulation.simulation())
+    {
+        apply_simulation_command(simulation, GameAction::SelectColony { colony_id });
     }
-}
-
-fn sync_management_colony(management: &mut ColonyManagementState, simulation: &Simulation) {
-    let state = simulation.state();
-    let active_is_valid = management.active_colony_id.is_some_and(|colony_id| {
-        state
-            .colony(colony_id)
-            .is_some_and(|colony| state.can_manage(state.player_faction, colony.owner))
-    });
-    if active_is_valid {
-        return;
-    }
-
-    management.active_colony_id = selected_player_colony_id(simulation)
-        .or_else(|| state.player_colonies().next().map(|colony| colony.id));
 }
 
 fn selected_player_colony_id(simulation: &Simulation) -> Option<galactic_domain::ColonyId> {
@@ -3166,7 +3165,7 @@ fn selected_player_colony_id(simulation: &Simulation) -> Option<galactic_domain:
         SelectionTarget::System(system_id) => state
             .player_colonies()
             .find(|colony| colony.system_id == system_id),
-        SelectionTarget::None => state.player_home_colony(),
+        SelectionTarget::None => state.active_player_colony(),
     }?;
     state
         .can_manage(state.player_faction, colony.owner)
@@ -3174,20 +3173,35 @@ fn selected_player_colony_id(simulation: &Simulation) -> Option<galactic_domain:
 }
 
 fn player_colony_ids(simulation: &Simulation) -> Vec<galactic_domain::ColonyId> {
-    let state = simulation.state();
-    state.player_colonies().map(|colony| colony.id).collect()
+    simulation.state().player_colony_ids()
 }
 
-fn active_management_colony<'a>(
-    management: &ColonyManagementState,
-    simulation: &'a Simulation,
-) -> Option<&'a galactic_sim::ColonyState> {
-    let colony_id = management.active_colony_id?;
-    let colony = simulation.state().colony(colony_id)?;
-    simulation
-        .state()
-        .can_manage(simulation.state().player_faction, colony.owner)
-        .then_some(colony)
+fn active_management_colony(simulation: &Simulation) -> Option<&galactic_sim::ColonyState> {
+    simulation.state().active_player_colony()
+}
+
+fn colony_list_label(simulation: &Simulation) -> String {
+    let state = simulation.state();
+    let active = state.active_colony_id;
+    let entries = state
+        .player_colony_ids()
+        .into_iter()
+        .filter_map(|colony_id| {
+            state.colony(colony_id).map(|colony| {
+                let marker = if Some(colony_id) == active {
+                    "●"
+                } else {
+                    "○"
+                };
+                format!("{marker} C{} {}", colony_id.raw(), colony.name)
+            })
+        })
+        .collect::<Vec<_>>();
+    if entries.is_empty() {
+        "COLONIES : aucune".to_string()
+    } else {
+        format!("COLONIES : {}", entries.join("   "))
+    }
 }
 
 fn cycle_management_colony(
@@ -3197,11 +3211,12 @@ fn cycle_management_colony(
 ) {
     let colonies = player_colony_ids(simulation.simulation());
     if colonies.is_empty() {
-        management.active_colony_id = None;
         return;
     }
 
-    let current = management
+    let current = simulation
+        .simulation()
+        .state()
         .active_colony_id
         .and_then(|active| colonies.iter().position(|id| *id == active))
         .unwrap_or(0);
@@ -3210,25 +3225,11 @@ fn cycle_management_colony(
     } else {
         (current + 1) % colonies.len()
     };
-    management.active_colony_id = Some(colonies[next]);
     management.feedback.clear();
-    select_active_management_colony(management, simulation);
-}
-
-fn select_active_management_colony(
-    management: &ColonyManagementState,
-    simulation: &mut SimulationResource,
-) {
-    let Some(colony) = active_management_colony(management, simulation.simulation()) else {
-        return;
-    };
-    let system_id = colony.system_id;
-    let planet_id = colony.planet_id;
     apply_simulation_command(
         simulation,
-        GameAction::SelectPlanet {
-            system_id,
-            planet_id,
+        GameAction::SelectColony {
+            colony_id: colonies[next],
         },
     );
 }
@@ -3237,7 +3238,7 @@ fn queue_selected_management_upgrade(
     management: &mut ColonyManagementState,
     simulation: &mut SimulationResource,
 ) {
-    let Some(colony_id) = management.active_colony_id else {
+    let Some(colony_id) = simulation.simulation().state().active_colony_id else {
         management.feedback = "Aucune colonie active.".to_string();
         return;
     };
@@ -3969,7 +3970,7 @@ fn selected_probe_context(
             return None;
         }
     };
-    Some((state.player_home_colony()?.id, target))
+    Some((state.active_player_colony()?.id, target))
 }
 
 fn selected_analysis_target(simulation: &Simulation) -> Option<PlanetId> {
@@ -4002,7 +4003,7 @@ fn selected_attack_context(
         return None;
     }
     Some((
-        state.player_home_colony()?.id,
+        state.active_player_colony()?.id,
         MissionTarget::Planet {
             system_id,
             planet_id,
@@ -4021,7 +4022,7 @@ fn selected_colonization_context(
     else {
         return None;
     };
-    let colony_id = state.player_home_colony()?.id;
+    let colony_id = state.active_player_colony()?.id;
     assess_planet_colonizability(
         state,
         simulation.universe_repository(),
@@ -4901,6 +4902,10 @@ fn update_ui(
     let repository = simulation.universe_repository();
     let state = simulation.state();
     let selected = selection_label(state.selected);
+    let active_colony = state
+        .active_player_colony()
+        .map(|colony| format!("C{} {}", colony.id.raw(), colony.name))
+        .unwrap_or_else(|| "aucune".to_string());
     let last_event = log
         .last_event
         .map(event_label)
@@ -4930,13 +4935,14 @@ fn update_ui(
     };
 
     let next = format!(
-        "Galactic MVP | échelle {} ({}) | graphique {:?} | {} | tick {} | vitesse {} | cible {}\nSystèmes {}/{} | Secteurs connus {}/{} | Routes {}/{} | Détectés/Sondés/Analysés/Colonisés {}/{}/{}/{} | debug {} | {}\n{}",
+        "Galactic MVP | échelle {} ({}) | graphique {:?} | {} | tick {} | vitesse {} | colonie active {} | cible {}\nSystèmes {}/{} | Secteurs connus {}/{} | Routes {}/{} | Détectés/Sondés/Analysés/Colonisés {}/{}/{}/{} | debug {} | {}\n{}",
         navigation.scale_preset.label(),
         navigation.scale_preset.system_count(),
         navigation.preset,
         view_label,
         state.clock.current_tick(),
         state.clock.speed(),
+        active_colony,
         selected,
         visible_system_count,
         universe.systems.len(),
@@ -5077,14 +5083,14 @@ fn home_inspector_content(simulation: &Simulation) -> InspectorContent {
     let Some(faction) = state.player_faction_state() else {
         return inspector_error("Faction joueur invalide");
     };
-    let Some(colony) = state.player_home_colony() else {
-        return inspector_error("Colonie mère introuvable");
+    let Some(colony) = state.active_player_colony() else {
+        return inspector_error("Colonie active introuvable");
     };
     let Some(system) = simulation.universe().system(colony.system_id) else {
-        return inspector_error("Système mère introuvable");
+        return inspector_error("Système de la colonie active introuvable");
     };
     let Some(planet) = simulation.universe_repository().planet(colony.planet_id) else {
-        return inspector_error("Planète mère introuvable");
+        return inspector_error("Planète de la colonie active introuvable");
     };
 
     InspectorContent {
@@ -5723,7 +5729,11 @@ fn colonizability_text(
     let cost = assessment.foundation_cost;
     if assessment.is_colonizable() {
         let colony_ship = default_ruleset().planetary_analysis().colony_ship();
-        let ship_ready = state.player_home_colony().is_some_and(|colony| {
+        let active_colony = state.active_player_colony();
+        let origin = active_colony
+            .map(|colony| colony.name.as_str())
+            .unwrap_or("aucune colonie active");
+        let ship_ready = active_colony.is_some_and(|colony| {
             colony.inventory.quantity(colony_ship) > 0
                 || state.fleets.iter().any(|fleet| {
                     fleet.is_idle()
@@ -5733,9 +5743,13 @@ fn colonizability_text(
                 })
         });
         let ship_status = if ship_ready {
-            "Arche Pionnière disponible — appuyez sur N pour lancer la mission."
+            format!(
+                "Depuis {origin} : Arche Pionnière disponible — appuyez sur N pour lancer la mission."
+            )
         } else {
-            "Arche Pionnière manquante — construisez-en une au chantier orbital."
+            format!(
+                "Depuis {origin} : Arche Pionnière manquante — construisez-en une au chantier orbital."
+            )
         };
         return format!(
             "COLONISABILITÉ — ÉLIGIBLE
@@ -6120,6 +6134,14 @@ fn event_label(event: GameEvent) -> String {
         GameEventKind::SelectionChanged(selection) => {
             format!("selection {}", selection_label(selection))
         }
+        GameEventKind::ActiveColonyChanged(colony_id) => {
+            format!("colonie active : C{}", colony_id.raw())
+        }
+        GameEventKind::ActiveColonySelectionRejected(rejected) => format!(
+            "sélection de la colonie C{} refusée : {:?}",
+            rejected.colony_id.raw(),
+            rejected.error,
+        ),
         GameEventKind::KnowledgeChanged(change) => {
             let target = match change.target {
                 KnowledgeTarget::System(id) => {
@@ -6663,19 +6685,17 @@ VmSwap:\t      2048 kB
     }
 
     #[test]
-    fn management_defaults_to_selected_player_colony() {
+    fn management_uses_the_persisted_active_colony() {
         let simulation = Simulation::new(UniverseConfig::mvp());
-        let mut management = ColonyManagementState::default();
-
-        sync_management_colony(&mut management, &simulation);
 
         assert_eq!(
-            management.active_colony_id,
+            active_management_colony(&simulation).map(|colony| colony.id),
             simulation
                 .state()
-                .player_home_colony()
+                .active_player_colony()
                 .map(|colony| colony.id),
         );
+        assert!(colony_list_label(&simulation).contains("● C0 Port-Sillage"));
     }
 
     #[test]
@@ -6685,12 +6705,32 @@ VmSwap:\t      2048 kB
             pending_events: Vec::new(),
         };
         let mut management = ColonyManagementState::default();
-        sync_management_colony(&mut management, simulation.simulation());
-        let initial = management.active_colony_id;
+        let initial = simulation.simulation().state().active_colony_id;
 
         cycle_management_colony(&mut management, &mut simulation, false);
 
-        assert_eq!(management.active_colony_id, initial,);
+        assert_eq!(simulation.simulation().state().active_colony_id, initial);
+    }
+
+    #[test]
+    fn management_colony_cycle_updates_the_shared_selection() {
+        let mut simulation = SimulationResource {
+            simulation: Simulation::new(UniverseConfig::mvp()),
+            pending_events: Vec::new(),
+        };
+        let mut second = simulation.simulation().state().colonies[0].clone();
+        second.id = galactic_domain::ColonyId::new(1);
+        second.name = "Relais Boréal".to_string();
+        simulation.simulation.state_mut().colonies.push(second);
+        let mut management = ColonyManagementState::default();
+
+        cycle_management_colony(&mut management, &mut simulation, false);
+
+        assert_eq!(
+            simulation.simulation().state().active_colony_id,
+            Some(galactic_domain::ColonyId::new(1)),
+        );
+        assert!(colony_list_label(simulation.simulation()).contains("● C1 Relais Boréal"));
     }
 
     #[test]

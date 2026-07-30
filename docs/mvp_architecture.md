@@ -1389,3 +1389,28 @@ Versions après ce checkpoint :
 - `GAME_STATE_VERSION = 23` ;
 - `SAVE_VERSION = 24` ;
 - `RULESET_SCHEMA_VERSION = 10`.
+
+## MVP-028 — Gestion multi-colonies
+
+`GameState::active_colony_id` est l'unique sélection de colonie active pour le
+joueur. Elle est modifiée par `GameAction::SelectColony`, validée contre le
+propriétaire de la colonie et sauvegardée avec le reste de l'état. La commande
+met aussi la sélection stratégique sur la planète concernée, mais ne touche à
+aucun état économique.
+
+Les écrans de gestion planétaire et de chantier orbital lisent la même
+sélection. Leur navigation parcourt `GameState::player_colony_ids()`, triée par
+identifiant stable, et toutes les commandes locales conservent un `ColonyId`
+explicite. Les lancements de mission utilisent également la colonie active
+comme origine au lieu de revenir implicitement à la colonie mère.
+
+Stocks, énergie, bâtiments, files de construction, chantier et inventaire
+restent portés par chaque `ColonyState`. La recherche reste portée une seule
+fois par `GameState::research` ; sa cadence additionne les laboratoires de
+toutes les colonies contrôlées et ignore les colonies étrangères.
+
+Versions après ce checkpoint :
+
+- `GAME_STATE_VERSION = 24` ;
+- `SAVE_VERSION = 25` ;
+- `RULESET_SCHEMA_VERSION` reste 10.

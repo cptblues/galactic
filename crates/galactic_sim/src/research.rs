@@ -702,7 +702,7 @@ fn leak_non_empty<T>(value: String, error: T) -> Result<&'static str, T> {
 
 #[cfg(test)]
 mod tests {
-    use galactic_domain::UniverseConfig;
+    use galactic_domain::{ColonyId, FactionId, Owner, UniverseConfig};
 
     use crate::{BuildingKind, Simulation, default_building_catalog};
 
@@ -754,6 +754,34 @@ mod tests {
             simulation.state().research.queue_len(),
             technology_catalog().ids().count(),
         );
+    }
+
+    #[test]
+    fn every_player_laboratory_contributes_to_the_global_research_output() {
+        let mut simulation = simulation_with_lab();
+        let actor = simulation.state().player_faction;
+        let one_lab = research_output_milli_points_per_tick(simulation.state(), actor);
+        assert!(one_lab > 0);
+
+        let mut second = simulation.state().colonies[0].clone();
+        second.id = ColonyId::new(1);
+        second.name = "Laboratoire Boréal".to_string();
+        second.buildings.set_level(BuildingKind::RESEARCH_LAB, 2);
+        second.energy = default_building_catalog().energy_grid_for_levels(second.buildings);
+        simulation.state_mut().colonies.push(second);
+
+        let mut foreign = simulation.state().colonies[0].clone();
+        foreign.id = ColonyId::new(99);
+        foreign.owner = Owner::Faction(FactionId::new(2));
+        foreign.buildings.set_level(BuildingKind::RESEARCH_LAB, 3);
+        foreign.energy = default_building_catalog().energy_grid_for_levels(foreign.buildings);
+        simulation.state_mut().colonies.push(foreign);
+
+        assert_eq!(
+            research_output_milli_points_per_tick(simulation.state(), actor),
+            one_lab.saturating_mul(3),
+        );
+        assert_eq!(research_lab_level_total(simulation.state(), actor), 3);
     }
 
     #[test]

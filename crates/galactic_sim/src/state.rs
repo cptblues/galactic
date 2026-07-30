@@ -16,8 +16,8 @@ use crate::{
 
 /// Version of the mutable in-memory state contract.
 ///
-/// Version 23 persists initialized colonies and their stable identity counter.
-pub const GAME_STATE_VERSION: u32 = 23;
+/// Version 24 persists the player's active colony selection.
+pub const GAME_STATE_VERSION: u32 = 24;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemVisibility {
@@ -57,6 +57,7 @@ pub struct GameState {
     pub player_faction: FactionId,
     pub colonies: Vec<ColonyState>,
     pub next_colony_id: u64,
+    pub active_colony_id: Option<ColonyId>,
     pub fleets: Vec<FleetState>,
     pub next_fleet_id: u64,
     pub missions: Vec<MissionState>,
@@ -131,6 +132,7 @@ impl GameState {
                 .raw()
                 .checked_add(1)
                 .expect("the starting colony identity remains representable"),
+            active_colony_id: Some(home.id),
             fleets: Vec::new(),
             next_fleet_id: 0,
             missions: Vec::new(),
@@ -246,6 +248,15 @@ impl GameState {
             .filter(|colony| self.can_manage(self.player_faction, colony.owner))
     }
 
+    pub fn player_colony_ids(&self) -> Vec<ColonyId> {
+        let mut ids = self
+            .player_colonies()
+            .map(|colony| colony.id)
+            .collect::<Vec<_>>();
+        ids.sort_by_key(|id| id.raw());
+        ids
+    }
+
     pub fn colony(&self, id: ColonyId) -> Option<&ColonyState> {
         self.colonies.iter().find(|colony| colony.id == id)
     }
@@ -261,7 +272,13 @@ impl GameState {
     }
 
     pub fn player_home_colony(&self) -> Option<&ColonyState> {
-        self.player_colonies().next()
+        self.player_colonies().min_by_key(|colony| colony.id)
+    }
+
+    pub fn active_player_colony(&self) -> Option<&ColonyState> {
+        let colony = self.colony(self.active_colony_id?)?;
+        self.can_manage(self.player_faction, colony.owner)
+            .then_some(colony)
     }
 
     pub fn fleet(&self, id: FleetId) -> Option<&FleetState> {
@@ -835,6 +852,19 @@ mod tests {
             .expect("home colony is indexed");
 
         assert_eq!(colony.name, "Port-Sillage");
+    }
+
+    #[test]
+    fn home_colony_is_the_initial_active_colony() {
+        let universe = UniverseRepository::generate(UniverseConfig::mvp());
+        let state = GameState::new(&universe);
+
+        assert_eq!(state.active_colony_id, Some(ColonyId::new(0)));
+        assert_eq!(
+            state.active_player_colony().map(|colony| colony.id),
+            state.player_home_colony().map(|colony| colony.id),
+        );
+        assert_eq!(state.player_colony_ids(), vec![ColonyId::new(0)]);
     }
 
     #[test]

@@ -8,22 +8,23 @@ use galactic_domain::{
 };
 
 use crate::{
-    AttackMissionOutcome, BuildingCatalogError, ColonizationMissionOutcome,
-    ColonyFoundationStateError, CombatReportStatus, CommandRejection, ConstructionQueueError,
-    CraftStateError, DiplomacyError, DiplomacyState, FactionKind, FleetAssignment, FleetStateError,
-    GAME_STATE_VERSION, GameAction, GameCommand, GameEvent, GameEventKind, GameState,
-    KnowledgeLevel, MissionEngineEvent, MissionKind, MissionPhase, MissionResult,
-    MissionStateError, PlanetAnalysisStateError, PlanetaryIntelPrecision,
-    PlanetaryPresenceStateError, ResearchStateError, SelectionTarget, StartingScenario,
-    StartingScenarioError, StrategicDuration, TimeSpeed, UniverseIndexError, UniverseRepository,
-    advance_colony_construction, advance_colony_craft, advance_missions, advance_research,
-    analyze_planet, build_planet_analysis_report, cancel_mission, default_building_catalog,
-    enqueue_building_upgrade, enqueue_craft, enqueue_research, form_fleet, launch_attack_mission,
-    launch_colonization_mission, launch_mission, launch_probe_mission, planetary_analysis_rules,
-    queue_colony_production, refresh_planetary_intelligence, storage_capacity,
-    validate_colony_foundations, validate_construction_queue, validate_craft_state,
-    validate_fleet_state, validate_mission_state, validate_planet_analysis_state,
-    validate_planetary_presence_state, validate_research_state,
+    AttackMissionOutcome, AuthorizationError, BuildingCatalogError, ColonizationMissionOutcome,
+    ColonyFoundationStateError, ColonySelectionError, ColonySelectionRejected, CombatReportStatus,
+    CommandRejection, ConstructionQueueError, CraftStateError, DiplomacyError, DiplomacyState,
+    FactionKind, FleetAssignment, FleetStateError, GAME_STATE_VERSION, GameAction, GameCommand,
+    GameEvent, GameEventKind, GameState, KnowledgeLevel, MissionEngineEvent, MissionKind,
+    MissionPhase, MissionResult, MissionStateError, PlanetAnalysisStateError,
+    PlanetaryIntelPrecision, PlanetaryPresenceStateError, ResearchStateError, SelectionTarget,
+    StartingScenario, StartingScenarioError, StrategicDuration, TimeSpeed, UniverseIndexError,
+    UniverseRepository, advance_colony_construction, advance_colony_craft, advance_missions,
+    advance_research, analyze_planet, build_planet_analysis_report, cancel_mission,
+    default_building_catalog, enqueue_building_upgrade, enqueue_craft, enqueue_research,
+    form_fleet, launch_attack_mission, launch_colonization_mission, launch_mission,
+    launch_probe_mission, planetary_analysis_rules, queue_colony_production,
+    refresh_planetary_intelligence, storage_capacity, validate_colony_foundations,
+    validate_construction_queue, validate_craft_state, validate_fleet_state,
+    validate_mission_state, validate_planet_analysis_state, validate_planetary_presence_state,
+    validate_research_state,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +46,12 @@ pub enum SimulationBuildError {
     InvalidNextColonyId {
         next_colony_id: u64,
         existing_colony_id: ColonyId,
+    },
+    MissingActivePlayerColony,
+    UnknownActiveColony(ColonyId),
+    InvalidActiveColonyAccess {
+        colony_id: ColonyId,
+        error: AuthorizationError,
     },
     EmptyColonyName(ColonyId),
     InvalidColonyBuildings {
@@ -298,6 +305,14 @@ impl Simulation {
                 system_id,
                 planet_id,
             } => self.select_planet(system_id, planet_id),
+            GameAction::SelectColony { colony_id } => {
+                match self.select_active_colony(issuer, colony_id) {
+                    Ok(events) => events,
+                    Err(error) => vec![GameEventKind::ActiveColonySelectionRejected(
+                        ColonySelectionRejected { colony_id, error },
+                    )],
+                }
+            }
             GameAction::ClearSelection => self.set_selection(SelectionTarget::None),
             GameAction::QueueBuildingUpgrade { colony_id, kind } => {
                 match enqueue_building_upgrade(&mut self.state, issuer, colony_id, kind) {
@@ -699,6 +714,35 @@ impl Simulation {
         self.state.selected = selection;
         vec![GameEventKind::SelectionChanged(selection)]
     }
+
+    fn select_active_colony(
+        &mut self,
+        actor: FactionId,
+        colony_id: ColonyId,
+    ) -> Result<Vec<GameEventKind>, ColonySelectionError> {
+        if actor != self.state.player_faction {
+            return Err(ColonySelectionError::NotPlayerFaction(actor));
+        }
+        let colony = self
+            .state
+            .colony(colony_id)
+            .ok_or(ColonySelectionError::UnknownColony(colony_id))?;
+        self.state
+            .authorize_management(actor, colony.owner)
+            .map_err(ColonySelectionError::Access)?;
+        let selection = SelectionTarget::Planet {
+            system_id: colony.system_id,
+            planet_id: colony.planet_id,
+        };
+
+        let mut events = Vec::with_capacity(2);
+        if self.state.active_colony_id != Some(colony_id) {
+            self.state.active_colony_id = Some(colony_id);
+            events.push(GameEventKind::ActiveColonyChanged(colony_id));
+        }
+        events.extend(self.set_selection(selection));
+        Ok(events)
+    }
 }
 
 fn validate_state(
@@ -900,6 +944,24 @@ fn validate_state(
                 colony_id: colony.id,
                 planet_id: colony.planet_id,
             });
+        }
+    }
+
+    match state.active_colony_id {
+        None if state.player_colonies().next().is_some() => {
+            return Err(SimulationBuildError::MissingActivePlayerColony);
+        }
+        None => {}
+        Some(colony_id) => {
+            let colony = state
+                .colony(colony_id)
+                .ok_or(SimulationBuildError::UnknownActiveColony(colony_id))?;
+            state
+                .authorize_management(state.player_faction, colony.owner)
+                .map_err(|error| SimulationBuildError::InvalidActiveColonyAccess {
+                    colony_id,
+                    error,
+                })?;
         }
     }
 
@@ -1499,6 +1561,152 @@ mod tests {
                     planet_id,
                 }),
             )]
+        );
+    }
+
+    #[test]
+    fn active_colony_selection_is_explicit_and_updates_strategic_selection() {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+        let mut second = simulation
+            .state()
+            .player_home_colony()
+            .expect("home colony exists")
+            .clone();
+        second.id = ColonyId::new(1);
+        second.name = "Relais Boréal".to_string();
+        let target = simulation
+            .state()
+            .planet_knowledge
+            .iter()
+            .find(|knowledge| knowledge.planet_id != second.planet_id)
+            .expect("the universe contains another planet")
+            .planet_id;
+        second.system_id = target.system_id();
+        second.planet_id = target;
+        simulation.state_mut().colonies.push(second);
+        simulation.state_mut().next_colony_id = 2;
+
+        let colonies_before = simulation.state().colonies.clone();
+        let research_before = simulation.state().research.clone();
+        let clock_before = simulation.state().clock;
+        let events = simulation.apply_player_action(GameAction::SelectColony {
+            colony_id: ColonyId::new(1),
+        });
+
+        assert_eq!(simulation.state().active_colony_id, Some(ColonyId::new(1)));
+        assert_eq!(
+            simulation.state().selected,
+            SelectionTarget::Planet {
+                system_id: target.system_id(),
+                planet_id: target,
+            },
+        );
+        assert_eq!(simulation.state().colonies, colonies_before);
+        assert_eq!(simulation.state().research, research_before);
+        assert_eq!(simulation.state().clock, clock_before);
+        assert_eq!(
+            events,
+            vec![
+                GameEvent::new(
+                    simulation.state().player_faction,
+                    simulation.state().clock.current_tick(),
+                    GameEventKind::ActiveColonyChanged(ColonyId::new(1)),
+                ),
+                GameEvent::new(
+                    simulation.state().player_faction,
+                    simulation.state().clock.current_tick(),
+                    GameEventKind::SelectionChanged(SelectionTarget::Planet {
+                        system_id: target.system_id(),
+                        planet_id: target,
+                    }),
+                ),
+            ],
+        );
+    }
+
+    #[test]
+    fn active_colony_selection_rejects_a_foreign_colony_atomically() {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+        let player = simulation.state().player_faction;
+        let initial_active = simulation.state().active_colony_id;
+        let initial_selection = simulation.state().selected;
+        let mut foreign = simulation
+            .state()
+            .player_home_colony()
+            .expect("home colony exists")
+            .clone();
+        foreign.id = ColonyId::new(99);
+        foreign.owner = Owner::Faction(FactionId::new(2));
+        simulation.state_mut().colonies.push(foreign);
+
+        let events = simulation.apply_player_action(GameAction::SelectColony {
+            colony_id: ColonyId::new(99),
+        });
+
+        assert_eq!(simulation.state().active_colony_id, initial_active);
+        assert_eq!(simulation.state().selected, initial_selection);
+        assert!(matches!(
+            events.as_slice(),
+            [GameEvent {
+                kind: GameEventKind::ActiveColonySelectionRejected(
+                    ColonySelectionRejected {
+                        colony_id,
+                        error: ColonySelectionError::Access(
+                            AuthorizationError::NotOwner { actor, owner },
+                        ),
+                    },
+                ),
+                ..
+            }] if *colony_id == ColonyId::new(99)
+                && *actor == player
+                && *owner == FactionId::new(2)
+        ));
+    }
+
+    #[test]
+    fn colony_scoped_construction_does_not_modify_another_colony() {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+        let mut second = simulation
+            .state()
+            .player_home_colony()
+            .expect("home colony exists")
+            .clone();
+        second.id = ColonyId::new(1);
+        second.name = "Atelier Austral".to_string();
+        simulation.state_mut().colonies.push(second);
+        let home_before = simulation
+            .state()
+            .colony(ColonyId::new(0))
+            .expect("home colony exists")
+            .clone();
+
+        let events = simulation.apply_player_action(GameAction::QueueBuildingUpgrade {
+            colony_id: ColonyId::new(1),
+            kind: BuildingKind::METAL_MINE,
+        });
+
+        assert!(matches!(
+            events.as_slice(),
+            [GameEvent {
+                kind: GameEventKind::ConstructionQueued(queued),
+                ..
+            }] if queued.colony_id == ColonyId::new(1)
+        ));
+        assert_eq!(
+            simulation
+                .state()
+                .colony(ColonyId::new(0))
+                .expect("home colony exists"),
+            &home_before,
+        );
+        assert_eq!(
+            simulation
+                .state()
+                .colony(ColonyId::new(1))
+                .expect("second colony exists")
+                .construction_queue
+                .len(),
+            1,
         );
     }
 
