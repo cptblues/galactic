@@ -4,7 +4,7 @@ Galactic charge son ruleset au démarrage depuis
 `assets/rulesets/default/`. La variable d'environnement
 `GALACTIC_RULESET_DIR` permet de sélectionner un autre dossier.
 
-Le ruleset est composé de dix fichiers RON :
+Le ruleset est composé de onze fichiers RON :
 
 - `manifest.ron` : identifiant et versions ;
 - `economy.ron` : stockage de base, limites de files et cadence de production ;
@@ -18,6 +18,8 @@ Le ruleset est composé de dix fichiers RON :
   terrestres ou orbitales ;
 - `combat.ron` : rounds, variation, récupération et statistiques des
   vaisseaux militaires ;
+- `extraction.ron` : ressource, réserve, rendement et durée de récolte des
+  sites distants par type de planète ;
 - `starting_scenario.ron` : faction joueur, colonie, ressources et bâtiments initiaux.
 
 Les durées de construction et de fabrication sont exprimées en secondes dans
@@ -145,6 +147,21 @@ référence un `CraftableId` existant et définit attaque, défense et durabilit
 Modifier une statistique ou un paramètre exige une nouvelle version de contenu.
 Ajouter ou retirer un identifiant de vaisseau militaire change l'empreinte
 structurelle et rend explicitement incompatibles les sauvegardes précédentes.
+
+## Extraction distante
+
+`extraction.ron` définit un profil pour chaque `PlanetKind`. Un profil choisit
+la ressource produite, la réserve initiale, le rendement maximal d'une mission
+et sa durée de chargement en ticks stratégiques. Un site stable est généré pour
+chaque planète ; il n'est exploitable qu'après analyse et déblocage de
+`RemoteExtraction`.
+
+Lorsque `reserves_sites` est actif, une seule mission peut réserver un site à
+la fois. La quantité chargée est le minimum entre le rendement du profil, la
+réserve restante et la capacité libre de la flotte. Elle est débitée une seule
+fois au départ du site, transportée comme cargaison réelle, puis créditée dans
+la limite du stockage de la colonie d'origine. Un reliquat reste dans la flotte
+amarrée plutôt que d'être perdu.
 
 ## Validation et sauvegardes
 

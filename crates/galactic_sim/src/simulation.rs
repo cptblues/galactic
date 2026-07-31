@@ -11,18 +11,19 @@ use crate::{
     AttackMissionOutcome, AuthorizationError, BuildingCatalogError, ColonizationMissionOutcome,
     ColonyFoundationStateError, ColonySelectionError, ColonySelectionRejected, CombatReportStatus,
     CommandRejection, ConstructionQueueError, CraftStateError, DiplomacyError, DiplomacyState,
-    FactionKind, FleetAssignment, FleetStateError, GAME_STATE_VERSION, GameAction, GameCommand,
-    GameEvent, GameEventKind, GameState, KnowledgeLevel, MissionEngineEvent, MissionKind,
-    MissionPhase, MissionResult, MissionStateError, PlanetAnalysisStateError,
-    PlanetaryIntelPrecision, PlanetaryPresenceStateError, ResearchStateError, SelectionTarget,
-    StartingScenario, StartingScenarioError, StrategicDuration, TimeSpeed, UniverseIndexError,
-    UniverseRepository, advance_colony_construction, advance_colony_craft, advance_missions,
-    advance_research, analyze_planet, build_planet_analysis_report, cancel_mission,
-    default_building_catalog, enqueue_building_upgrade, enqueue_craft, enqueue_research,
-    form_fleet, launch_attack_mission, launch_colonization_mission, launch_mission,
-    launch_probe_mission, launch_transport_mission, planetary_analysis_rules,
-    queue_colony_production, refresh_planetary_intelligence, storage_capacity,
-    validate_colony_foundations, validate_construction_queue, validate_craft_state,
+    ExtractionSiteStateError, FactionKind, FleetAssignment, FleetStateError, GAME_STATE_VERSION,
+    GameAction, GameCommand, GameEvent, GameEventKind, GameState, KnowledgeLevel,
+    MissionEngineEvent, MissionKind, MissionPhase, MissionResult, MissionStateError,
+    PlanetAnalysisStateError, PlanetaryIntelPrecision, PlanetaryPresenceStateError,
+    ResearchStateError, SelectionTarget, StartingScenario, StartingScenarioError,
+    StrategicDuration, TimeSpeed, UniverseIndexError, UniverseRepository,
+    advance_colony_construction, advance_colony_craft, advance_missions, advance_research,
+    analyze_planet, build_planet_analysis_report, cancel_mission, default_building_catalog,
+    enqueue_building_upgrade, enqueue_craft, enqueue_research, form_fleet, launch_attack_mission,
+    launch_colonization_mission, launch_harvest_mission, launch_mission, launch_probe_mission,
+    launch_transport_mission, planetary_analysis_rules, queue_colony_production,
+    refresh_planetary_intelligence, storage_capacity, validate_colony_foundations,
+    validate_construction_queue, validate_craft_state, validate_extraction_sites,
     validate_fleet_state, validate_mission_state, validate_planet_analysis_state,
     validate_planetary_presence_state, validate_research_state,
 };
@@ -73,6 +74,7 @@ pub enum SimulationBuildError {
     },
     InvalidResearchState(ResearchStateError),
     InvalidPlanetAnalysisState(PlanetAnalysisStateError),
+    InvalidExtractionSiteState(ExtractionSiteStateError),
     InvalidPlanetaryPresenceState(PlanetaryPresenceStateError),
     InvalidColonyFoundationState(ColonyFoundationStateError),
     InvalidColonyResourceLedger {
@@ -176,6 +178,17 @@ pub enum SimulationBuildError {
         mission_id: MissionId,
     },
     MissionCargoReservationMismatch {
+        mission_id: MissionId,
+    },
+    HarvestSiteReservationMismatch {
+        mission_id: MissionId,
+    },
+    ExtractionSiteReservedByUnknownMission {
+        site_id: galactic_domain::ExtractionSiteId,
+        mission_id: MissionId,
+    },
+    ExtractionSiteReservationMissionMismatch {
+        site_id: galactic_domain::ExtractionSiteId,
         mission_id: MissionId,
     },
     FleetAssignedToUnknownMission {
@@ -427,6 +440,30 @@ impl Simulation {
                     origin_colony_id,
                     destination_colony_id,
                     cargo,
+                ) {
+                    Ok((created, launched)) => {
+                        let mut events = Vec::with_capacity(2);
+                        if let Some(created) = created {
+                            events.push(GameEventKind::FleetCreated(created));
+                        }
+                        events.push(GameEventKind::MissionLaunched(launched));
+                        events
+                    }
+                    Err(error) => vec![GameEventKind::MissionLaunchRejected(
+                        crate::MissionLaunchRejected {
+                            fleet_id: None,
+                            error,
+                        },
+                    )],
+                }
+            }
+            GameAction::LaunchHarvest { colony_id, site_id } => {
+                match launch_harvest_mission(
+                    &mut self.state,
+                    &self.universe,
+                    issuer,
+                    colony_id,
+                    site_id,
                 ) {
                     Ok((created, launched)) => {
                         let mut events = Vec::with_capacity(2);
@@ -880,6 +917,8 @@ fn validate_state(
 
     validate_planet_analysis_state(state, universe)
         .map_err(SimulationBuildError::InvalidPlanetAnalysisState)?;
+    validate_extraction_sites(state, universe)
+        .map_err(SimulationBuildError::InvalidExtractionSiteState)?;
 
     let mut colony_ids = HashSet::with_capacity(state.colonies.len());
     let mut colony_planet_ids = HashSet::with_capacity(state.colonies.len());
@@ -1150,6 +1189,26 @@ fn validate_state(
                         found: fleet.cargo,
                     });
                 }
+            } else if let Some(harvest) = mission.harvest {
+                let expected_cargo = match mission.phase {
+                    MissionPhase::Preparation
+                    | MissionPhase::Outbound
+                    | MissionPhase::OnSite
+                    | MissionPhase::Cancelled => ResourceStock::ZERO,
+                    MissionPhase::Returning => harvest.collected,
+                    MissionPhase::Completed | MissionPhase::Failed => match mission.result {
+                        Some(MissionResult::Harvest(result)) => result.retained,
+                        _ => ResourceStock::ZERO,
+                    },
+                };
+                if fleet.cargo != expected_cargo {
+                    return Err(SimulationBuildError::MissionFleetCargoMismatch {
+                        mission_id: mission.id,
+                        fleet_id: fleet.id,
+                        expected: expected_cargo,
+                        found: fleet.cargo,
+                    });
+                }
             }
         }
         let expected_location = match mission.phase {
@@ -1248,6 +1307,53 @@ fn validate_state(
                     mission_id: mission.id,
                 });
             }
+        }
+        if let Some(harvest) = mission.harvest {
+            let site = state.extraction_site(harvest.site_id).ok_or(
+                SimulationBuildError::HarvestSiteReservationMismatch {
+                    mission_id: mission.id,
+                },
+            )?;
+            let reservation_expected = crate::extraction_rules().reserves_sites()
+                && matches!(
+                    mission.phase,
+                    MissionPhase::Preparation | MissionPhase::Outbound | MissionPhase::OnSite
+                );
+            if reservation_expected != (site.reserved_by == Some(mission.id)) {
+                return Err(SimulationBuildError::HarvestSiteReservationMismatch {
+                    mission_id: mission.id,
+                });
+            }
+        }
+    }
+
+    for site in &state.extraction_sites {
+        let Some(mission_id) = site.reserved_by else {
+            continue;
+        };
+        let Some(mission) = state.mission(mission_id) else {
+            return Err(
+                SimulationBuildError::ExtractionSiteReservedByUnknownMission {
+                    site_id: site.id,
+                    mission_id,
+                },
+            );
+        };
+        if mission.order.kind != MissionKind::Harvest
+            || mission
+                .harvest
+                .is_none_or(|harvest| harvest.site_id != site.id)
+            || !matches!(
+                mission.phase,
+                MissionPhase::Preparation | MissionPhase::Outbound | MissionPhase::OnSite
+            )
+        {
+            return Err(
+                SimulationBuildError::ExtractionSiteReservationMissionMismatch {
+                    site_id: site.id,
+                    mission_id,
+                },
+            );
         }
     }
 

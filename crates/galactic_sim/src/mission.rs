@@ -2,8 +2,8 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use galactic_domain::{
-    ColonyId, FactionId, FleetId, MissionId, Owner, PlanetId, ReservationId, ResourceCost,
-    ResourceLedgerError, ResourceStock, SystemId,
+    ColonyId, ExtractionSiteId, FactionId, FleetId, MissionId, Owner, PlanetId, ReservationId,
+    ResourceCost, ResourceLedgerError, ResourceStock, SystemId,
 };
 
 use crate::{
@@ -13,9 +13,10 @@ use crate::{
     CombatSnapshotError, CraftableId, FleetAssignment, FleetComposition, FleetCompositionError,
     FleetCreated, FleetError, FleetLocation, GameState, KnowledgeChange, KnowledgeLevel,
     KnowledgeTarget, PlanetaryIntelPrecision, ShipStack, StrategicDuration, StrategicTick,
-    UniverseRepository, assess_planet_colonizability, colonization_arrival_blocker, combat_rules,
-    default_ruleset, form_fleet, initialize_colony_from_foundation, planetary_analysis_rules,
-    prepare_attack_commitment, refresh_planetary_intelligence, resolve_and_apply_attack,
+    TechnologyUnlock, UniverseRepository, assess_planet_colonizability,
+    colonization_arrival_blocker, combat_rules, default_ruleset, extraction_rules, form_fleet,
+    initialize_colony_from_foundation, planetary_analysis_rules, prepare_attack_commitment,
+    refresh_planetary_intelligence, resolve_and_apply_attack, stock_for,
 };
 
 /// Abstract distance crossed by a fleet for one route hop.
@@ -113,6 +114,7 @@ pub struct MissionState {
     pub attack: Option<AttackMissionCommitment>,
     pub colonization: Option<ColonizationMissionCommitment>,
     pub transport: Option<TransportMissionState>,
+    pub harvest: Option<HarvestMissionState>,
     pub result: Option<MissionResult>,
 }
 
@@ -186,10 +188,36 @@ pub struct TransportMissionResult {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HarvestCollectionStatus {
+    Pending,
+    Collected,
+    SiteDepleted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HarvestMissionState {
+    pub site_id: ExtractionSiteId,
+    pub collected: ResourceStock,
+    pub site_remaining: u64,
+    pub status: HarvestCollectionStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HarvestMissionResult {
+    pub site_id: ExtractionSiteId,
+    pub collected: ResourceStock,
+    pub delivered: ResourceStock,
+    pub retained: ResourceStock,
+    pub site_remaining: u64,
+    pub status: HarvestCollectionStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MissionResult {
     Probe(ProbeMissionResult),
     Attack(AttackMissionResult),
     Transport(TransportMissionResult),
+    Harvest(HarvestMissionResult),
     Colonize(ColonizationMissionResult),
 }
 
@@ -272,6 +300,25 @@ pub enum MissionError {
         cargo: ResourceStock,
         capacity: u64,
     },
+    HarvestOrderRequired,
+    UnknownExtractionSite(ExtractionSiteId),
+    HarvestTargetMismatch {
+        site_id: ExtractionSiteId,
+        target: MissionTarget,
+    },
+    HarvestPlanetNotAnalyzed {
+        planet_id: PlanetId,
+        current: KnowledgeLevel,
+    },
+    MissingHarvestTechnology(TechnologyUnlock),
+    ExtractionSiteOnColony(ExtractionSiteId),
+    ExtractionSiteDepleted(ExtractionSiteId),
+    ExtractionSiteBusy {
+        site_id: ExtractionSiteId,
+        mission_id: MissionId,
+    },
+    HarvestFleetUnavailable(ColonyId),
+    HarvestFleetHasCargo(FleetId),
     ColonizationPlanetTargetRequired,
     ColonizationShipUnavailable(ColonyId),
     ColonizationFleetRequired(FleetId),
@@ -376,6 +423,24 @@ pub enum MissionStateError {
         found: ColonyId,
     },
     TransportResultCargoMismatch,
+    MissingHarvestState,
+    UnexpectedHarvestState,
+    HarvestPlanetTargetRequired,
+    EmptyHarvestCargo,
+    InvalidHarvestStatus {
+        phase: MissionPhase,
+        status: HarvestCollectionStatus,
+    },
+    HarvestTargetMismatch {
+        expected: ExtractionSiteId,
+        found: ExtractionSiteId,
+    },
+    MissingHarvestResult,
+    HarvestResultSiteMismatch {
+        expected: ExtractionSiteId,
+        found: ExtractionSiteId,
+    },
+    HarvestResultCargoMismatch,
     MissingFoundationReservation,
     UnexpectedFoundationReservation,
     MissingColonizationCommitment,
@@ -559,8 +624,20 @@ pub fn plan_mission(
         .ok_or(MissionError::FuelCostOverflow)?;
     let fuel_cost = ResourceCost::new(0, 0, fuel);
 
+    let resolution_ticks = if order.kind == MissionKind::Harvest {
+        let planet_id = order
+            .target
+            .planet_id()
+            .ok_or(MissionError::HarvestOrderRequired)?;
+        let planet = universe
+            .planet(planet_id)
+            .ok_or(MissionError::UnknownPlanetTarget(planet_id))?;
+        extraction_rules().rule_for(planet.kind).harvest_ticks
+    } else {
+        MISSION_RESOLUTION_TICKS
+    };
     let outbound_arrival_at = checked_tick_add(order.departure_at, travel_ticks)?;
-    let return_departure_at = checked_tick_add(outbound_arrival_at, MISSION_RESOLUTION_TICKS)?;
+    let return_departure_at = checked_tick_add(outbound_arrival_at, resolution_ticks)?;
     let return_arrival_at = checked_tick_add(return_departure_at, travel_ticks)?;
 
     Ok((
@@ -569,7 +646,7 @@ pub fn plan_mission(
             route,
             hops,
             travel_duration: StrategicDuration::from_ticks(travel_ticks),
-            resolution_duration: StrategicDuration::from_ticks(MISSION_RESOLUTION_TICKS),
+            resolution_duration: StrategicDuration::from_ticks(resolution_ticks),
             fuel_cost,
             outbound_arrival_at,
             return_departure_at,
@@ -642,22 +719,29 @@ pub fn launch_mission(
     if order.kind == MissionKind::Transport {
         return Err(MissionError::TransportOrderRequired);
     }
+    if order.kind == MissionKind::Harvest {
+        return Err(MissionError::HarvestOrderRequired);
+    }
     let mut candidate = state.clone();
-    let launched = launch_mission_with_transport(&mut candidate, universe, actor, order, None)?;
+    let launched = launch_mission_with_payload(&mut candidate, universe, actor, order, None, None)?;
     *state = candidate;
     Ok(launched)
 }
 
-fn launch_mission_with_transport(
+fn launch_mission_with_payload(
     state: &mut GameState,
     universe: &UniverseRepository,
     actor: FactionId,
     order: MissionOrder,
     transport: Option<TransportMissionState>,
+    harvest: Option<HarvestMissionState>,
 ) -> Result<MissionLaunched, MissionError> {
     let (origin_colony_id, plan) = plan_mission(state, universe, actor, order)?;
     if let Some(transport) = transport {
         validate_transport_launch(state, actor, origin_colony_id, order, transport)?;
+    }
+    if let Some(harvest) = harvest {
+        validate_harvest_launch(state, actor, origin_colony_id, order, harvest)?;
     }
     let next_mission_id = state
         .next_mission_id
@@ -740,6 +824,14 @@ fn launch_mission_with_transport(
         .fleet_mut(order.fleet_id)
         .expect("mission fleet was validated")
         .assignment = FleetAssignment::Mission(mission_id);
+    if let Some(harvest) = harvest
+        && extraction_rules().reserves_sites()
+    {
+        state
+            .extraction_site_mut(harvest.site_id)
+            .expect("the harvest site was validated")
+            .reserved_by = Some(mission_id);
+    }
     state.next_mission_id = next_mission_id;
     state.missions.push(MissionState {
         id: mission_id,
@@ -755,6 +847,7 @@ fn launch_mission_with_transport(
         attack,
         colonization,
         transport,
+        harvest,
         result: None,
     });
     state.missions.sort_by_key(|mission| mission.id);
@@ -822,6 +915,77 @@ fn validate_transport_launch(
             capacity,
         });
     }
+    Ok(())
+}
+
+fn validate_harvest_launch(
+    state: &GameState,
+    actor: FactionId,
+    origin_colony_id: ColonyId,
+    order: MissionOrder,
+    harvest: HarvestMissionState,
+) -> Result<(), MissionError> {
+    if order.kind != MissionKind::Harvest
+        || harvest.status != HarvestCollectionStatus::Pending
+        || !harvest.collected.is_zero()
+    {
+        return Err(MissionError::HarvestOrderRequired);
+    }
+    let site = state
+        .extraction_site(harvest.site_id)
+        .ok_or(MissionError::UnknownExtractionSite(harvest.site_id))?;
+    let expected_target = MissionTarget::Planet {
+        system_id: site.system_id,
+        planet_id: site.planet_id,
+    };
+    if order.target != expected_target {
+        return Err(MissionError::HarvestTargetMismatch {
+            site_id: site.id,
+            target: order.target,
+        });
+    }
+    let current = state.planet_knowledge_level(site.planet_id);
+    if current < KnowledgeLevel::Analyzed {
+        return Err(MissionError::HarvestPlanetNotAnalyzed {
+            planet_id: site.planet_id,
+            current,
+        });
+    }
+    if !state
+        .research
+        .has_unlock(TechnologyUnlock::RemoteExtraction)
+    {
+        return Err(MissionError::MissingHarvestTechnology(
+            TechnologyUnlock::RemoteExtraction,
+        ));
+    }
+    if state.colony_on_planet(site.planet_id).is_some() {
+        return Err(MissionError::ExtractionSiteOnColony(site.id));
+    }
+    if site.is_depleted() {
+        return Err(MissionError::ExtractionSiteDepleted(site.id));
+    }
+    if let Some(mission_id) = site.reserved_by {
+        return Err(MissionError::ExtractionSiteBusy {
+            site_id: site.id,
+            mission_id,
+        });
+    }
+    if harvest.site_remaining != site.remaining {
+        return Err(MissionError::HarvestOrderRequired);
+    }
+    let fleet = state
+        .fleet(order.fleet_id)
+        .ok_or(MissionError::UnknownFleet(order.fleet_id))?;
+    if !fleet.cargo.is_zero() {
+        return Err(MissionError::HarvestFleetHasCargo(fleet.id));
+    }
+    state
+        .colony(origin_colony_id)
+        .ok_or(MissionError::UnknownOriginColony(origin_colony_id))?;
+    state
+        .authorize_management(actor, fleet.owner)
+        .map_err(MissionError::Access)?;
     Ok(())
 }
 
@@ -1183,7 +1347,7 @@ pub fn launch_transport_mission(
         (created.fleet_id, Some(created))
     };
 
-    let launched = launch_mission_with_transport(
+    let launched = launch_mission_with_payload(
         &mut candidate,
         universe,
         actor,
@@ -1199,6 +1363,109 @@ pub fn launch_transport_mission(
             cargo,
             delivered: ResourceStock::ZERO,
             status: TransportDeliveryStatus::Pending,
+        }),
+        None,
+    )?;
+    *state = candidate;
+    Ok((created, launched))
+}
+
+/// Launches a cargo fleet toward one analyzed extraction site.
+///
+/// The site is reserved atomically with the mission. Collection occurs only
+/// after the configured on-site duration, is capped by both the remaining
+/// reserve and fleet capacity, and is credited at the origin after return.
+pub fn launch_harvest_mission(
+    state: &mut GameState,
+    universe: &UniverseRepository,
+    actor: FactionId,
+    origin_colony_id: ColonyId,
+    site_id: ExtractionSiteId,
+) -> Result<(Option<FleetCreated>, MissionLaunched), MissionError> {
+    let origin_colony = state
+        .colony(origin_colony_id)
+        .ok_or(MissionError::UnknownOriginColony(origin_colony_id))?;
+    state
+        .authorize_management(actor, origin_colony.owner)
+        .map_err(MissionError::Access)?;
+    let site = state
+        .extraction_site(site_id)
+        .ok_or(MissionError::UnknownExtractionSite(site_id))?;
+    let target = MissionTarget::Planet {
+        system_id: site.system_id,
+        planet_id: site.planet_id,
+    };
+    let origin = origin_colony.system_id;
+    let departure_at = state.clock.current_tick();
+    let site_remaining = site.remaining;
+    let mut candidate = state.clone();
+    let existing_fleet = candidate
+        .fleets
+        .iter()
+        .filter(|fleet| {
+            candidate.can_manage(actor, fleet.owner)
+                && fleet.is_idle()
+                && fleet.location == FleetLocation::Docked(origin_colony_id)
+                && fleet.cargo.is_zero()
+                && fleet
+                    .capabilities()
+                    .is_ok_and(|capabilities| capabilities.cargo_capacity > 0)
+        })
+        .map(|fleet| fleet.id)
+        .filter(|fleet_id| {
+            plan_mission(
+                &candidate,
+                universe,
+                actor,
+                MissionOrder {
+                    fleet_id: *fleet_id,
+                    origin,
+                    target,
+                    kind: MissionKind::Harvest,
+                    departure_at,
+                },
+            )
+            .is_ok()
+        })
+        .min();
+
+    let (fleet_id, created) = if let Some(fleet_id) = existing_fleet {
+        (fleet_id, None)
+    } else {
+        let available = candidate
+            .colony(origin_colony_id)
+            .expect("the origin colony was validated")
+            .inventory
+            .quantity(CraftableId::LIGHT_CARGO);
+        if available == 0 {
+            return Err(MissionError::HarvestFleetUnavailable(origin_colony_id));
+        }
+        let composition =
+            FleetComposition::from_stacks([ShipStack::new(CraftableId::LIGHT_CARGO, 1)])
+                .map_err(FleetError::InvalidComposition)
+                .map_err(MissionError::Fleet)?;
+        let created = form_fleet(&mut candidate, actor, origin_colony_id, composition)
+            .map_err(MissionError::Fleet)?;
+        (created.fleet_id, Some(created))
+    };
+
+    let launched = launch_mission_with_payload(
+        &mut candidate,
+        universe,
+        actor,
+        MissionOrder {
+            fleet_id,
+            origin,
+            target,
+            kind: MissionKind::Harvest,
+            departure_at,
+        },
+        None,
+        Some(HarvestMissionState {
+            site_id,
+            collected: ResourceStock::ZERO,
+            site_remaining,
+            status: HarvestCollectionStatus::Pending,
         }),
     )?;
     *state = candidate;
@@ -1229,6 +1496,7 @@ pub fn cancel_mission(
         .expect("validated preparation mission must hold its fuel reservation");
     let foundation_reservation = mission.foundation_reservation;
     let cargo_reservation = mission.cargo_reservation;
+    let harvest_site_id = mission.harvest.map(|harvest| harvest.site_id);
     let origin_colony_id = mission.origin_colony_id;
     let fleet_id = mission.order.fleet_id;
     let kind = mission.order.kind;
@@ -1253,6 +1521,14 @@ pub fn cancel_mission(
             .resources
             .release(reservation)
             .map_err(MissionError::Resources)?;
+    }
+    if let Some(site_id) = harvest_site_id
+        && extraction_rules().reserves_sites()
+    {
+        state
+            .extraction_site_mut(site_id)
+            .expect("validated harvest site must exist")
+            .reserved_by = None;
     }
     state
         .fleet_mut(fleet_id)
@@ -1465,6 +1741,42 @@ pub fn validate_mission_state(
         (_, Some(_)) => return Err(MissionStateError::UnexpectedTransportState),
         (_, None) => {}
     }
+    match (mission.order.kind, mission.harvest) {
+        (MissionKind::Harvest, Some(harvest)) => {
+            let MissionTarget::Planet { planet_id, .. } = mission.order.target else {
+                return Err(MissionStateError::HarvestPlanetTargetRequired);
+            };
+            let expected_site = ExtractionSiteId::for_planet(planet_id);
+            if harvest.site_id != expected_site {
+                return Err(MissionStateError::HarvestTargetMismatch {
+                    expected: expected_site,
+                    found: harvest.site_id,
+                });
+            }
+            let pending_expected = matches!(
+                mission.phase,
+                MissionPhase::Preparation
+                    | MissionPhase::Outbound
+                    | MissionPhase::OnSite
+                    | MissionPhase::Cancelled
+            );
+            if pending_expected != (harvest.status == HarvestCollectionStatus::Pending) {
+                return Err(MissionStateError::InvalidHarvestStatus {
+                    phase: mission.phase,
+                    status: harvest.status,
+                });
+            }
+            if pending_expected && !harvest.collected.is_zero() {
+                return Err(MissionStateError::HarvestResultCargoMismatch);
+            }
+            if !pending_expected && harvest.collected.is_zero() {
+                return Err(MissionStateError::EmptyHarvestCargo);
+            }
+        }
+        (MissionKind::Harvest, None) => return Err(MissionStateError::MissingHarvestState),
+        (_, Some(_)) => return Err(MissionStateError::UnexpectedHarvestState),
+        (_, None) => {}
+    }
     match (mission.order.kind, mission.phase, mission.result) {
         (
             MissionKind::Probe,
@@ -1545,6 +1857,40 @@ pub fn validate_mission_state(
                 return Err(MissionStateError::TransportResultCargoMismatch);
             }
         }
+        (MissionKind::Harvest, MissionPhase::Completed | MissionPhase::Failed, None) => {
+            return Err(MissionStateError::MissingHarvestResult);
+        }
+        (
+            MissionKind::Harvest,
+            MissionPhase::Preparation
+            | MissionPhase::Outbound
+            | MissionPhase::OnSite
+            | MissionPhase::Returning
+            | MissionPhase::Cancelled,
+            Some(_),
+        ) => return Err(MissionStateError::UnexpectedMissionResult),
+        (MissionKind::Harvest, _, Some(MissionResult::Harvest(result))) => {
+            let harvest = mission
+                .harvest
+                .ok_or(MissionStateError::MissingHarvestState)?;
+            if result.site_id != harvest.site_id {
+                return Err(MissionStateError::HarvestResultSiteMismatch {
+                    expected: harvest.site_id,
+                    found: result.site_id,
+                });
+            }
+            let accounted = result
+                .delivered
+                .checked_add(result.retained)
+                .ok_or(MissionStateError::HarvestResultCargoMismatch)?;
+            if result.collected != harvest.collected
+                || accounted != harvest.collected
+                || result.site_remaining != harvest.site_remaining
+                || result.status != harvest.status
+            {
+                return Err(MissionStateError::HarvestResultCargoMismatch);
+            }
+        }
         (
             MissionKind::Colonize,
             MissionPhase::OnSite | MissionPhase::Returning | MissionPhase::Completed,
@@ -1582,17 +1928,24 @@ pub fn validate_mission_state(
         }
         (MissionKind::Attack, _, Some(MissionResult::Probe(_)))
         | (MissionKind::Attack, _, Some(MissionResult::Transport(_)))
+        | (MissionKind::Attack, _, Some(MissionResult::Harvest(_)))
         | (MissionKind::Attack, _, Some(MissionResult::Colonize(_)))
         | (MissionKind::Probe, _, Some(MissionResult::Attack(_)))
         | (MissionKind::Probe, _, Some(MissionResult::Transport(_)))
+        | (MissionKind::Probe, _, Some(MissionResult::Harvest(_)))
         | (MissionKind::Probe, _, Some(MissionResult::Colonize(_)))
         | (MissionKind::Colonize, _, Some(MissionResult::Attack(_)))
         | (MissionKind::Colonize, _, Some(MissionResult::Probe(_)))
         | (MissionKind::Colonize, _, Some(MissionResult::Transport(_)))
+        | (MissionKind::Colonize, _, Some(MissionResult::Harvest(_)))
         | (MissionKind::Transport, _, Some(MissionResult::Attack(_)))
         | (MissionKind::Transport, _, Some(MissionResult::Probe(_)))
+        | (MissionKind::Transport, _, Some(MissionResult::Harvest(_)))
         | (MissionKind::Transport, _, Some(MissionResult::Colonize(_)))
-        | (MissionKind::Harvest, _, Some(_)) => {
+        | (MissionKind::Harvest, _, Some(MissionResult::Attack(_)))
+        | (MissionKind::Harvest, _, Some(MissionResult::Probe(_)))
+        | (MissionKind::Harvest, _, Some(MissionResult::Transport(_)))
+        | (MissionKind::Harvest, _, Some(MissionResult::Colonize(_))) => {
             return Err(MissionStateError::UnexpectedMissionResult);
         }
         _ => {}
@@ -1719,11 +2072,13 @@ pub(crate) fn advance_missions(
             let attack = mission.attack.clone();
             let colonization = mission.colonization;
             let transport = mission.transport;
+            let harvest = mission.harvest;
             let mut knowledge_changes = Vec::new();
             let mut resolution = None;
             let mut prepared_foundation = None;
             let mut established_colony = None;
             let mut transport_update = None;
+            let mut harvest_update = None;
 
             validate_mission_transition(from, next_phase)
                 .expect("engine transitions must follow the mission state machine");
@@ -1965,7 +2320,44 @@ pub(crate) fn advance_missions(
                         });
                     }
                 }
-                MissionPhase::Returning => {}
+                MissionPhase::Returning => {
+                    if kind == MissionKind::Harvest {
+                        let mut updated = harvest.expect("a validated harvest has a harvest state");
+                        let site = state
+                            .extraction_site(updated.site_id)
+                            .expect("a validated harvest site exists");
+                        let planet = universe
+                            .planet(site.planet_id)
+                            .expect("a validated harvest planet exists");
+                        let rule = extraction_rules().rule_for(planet.kind);
+                        let capacity = state
+                            .fleet(fleet_id)
+                            .expect("validated mission fleet exists")
+                            .capabilities()
+                            .expect("validated mission fleet has valid capabilities")
+                            .cargo_capacity;
+                        let amount = site.remaining.min(rule.maximum_harvest()).min(capacity);
+                        let site = state
+                            .extraction_site_mut(updated.site_id)
+                            .expect("a validated harvest site exists");
+                        site.remaining = site.remaining.saturating_sub(amount);
+                        site.reserved_by = None;
+                        let site_remaining = site.remaining;
+                        let collected = stock_for(site.resource, amount);
+                        state
+                            .fleet_mut(fleet_id)
+                            .expect("validated mission fleet exists")
+                            .cargo = collected;
+                        updated.collected = collected;
+                        updated.site_remaining = site_remaining;
+                        updated.status = if site_remaining == 0 {
+                            HarvestCollectionStatus::SiteDepleted
+                        } else {
+                            HarvestCollectionStatus::Collected
+                        };
+                        harvest_update = Some(updated);
+                    }
+                }
                 MissionPhase::Completed => {
                     if matches!(
                         mission_result,
@@ -2018,6 +2410,37 @@ pub(crate) fn advance_missions(
                                 }),
                                 occurred_at: transition_at,
                             });
+                        } else if let Some(harvest) = harvest {
+                            let cargo = state
+                                .fleet(fleet_id)
+                                .expect("validated mission fleet exists")
+                                .cargo;
+                            let origin = state
+                                .colony(origin_colony_id)
+                                .expect("validated mission origin exists");
+                            let capacity = crate::storage_capacity(origin.buildings);
+                            let delivered = state
+                                .colony_mut(origin_colony_id)
+                                .expect("validated mission origin exists")
+                                .resources
+                                .credit_capped(cargo, capacity);
+                            let retained = cargo.saturating_sub(delivered);
+                            state
+                                .fleet_mut(fleet_id)
+                                .expect("validated mission fleet exists")
+                                .cargo = retained;
+                            resolution = Some(MissionResolution {
+                                mission_id,
+                                result: MissionResult::Harvest(HarvestMissionResult {
+                                    site_id: harvest.site_id,
+                                    collected: harvest.collected,
+                                    delivered,
+                                    retained,
+                                    site_remaining: harvest.site_remaining,
+                                    status: harvest.status,
+                                }),
+                                occurred_at: transition_at,
+                            });
                         }
                         let fleet = state
                             .fleet_mut(fleet_id)
@@ -2045,6 +2468,9 @@ pub(crate) fn advance_missions(
             }
             if let Some(transport) = transport_update {
                 mission.transport = Some(transport);
+            }
+            if let Some(harvest) = harvest_update {
+                mission.harvest = Some(harvest);
             }
             if let Some(resolution) = resolution {
                 mission.result = Some(resolution.result);
@@ -2342,6 +2768,44 @@ mod tests {
         simulation
     }
 
+    fn simulation_with_harvest_site() -> (Simulation, ExtractionSiteId) {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+        let actor = simulation.state().player_faction;
+        let origin = simulation.state().colonies[0].system_id;
+        let neighboring_system = neighboring_target(&simulation);
+        let target = simulation
+            .universe()
+            .system(neighboring_system)
+            .expect("the neighboring system exists")
+            .planets[0]
+            .id;
+        let repository = simulation.universe_repository().clone();
+        simulation.state_mut().research = ResearchState::from_completed([
+            TechnologyId::SPATIAL_DETECTION,
+            TechnologyId::PROPULSION,
+            TechnologyId::CARGO_CAPACITY,
+            TechnologyId::REMOTE_EXTRACTION,
+            TechnologyId::PLANETARY_ANALYSIS,
+        ]);
+        simulation.state_mut().advance_system_knowledge(
+            &repository,
+            target.system_id(),
+            KnowledgeLevel::Probed,
+        );
+        simulation.state_mut().advance_planet_knowledge(
+            &repository,
+            target,
+            KnowledgeLevel::Probed,
+        );
+        analyze_planet(simulation.state_mut(), &repository, actor, target)
+            .expect("the harvest target follows the real analysis path");
+        simulation.state_mut().colonies[0]
+            .inventory
+            .add(CraftableId::LIGHT_CARGO, 2);
+        assert_eq!(simulation.state().colonies[0].system_id, origin);
+        (simulation, ExtractionSiteId::for_planet(target))
+    }
+
     fn detected_planets_in_origin(simulation: &Simulation) -> Vec<(usize, PlanetId)> {
         let origin = simulation.state().colonies[0].system_id;
         simulation
@@ -2360,11 +2824,7 @@ mod tests {
 
     #[test]
     fn generic_non_colonization_missions_use_the_shared_planner() {
-        for kind in [
-            MissionKind::Probe,
-            MissionKind::Transport,
-            MissionKind::Harvest,
-        ] {
+        for kind in [MissionKind::Probe, MissionKind::Transport] {
             let (simulation, fleet_id) = simulation_with_probe_fleet();
             let origin = simulation.state().colonies[0].system_id;
             let target = neighboring_target(&simulation);
@@ -3549,6 +4009,286 @@ mod tests {
             simulation.state().mission_reports.last().unwrap().outcome,
             MissionReportOutcome::Failed,
         );
+    }
+
+    #[test]
+    fn harvest_requires_analysis_technology_and_an_unreserved_site_atomically() {
+        let (mut simulation, site_id) = simulation_with_harvest_site();
+        let actor = simulation.state().player_faction;
+        let colony_id = simulation.state().colonies[0].id;
+        let repository = simulation.universe_repository().clone();
+        simulation.state_mut().research = ResearchState::from_completed([
+            TechnologyId::SPATIAL_DETECTION,
+            TechnologyId::PROPULSION,
+            TechnologyId::CARGO_CAPACITY,
+            TechnologyId::PLANETARY_ANALYSIS,
+        ]);
+        let before = simulation.state().clone();
+
+        assert_eq!(
+            launch_harvest_mission(
+                simulation.state_mut(),
+                &repository,
+                actor,
+                colony_id,
+                site_id,
+            ),
+            Err(MissionError::MissingHarvestTechnology(
+                TechnologyUnlock::RemoteExtraction,
+            )),
+        );
+        assert_eq!(simulation.state(), &before);
+
+        simulation.state_mut().research = ResearchState::from_completed([
+            TechnologyId::SPATIAL_DETECTION,
+            TechnologyId::PROPULSION,
+            TechnologyId::CARGO_CAPACITY,
+            TechnologyId::REMOTE_EXTRACTION,
+            TechnologyId::PLANETARY_ANALYSIS,
+        ]);
+        let (_, launched) = launch_harvest_mission(
+            simulation.state_mut(),
+            &repository,
+            actor,
+            colony_id,
+            site_id,
+        )
+        .expect("an analyzed remote site accepts a cargo mission");
+        assert_eq!(
+            simulation
+                .state()
+                .extraction_site(site_id)
+                .expect("the site exists")
+                .reserved_by,
+            Some(launched.mission_id),
+        );
+
+        let before_busy = simulation.state().clone();
+        assert!(matches!(
+            launch_harvest_mission(
+                simulation.state_mut(),
+                &repository,
+                actor,
+                colony_id,
+                site_id,
+            ),
+            Err(MissionError::ExtractionSiteBusy {
+                site_id: found,
+                mission_id,
+            }) if found == site_id && mission_id == launched.mission_id
+        ));
+        assert_eq!(simulation.state(), &before_busy);
+    }
+
+    #[test]
+    fn harvest_cancellation_releases_site_without_extracting() {
+        let (mut simulation, site_id) = simulation_with_harvest_site();
+        let actor = simulation.state().player_faction;
+        let colony_id = simulation.state().colonies[0].id;
+        let repository = simulation.universe_repository().clone();
+        let remaining_before = simulation
+            .state()
+            .extraction_site(site_id)
+            .expect("the site exists")
+            .remaining;
+        let (_, launched) = launch_harvest_mission(
+            simulation.state_mut(),
+            &repository,
+            actor,
+            colony_id,
+            site_id,
+        )
+        .expect("the harvest launches");
+
+        cancel_mission(simulation.state_mut(), actor, launched.mission_id)
+            .expect("a preparing harvest can be cancelled");
+
+        let site = simulation
+            .state()
+            .extraction_site(site_id)
+            .expect("the site remains");
+        assert_eq!(site.remaining, remaining_before);
+        assert_eq!(site.reserved_by, None);
+        let fleet = simulation
+            .state()
+            .fleet(launched.fleet_id)
+            .expect("the cargo fleet remains");
+        assert!(fleet.is_idle());
+        assert!(fleet.cargo.is_zero());
+    }
+
+    #[test]
+    fn harvest_debits_the_site_once_and_delivers_the_exact_cargo() {
+        let (mut simulation, site_id) = simulation_with_harvest_site();
+        let actor = simulation.state().player_faction;
+        let colony_id = simulation.state().colonies[0].id;
+        let repository = simulation.universe_repository().clone();
+        let origin_before = simulation.state().colonies[0].resources.stock();
+        let site_before = *simulation
+            .state()
+            .extraction_site(site_id)
+            .expect("the site exists");
+        let planet = repository
+            .planet(site_before.planet_id)
+            .expect("the site planet exists");
+        let rule = extraction_rules().rule_for(planet.kind);
+        let (_, launched) = launch_harvest_mission(
+            simulation.state_mut(),
+            &repository,
+            actor,
+            colony_id,
+            site_id,
+        )
+        .expect("the harvest launches");
+        let mission = simulation
+            .state()
+            .mission(launched.mission_id)
+            .expect("the harvest mission exists");
+        let return_departure = mission.plan.return_departure_at;
+        let return_arrival = mission.plan.return_arrival_at;
+        let fleet_capacity = simulation
+            .state()
+            .fleet(launched.fleet_id)
+            .expect("the cargo fleet exists")
+            .capabilities()
+            .expect("the cargo fleet is valid")
+            .cargo_capacity;
+        let expected_amount = site_before
+            .remaining
+            .min(rule.maximum_harvest())
+            .min(fleet_capacity);
+        let expected_cargo = stock_for(site_before.resource, expected_amount);
+
+        advance_missions(simulation.state_mut(), &repository, return_departure);
+
+        let site_after_collection = simulation
+            .state()
+            .extraction_site(site_id)
+            .expect("the site remains");
+        assert_eq!(
+            site_after_collection.remaining,
+            site_before.remaining - expected_amount,
+        );
+        assert_eq!(site_after_collection.reserved_by, None);
+        assert_eq!(
+            simulation
+                .state()
+                .fleet(launched.fleet_id)
+                .expect("the returning fleet exists")
+                .cargo,
+            expected_cargo,
+        );
+        assert!(
+            simulation
+                .state()
+                .mission(launched.mission_id)
+                .expect("the harvest mission exists")
+                .result
+                .is_none()
+        );
+
+        advance_missions(simulation.state_mut(), &repository, return_arrival);
+
+        let origin_after = simulation.state().colonies[0].resources.stock();
+        assert_eq!(
+            origin_after,
+            origin_before
+                .checked_sub(launched.fuel_cost)
+                .and_then(|stock| stock.checked_add(expected_cargo))
+                .expect("the test harvest accounting fits"),
+        );
+        assert!(matches!(
+            simulation
+                .state()
+                .mission(launched.mission_id)
+                .expect("the harvest mission exists")
+                .result,
+            Some(MissionResult::Harvest(HarvestMissionResult {
+                collected,
+                delivered,
+                retained,
+                site_remaining,
+                status: HarvestCollectionStatus::Collected,
+                ..
+            })) if collected == expected_cargo
+                && delivered == expected_cargo
+                && retained.is_zero()
+                && site_remaining == site_before.remaining - expected_amount
+        ));
+        let state_after_completion = simulation.state().clone();
+        advance_missions(
+            simulation.state_mut(),
+            &repository,
+            StrategicTick::new(return_arrival.value() + 10_000),
+        );
+        assert_eq!(simulation.state(), &state_after_completion);
+    }
+
+    #[test]
+    fn depleted_site_cannot_create_more_resources() {
+        let (mut simulation, site_id) = simulation_with_harvest_site();
+        let actor = simulation.state().player_faction;
+        let colony_id = simulation.state().colonies[0].id;
+        let repository = simulation.universe_repository().clone();
+        simulation
+            .state_mut()
+            .extraction_site_mut(site_id)
+            .expect("the site exists")
+            .remaining = 75;
+        let (_, launched) = launch_harvest_mission(
+            simulation.state_mut(),
+            &repository,
+            actor,
+            colony_id,
+            site_id,
+        )
+        .expect("the last harvest launches");
+        let return_arrival = simulation
+            .state()
+            .mission(launched.mission_id)
+            .expect("the harvest mission exists")
+            .plan
+            .return_arrival_at;
+        advance_missions(simulation.state_mut(), &repository, return_arrival);
+        assert_eq!(
+            simulation
+                .state()
+                .extraction_site(site_id)
+                .expect("the depleted site remains")
+                .remaining,
+            0,
+        );
+        assert!(matches!(
+            simulation
+                .state()
+                .mission(launched.mission_id)
+                .expect("the completed harvest exists")
+                .result,
+            Some(MissionResult::Harvest(HarvestMissionResult {
+                collected,
+                status: HarvestCollectionStatus::SiteDepleted,
+                ..
+            })) if collected == stock_for(
+                simulation
+                    .state()
+                    .extraction_site(site_id)
+                    .expect("the site remains")
+                    .resource,
+                75,
+            )
+        ));
+        let before = simulation.state().clone();
+        assert_eq!(
+            launch_harvest_mission(
+                simulation.state_mut(),
+                &repository,
+                actor,
+                colony_id,
+                site_id,
+            ),
+            Err(MissionError::ExtractionSiteDepleted(site_id)),
+        );
+        assert_eq!(simulation.state(), &before);
     }
 
     #[test]

@@ -13,7 +13,8 @@ use serde::de::DeserializeOwned;
 use crate::{
     BuildingCatalog, BuildingCatalogConfig, BuildingCatalogError, BuildingLevels, CombatRules,
     CombatRulesConfig, CombatRulesError, CraftCatalogError, CraftableCatalog,
-    CraftableCatalogConfig, DiplomacyState, DiplomaticRelation, FactionKind, FactionRelation,
+    CraftableCatalogConfig, DiplomacyState, DiplomaticRelation, ExtractionRules,
+    ExtractionRulesConfig, ExtractionRulesError, FactionKind, FactionRelation,
     InitialPlanetKnowledge, InitialSystemKnowledge, KnowledgeLevel, PlanetResourceProfile,
     PlanetaryAnalysisRules, PlanetaryAnalysisRulesConfig, PlanetaryAnalysisRulesError,
     PlanetaryPresenceRules, PlanetaryPresenceRulesConfig, PlanetaryPresenceRulesError,
@@ -21,7 +22,7 @@ use crate::{
     TechnologyCatalog, TechnologyCatalogConfig, TechnologyCatalogError,
 };
 
-pub const RULESET_SCHEMA_VERSION: u32 = 10;
+pub const RULESET_SCHEMA_VERSION: u32 = 11;
 pub const RULESET_DIRECTORY_ENV: &str = "GALACTIC_RULESET_DIR";
 pub const DEFAULT_RULESET_DIRECTORY: &str = "assets/rulesets/default";
 
@@ -45,6 +46,7 @@ pub struct Ruleset {
     buildings: BuildingCatalog,
     technologies: TechnologyCatalog,
     craftables: CraftableCatalog,
+    extraction: ExtractionRules,
     planetary_analysis: PlanetaryAnalysisRules,
     planetary_presence: PlanetaryPresenceRules,
     combat: CombatRules,
@@ -80,6 +82,9 @@ impl Ruleset {
         let craftable_config: CraftableCatalogConfig = read_ron(directory, "craftables.ron")?;
         let craftables = CraftableCatalog::from_config(craftable_config, &buildings, &technologies)
             .map_err(RulesetLoadError::Craftables)?;
+        let extraction_config: ExtractionRulesConfig = read_ron(directory, "extraction.ron")?;
+        let extraction = ExtractionRules::from_config(extraction_config)
+            .map_err(RulesetLoadError::Extraction)?;
         let planetary_analysis_config: PlanetaryAnalysisRulesConfig =
             read_ron(directory, "planetary_analysis.ron")?;
         let planetary_analysis =
@@ -117,6 +122,7 @@ impl Ruleset {
         buildings.append_structure(&mut structure);
         technologies.append_structure(&mut structure);
         craftables.append_structure(&mut structure);
+        extraction.append_structure(&mut structure);
         planetary_analysis.append_structure(&mut structure);
         planetary_presence.append_structure(&mut structure);
         combat.append_structure(&mut structure);
@@ -130,6 +136,7 @@ impl Ruleset {
             buildings,
             technologies,
             craftables,
+            extraction,
             planetary_analysis,
             planetary_presence,
             combat,
@@ -167,6 +174,10 @@ impl Ruleset {
 
     pub const fn craftables(&self) -> &CraftableCatalog {
         &self.craftables
+    }
+
+    pub const fn extraction(&self) -> &ExtractionRules {
+        &self.extraction
     }
 
     pub const fn planetary_analysis(&self) -> &PlanetaryAnalysisRules {
@@ -248,6 +259,7 @@ pub enum RulesetLoadError {
     Buildings(BuildingCatalogError),
     Technologies(TechnologyCatalogError),
     Craftables(CraftCatalogError),
+    Extraction(ExtractionRulesError),
     PlanetaryAnalysis(PlanetaryAnalysisRulesError),
     PlanetaryPresence(PlanetaryPresenceRulesError),
     Combat(CombatRulesError),
@@ -278,6 +290,9 @@ impl fmt::Display for RulesetLoadError {
                 write!(formatter, "invalid technologies catalog: {error:?}")
             }
             Self::Craftables(error) => write!(formatter, "invalid craftables catalog: {error:?}"),
+            Self::Extraction(error) => {
+                write!(formatter, "invalid extraction rules: {error:?}")
+            }
             Self::PlanetaryAnalysis(error) => {
                 write!(formatter, "invalid planetary analysis rules: {error:?}")
             }
@@ -754,6 +769,7 @@ mod tests {
         assert_eq!(ruleset.buildings().definitions().count(), 8);
         assert_eq!(ruleset.technologies().definitions().count(), 6);
         assert_eq!(ruleset.craftables().definitions().count(), 4);
+        assert_eq!(ruleset.extraction().version(), 1);
         assert_eq!(ruleset.planetary_analysis().version(), 3,);
         assert_eq!(ruleset.planetary_presence().version(), 2);
         assert_eq!(ruleset.planetary_presence().definitions().count(), 5);
@@ -775,6 +791,7 @@ mod tests {
             .technologies()
             .append_structure(&mut first);
         default_ruleset().craftables().append_structure(&mut first);
+        default_ruleset().extraction().append_structure(&mut first);
         default_ruleset()
             .planetary_analysis()
             .append_structure(&mut first);

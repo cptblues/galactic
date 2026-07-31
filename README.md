@@ -221,3 +221,15 @@ devenue étrangère ou absente provoque également le retour déterministe du
 chargement. La phase, la cargaison embarquée, le résultat détaillé et le rapport
 de mission sont persistants ; une reprise de sauvegarde ne peut donc ni perdre,
 ni dupliquer les ressources.
+
+## MVP-029-B — Sites d'extraction et récolte distante
+
+Chaque planète générée possède désormais un site d'extraction déterministe,
+révélé après analyse. Son type de ressource, sa réserve, son rendement et son
+temps de chargement proviennent de `assets/rulesets/default/extraction.ron`.
+
+Depuis l'inspecteur d'une planète analysée, la touche `H` lance une mission de
+récolte depuis la colonie active. Le moteur sélectionne ou forme un cargo,
+réserve le site, prélève au plus sa réserve et la capacité de la flotte, puis
+livre le chargement au retour. La réservation, la cargaison, l'épuisement et le
+rapport survivent aux sauvegardes sans perte ni duplication.

@@ -1,0 +1,48 @@
+(
+    version: 1,
+    reserve_site_during_mission: true,
+    kinds: [
+        (
+            kind: Rocky,
+            resource: Metal,
+            initial_reserve: 4200,
+            yield_per_tick: 18,
+            harvest_ticks: 24,
+        ),
+        (
+            kind: Ocean,
+            resource: Fuel,
+            initial_reserve: 3600,
+            yield_per_tick: 15,
+            harvest_ticks: 24,
+        ),
+        (
+            kind: Desert,
+            resource: Crystal,
+            initial_reserve: 3900,
+            yield_per_tick: 17,
+            harvest_ticks: 24,
+        ),
+        (
+            kind: Ice,
+            resource: Crystal,
+            initial_reserve: 4500,
+            yield_per_tick: 19,
+            harvest_ticks: 24,
+        ),
+        (
+            kind: GasGiant,
+            resource: Fuel,
+            initial_reserve: 5200,
+            yield_per_tick: 22,
+            harvest_ticks: 24,
+        ),
+        (
+            kind: Volcanic,
+            resource: Metal,
+            initial_reserve: 4800,
+            yield_per_tick: 21,
+            harvest_ticks: 24,
+        ),
+    ],
+)

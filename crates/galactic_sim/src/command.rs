@@ -1,4 +1,6 @@
-use galactic_domain::{ColonyId, FactionId, MissionId, PlanetId, ResourceStock, SystemId};
+use galactic_domain::{
+    ColonyId, ExtractionSiteId, FactionId, MissionId, PlanetId, ResourceStock, SystemId,
+};
 
 use crate::{
     AuthorizationError, BuildingKind, CraftableId, FleetComposition, MissionOrder, MissionTarget,
@@ -50,6 +52,10 @@ pub enum GameAction {
         origin_colony_id: ColonyId,
         destination_colony_id: ColonyId,
         cargo: ResourceStock,
+    },
+    LaunchHarvest {
+        colony_id: ColonyId,
+        site_id: ExtractionSiteId,
     },
     LaunchColonization {
         colony_id: ColonyId,

@@ -5,8 +5,8 @@
 ## Vue d’ensemble
 
 - **45 issues** au total
-- **23 terminées**
-- **22 à faire**
+- **24 terminées**
+- **21 à faire**
 
 ## Sommaire de la roadmap
 
@@ -46,7 +46,7 @@
 | ✅ | [MVP-027](#eng-35) — Initialiser une nouvelle colonie jouable | [ENG-35](https://cadylo.app/galactic/issue/ENG-35) | P1 | 8 |
 | ✅ | [MVP-028](#eng-36) — Ajouter la gestion multi-colonies | [ENG-36](https://cadylo.app/galactic/issue/ENG-36) | P1 | 8 |
 | ✅ | [MVP-029](#eng-37) — Ajouter les missions de transport entre colonies | [ENG-37](https://cadylo.app/galactic/issue/ENG-37) | P1 | 5 |
-| ⬜ | [MVP-029-B](#eng-53) — Ajouter les sites d'extraction et la récolte distante | [ENG-53](https://cadylo.app/galactic/issue/ENG-53) | P1 | — |
+| ✅ | [MVP-029-B](#eng-53) — Ajouter les sites d'extraction et la récolte distante | [ENG-53](https://cadylo.app/galactic/issue/ENG-53) | P1 | — |
 | ⬜ | [MVP-030](#eng-38) — Créer le HUD des flottes et missions | [ENG-38](https://cadylo.app/galactic/issue/ENG-38) | P2 | 8 |
 | ⬜ | [MVP-030-B](#eng-50) — Ajouter la navigation galactique avancée | [ENG-50](https://cadylo.app/galactic/issue/ENG-50) | P1 | 8 |
 | ⬜ | [MVP-031](#eng-39) — Implémenter sauvegarde, chargement et migration V1 | [ENG-39](https://cadylo.app/galactic/issue/ENG-39) | P1 | 8 |
@@ -1440,7 +1440,7 @@ de missions générique.
 | Métadonnée | Valeur |
 |---|---|
 | Issue | [ENG-53](https://cadylo.app/galactic/issue/ENG-53) |
-| Statut | À faire |
+| Statut | Terminée |
 | Priorité | P1 |
 | Estimation | Non estimée |
 | Créée le | 27/07/2026 |
@@ -1467,9 +1467,9 @@ sites distants après stabilisation de la boucle militaire et multi-colonies.
 
 ### Critères d'acceptation
 
-- Une mission ne crée jamais plus de ressources que le site n'en fournit.
-- Une reprise de sauvegarde conserve le site, la cargaison et la phase.
-- Les valeurs d'équilibrage sont modifiables dans le ruleset.
+- [x] Une mission ne crée jamais plus de ressources que le site n'en fournit.
+- [x] Une reprise de sauvegarde conserve le site, la cargaison et la phase.
+- [x] Les valeurs d'équilibrage sont modifiables dans le ruleset.
 
 [↑ Retour au sommaire](#sommaire-de-la-roadmap)
 

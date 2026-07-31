@@ -1442,3 +1442,31 @@ Versions après ce checkpoint :
 - `GAME_STATE_VERSION = 25` ;
 - `SAVE_VERSION = 26` ;
 - `RULESET_SCHEMA_VERSION` reste 10.
+
+## MVP-029-B — Récolte distante déterministe
+
+Le ruleset externe ajoute `extraction.ron` et un profil par `PlanetKind`.
+Chaque profil fixe la ressource, la réserve initiale du site, le rendement
+maximal d'une mission et le nombre de ticks passés au chargement. La génération
+crée un `ExtractionSiteId` stable dérivé du `PlanetId`, tandis que
+`ExtractionSiteState` porte uniquement la réserve mutable et l'éventuelle
+mission qui la réserve.
+
+`GameAction::LaunchHarvest` identifie la colonie d'origine et le site. Le moteur
+exige une planète analysée, `RemoteExtraction`, une route valide et un cargo
+vide disponible ou formable. Le site est réservé atomiquement au lancement.
+À la fin du chargement, le prélèvement est borné simultanément par le rendement,
+la réserve restante et la capacité de la flotte ; la réserve est débitée une
+seule fois et devient une cargaison réelle pendant le retour.
+
+Au retour, le stockage de la colonie reçoit ce qu'il peut accepter et le
+reliquat demeure dans la flotte amarrée. Annulation, épuisement, résultat et
+rapport sont explicites. La validation croise les réservations avec les
+missions actives, et la sauvegarde conserve site, phase et cargaison afin qu'une
+reprise produise le même état final qu'une exécution continue.
+
+Versions après ce checkpoint :
+
+- `GAME_STATE_VERSION = 26` ;
+- `SAVE_VERSION = 27` ;
+- `RULESET_SCHEMA_VERSION = 11`.

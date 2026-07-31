@@ -6,16 +6,16 @@ use galactic_domain::{
 };
 use galactic_sim::{
     BuildingLevels, ColonyFoundation, ColonyState, CombatReport, ConstructionQueue, CraftInventory,
-    CraftQueue, DiplomacyState, FactionData, FactionKind, FleetAssignment, FleetComposition,
-    FleetLocation, FleetState, GameState, MissionReport, MissionState, PlanetAnalysisReport,
-    PlanetKnowledge, PlanetResourceProfile, PlanetaryIntelligenceReport, PlanetaryPresence,
-    ProductionRemainder, ProductionRemainderError, ResearchState, SelectionTarget, Simulation,
-    SimulationBuildError, StrategicClock, StrategicClockError, StrategicTick, SystemKnowledge,
-    TimeSpeed, default_ruleset, production_refresh_ticks,
+    CraftQueue, DiplomacyState, ExtractionSiteState, FactionData, FactionKind, FleetAssignment,
+    FleetComposition, FleetLocation, FleetState, GameState, MissionReport, MissionState,
+    PlanetAnalysisReport, PlanetKnowledge, PlanetResourceProfile, PlanetaryIntelligenceReport,
+    PlanetaryPresence, ProductionRemainder, ProductionRemainderError, ResearchState,
+    SelectionTarget, Simulation, SimulationBuildError, StrategicClock, StrategicClockError,
+    StrategicTick, SystemKnowledge, TimeSpeed, default_ruleset, production_refresh_ticks,
 };
 
-/// Version 26 persists transport cargo, delivery progress and reports.
-pub const SAVE_VERSION: u32 = 26;
+/// Version 27 persists extraction sites, reservations and harvest progress.
+pub const SAVE_VERSION: u32 = 27;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SaveGame {
@@ -58,6 +58,7 @@ pub struct MutableGameSave {
     pub combat_reports: Vec<CombatReport>,
     pub colony_foundations: Vec<ColonyFoundation>,
     pub planet_analysis_reports: Vec<PlanetAnalysisReport>,
+    pub extraction_sites: Vec<ExtractionSiteState>,
     pub planetary_presences: Vec<PlanetaryPresence>,
     pub planetary_intelligence_reports: Vec<PlanetaryIntelligenceReport>,
     pub research: ResearchState,
@@ -241,6 +242,7 @@ pub fn snapshot_from_simulation(simulation: &Simulation) -> SaveGame {
             combat_reports: state.combat_reports.clone(),
             colony_foundations: state.colony_foundations.clone(),
             planet_analysis_reports: state.planet_analysis_reports.clone(),
+            extraction_sites: state.extraction_sites.clone(),
             planetary_presences: state.planetary_presences.clone(),
             planetary_intelligence_reports: state.planetary_intelligence_reports.clone(),
             research: state.research.clone(),
@@ -389,6 +391,7 @@ pub fn restore_from_snapshot(save: &SaveGame) -> Result<Simulation, SaveError> {
         combat_reports: save.state.combat_reports.clone(),
         colony_foundations: save.state.colony_foundations.clone(),
         planet_analysis_reports: save.state.planet_analysis_reports.clone(),
+        extraction_sites: save.state.extraction_sites.clone(),
         planetary_presences: save.state.planetary_presences.clone(),
         planetary_intelligence_reports: save.state.planetary_intelligence_reports.clone(),
         research: save.state.research.clone(),
@@ -405,7 +408,7 @@ pub fn restore_from_snapshot(save: &SaveGame) -> Result<Simulation, SaveError> {
 mod tests {
     use std::time::Duration;
 
-    use galactic_domain::{Owner, PlanetId, UniverseConfig};
+    use galactic_domain::{ExtractionSiteId, Owner, PlanetId, UniverseConfig};
     use galactic_sim::{
         BuildingKind, CraftableId, FleetComposition, GAME_STATE_VERSION, GameAction,
         KnowledgeLevel, MissionKind, MissionOrder, MissionPhase, MissionResult, MissionTarget,
@@ -629,6 +632,92 @@ mod tests {
             })
             .expect("the cargo fleet launches");
         (simulation, launched.mission_id, cargo)
+    }
+
+    fn simulation_with_launched_harvest() -> (Simulation, MissionId, ExtractionSiteId) {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+        let actor = simulation.state().player_faction;
+        let colony_id = simulation.state().colonies[0].id;
+        let origin = simulation.state().colonies[0].system_id;
+        let target_system = simulation.universe_repository().neighboring_systems(origin)[0];
+        let target = simulation
+            .universe()
+            .system(target_system)
+            .expect("the neighboring system exists")
+            .planets[0]
+            .id;
+        let repository = simulation.universe_repository().clone();
+        simulation.state_mut().research = ResearchState::from_completed([
+            TechnologyId::SPATIAL_DETECTION,
+            TechnologyId::PROPULSION,
+            TechnologyId::CARGO_CAPACITY,
+            TechnologyId::REMOTE_EXTRACTION,
+            TechnologyId::PLANETARY_ANALYSIS,
+        ]);
+        simulation.state_mut().advance_system_knowledge(
+            &repository,
+            target_system,
+            KnowledgeLevel::Probed,
+        );
+        simulation.state_mut().advance_planet_knowledge(
+            &repository,
+            target,
+            KnowledgeLevel::Probed,
+        );
+        {
+            let colony = &mut simulation.state_mut().colonies[0];
+            colony
+                .buildings
+                .set_level(BuildingKind::CONSTRUCTION_CENTER, 2);
+            colony.buildings.set_level(BuildingKind::METAL_MINE, 2);
+            colony
+                .buildings
+                .set_level(BuildingKind::CRYSTAL_EXTRACTOR, 2);
+            colony.buildings.set_level(BuildingKind::WAREHOUSE, 1);
+            colony.buildings.set_level(BuildingKind::POWER_PLANT, 2);
+            colony.buildings.set_level(BuildingKind::SHIPYARD, 1);
+            colony.energy = default_building_catalog().energy_grid_for_levels(colony.buildings);
+            colony
+                .resources
+                .credit(ResourceStock::new(1_000, 1_000, 1_000))
+                .expect("test funding fits the configured storage");
+        }
+        simulation.apply_player_action(GameAction::AnalyzePlanet { planet_id: target });
+        simulation.apply_player_action(GameAction::QueueCraft {
+            colony_id,
+            craftable: CraftableId::LIGHT_CARGO,
+        });
+        simulation.advance(Duration::from_secs(80));
+        assert_eq!(
+            simulation.state().colonies[0]
+                .inventory
+                .quantity(CraftableId::LIGHT_CARGO),
+            1,
+        );
+        let site_id = ExtractionSiteId::for_planet(target);
+        let events =
+            simulation.apply_player_action(GameAction::LaunchHarvest { colony_id, site_id });
+        let launched = events
+            .iter()
+            .find_map(|event| match event.kind {
+                galactic_sim::GameEventKind::MissionLaunched(launched)
+                    if launched.kind == MissionKind::Harvest =>
+                {
+                    Some(launched)
+                }
+                _ => None,
+            })
+            .expect("the harvest cargo launches");
+        assert_eq!(
+            simulation
+                .state()
+                .extraction_site(site_id)
+                .expect("the site exists")
+                .reserved_by,
+            Some(launched.mission_id),
+        );
+        assert_eq!(simulation.state().player_faction, actor);
+        (simulation, launched.mission_id, site_id)
     }
 
     #[test]
@@ -930,6 +1019,72 @@ mod tests {
     }
 
     #[test]
+    fn harvest_site_cargo_and_phase_resume_without_duplication() {
+        let (mut uninterrupted, mission_id, site_id) = simulation_with_launched_harvest();
+        let return_departure = uninterrupted
+            .state()
+            .mission(mission_id)
+            .expect("the harvest mission exists")
+            .plan
+            .return_departure_at;
+        let ticks_until_return = return_departure
+            .value()
+            .saturating_sub(uninterrupted.state().clock.current_tick().value());
+        uninterrupted
+            .advance(galactic_sim::StrategicDuration::from_ticks(ticks_until_return).as_duration());
+        let mission = uninterrupted
+            .state()
+            .mission(mission_id)
+            .expect("the harvest mission exists");
+        assert_eq!(mission.phase, MissionPhase::Returning);
+        let cargo = uninterrupted
+            .state()
+            .fleet(mission.order.fleet_id)
+            .expect("the returning cargo fleet exists")
+            .cargo;
+        assert!(!cargo.is_zero());
+        let remaining = uninterrupted
+            .state()
+            .extraction_site(site_id)
+            .expect("the harvested site exists")
+            .remaining;
+
+        let in_flight = snapshot_from_simulation(&uninterrupted);
+        let mut restored =
+            restore_from_snapshot(&in_flight).expect("an in-flight harvest is compatible");
+        assert_eq!(restored.state(), uninterrupted.state());
+        assert_eq!(
+            restored
+                .state()
+                .extraction_site(site_id)
+                .expect("the site survives restore")
+                .remaining,
+            remaining,
+        );
+
+        uninterrupted.advance(Duration::from_secs(120));
+        restored.advance(Duration::from_secs(120));
+        assert_eq!(restored.state(), uninterrupted.state());
+        assert!(matches!(
+            restored
+                .state()
+                .mission(mission_id)
+                .expect("the harvest mission completes")
+                .result,
+            Some(MissionResult::Harvest(galactic_sim::HarvestMissionResult {
+                collected,
+                delivered,
+                retained,
+                ..
+            })) if collected == cargo && delivered == cargo && retained.is_zero()
+        ));
+        let resolved = snapshot_from_simulation(&restored);
+        let reloaded =
+            restore_from_snapshot(&resolved).expect("a completed harvest remains compatible");
+        assert_eq!(reloaded.state(), restored.state());
+    }
+
+    #[test]
     fn unknown_active_colony_is_rejected_during_restore() {
         let simulation = Simulation::new(UniverseConfig::mvp());
         let mut save = snapshot_from_simulation(&simulation);
@@ -1174,7 +1329,7 @@ mod tests {
     }
 
     #[test]
-    fn state_and_save_versions_match_mvp_029() {
+    fn state_and_save_versions_match_mvp_029_b() {
         let simulation = Simulation::new(UniverseConfig::mvp());
         let save = snapshot_from_simulation(&simulation);
 

@@ -17,8 +17,8 @@ use bevy::render::{
 use bevy::text::{FontAtlasSet, FontCx, FontSource};
 use bevy::window::{PresentMode, PrimaryWindow};
 use galactic_domain::{
-    PlanetId, PlanetKind, ResourceStock, StarClass, SystemId, UniverseConfig, UniverseScalePreset,
-    WorldPosition,
+    ExtractionSiteId, PlanetId, PlanetKind, ResourceKind, ResourceStock, StarClass, SystemId,
+    UniverseConfig, UniverseScalePreset, WorldPosition,
 };
 use galactic_sim::{
     AttackMissionOutcome, ColonizationBlocker, ColonizationMissionOutcome, CombatControlChange,
@@ -954,6 +954,7 @@ enum UiAction {
     ExitSystem,
     LaunchProbe,
     LaunchAttack,
+    LaunchHarvest,
     LaunchColonization,
     AnalyzePlanet,
     ToggleProjection,
@@ -1756,6 +1757,7 @@ fn spawn_ui(mut commands: Commands) {
             spawn_action_button(parent, UiAction::LaunchProbe, "Lancer reconnaissance", "K");
             spawn_action_button(parent, UiAction::AnalyzePlanet, "Analyser planète", "L");
             spawn_action_button(parent, UiAction::LaunchAttack, "Lancer attaque", "M");
+            spawn_action_button(parent, UiAction::LaunchHarvest, "Lancer récolte", "H");
             spawn_action_button(
                 parent,
                 UiAction::LaunchColonization,
@@ -1808,7 +1810,7 @@ fn spawn_ui(mut commands: Commands) {
 
     commands.spawn((
         Text::new(
-            "Clic sélectionner | Double-clic ouvrir/recentrer | K sonder | L analyser | M attaquer | N coloniser | P projection | droit orbite | milieu déplacer | molette zoom",
+            "Clic sélectionner | Double-clic ouvrir/recentrer | K sonder | L analyser | M attaquer | H récolter | N coloniser | P projection | droit orbite | milieu déplacer | molette zoom",
         ),
         ui_text_font(12.0),
         TextColor(Color::srgb(0.76, 0.84, 0.90)),
@@ -4193,6 +4195,8 @@ fn simulation_shortcut(keyboard: &ButtonInput<KeyCode>) -> Option<UiAction> {
         Some(UiAction::AnalyzePlanet)
     } else if keyboard.just_pressed(KeyCode::KeyM) {
         Some(UiAction::LaunchAttack)
+    } else if keyboard.just_pressed(KeyCode::KeyH) {
+        Some(UiAction::LaunchHarvest)
     } else if keyboard.just_pressed(KeyCode::KeyN) {
         Some(UiAction::LaunchColonization)
     } else {
@@ -4276,6 +4280,14 @@ fn apply_ui_action(
                 );
             }
         }
+        UiAction::LaunchHarvest => {
+            if let Some((colony_id, site_id)) = selected_harvest_context(simulation.simulation()) {
+                apply_simulation_command(
+                    simulation,
+                    GameAction::LaunchHarvest { colony_id, site_id },
+                );
+            }
+        }
         UiAction::LaunchColonization => {
             if let Some((colony_id, target)) =
                 selected_colonization_context(simulation.simulation())
@@ -4339,6 +4351,7 @@ fn action_available(
         UiAction::ExitSystem => matches!(navigation.mode, StrategicViewMode::System(_)),
         UiAction::LaunchProbe => selected_probe_context(simulation.simulation()).is_some(),
         UiAction::LaunchAttack => selected_attack_context(simulation.simulation()).is_some(),
+        UiAction::LaunchHarvest => selected_harvest_context(simulation.simulation()).is_some(),
         UiAction::LaunchColonization => {
             selected_colonization_context(simulation.simulation()).is_some()
         }
@@ -4423,6 +4436,28 @@ fn selected_attack_context(
             planet_id,
         },
     ))
+}
+
+fn selected_harvest_context(
+    simulation: &Simulation,
+) -> Option<(galactic_domain::ColonyId, ExtractionSiteId)> {
+    let state = simulation.state();
+    let SelectionTarget::Planet { planet_id, .. } = state.selected else {
+        return None;
+    };
+    if state.planet_knowledge_level(planet_id) < KnowledgeLevel::Analyzed
+        || !state
+            .research
+            .has_unlock(TechnologyUnlock::RemoteExtraction)
+        || state.colony_on_planet(planet_id).is_some()
+    {
+        return None;
+    }
+    let site = state.extraction_site_on_planet(planet_id)?;
+    if site.is_depleted() || site.reserved_by.is_some() {
+        return None;
+    }
+    Some((state.active_player_colony()?.id, site.id))
 }
 
 fn selected_colonization_context(
@@ -5863,7 +5898,7 @@ Rapport d'analyse : manquant
         planet.id,
     );
 
-    format!(
+    let mut body = format!(
         "Système : {system_label}
 Type : {:?}
 Environnement : {}
@@ -5893,6 +5928,46 @@ Lunes : aucune donnée disponible
         report.resource_profile.energy,
         planetary_intelligence_text(simulation, planet.id),
         colonizability_text(&assessment, simulation.state()),
+    );
+    body.push_str("\n\n");
+    body.push_str(&extraction_site_text(simulation, planet.id));
+    body
+}
+
+fn extraction_site_text(simulation: &Simulation, planet_id: PlanetId) -> String {
+    let Some(site) = simulation.state().extraction_site_on_planet(planet_id) else {
+        return "SITE D'EXTRACTION\nAucun gisement recensé".to_string();
+    };
+    let resource = match site.resource {
+        ResourceKind::Metal => "métal",
+        ResourceKind::Crystal => "cristal",
+        ResourceKind::Fuel => "carburant",
+        ResourceKind::Energy => "énergie",
+    };
+    let status = if site.is_depleted() {
+        "épuisé".to_string()
+    } else if let Some(mission_id) = site.reserved_by {
+        format!("réservé par la mission {}", mission_id.raw())
+    } else if simulation.state().colony_on_planet(planet_id).is_some() {
+        "intégré à la colonie".to_string()
+    } else if !simulation
+        .state()
+        .research
+        .has_unlock(TechnologyUnlock::RemoteExtraction)
+    {
+        "Prospection autonome requise".to_string()
+    } else {
+        "disponible — H pour lancer la récolte".to_string()
+    };
+    let planet = simulation
+        .universe_repository()
+        .planet(planet_id)
+        .expect("an extraction site references a generated planet");
+    let rule = default_ruleset().extraction().rule_for(planet.kind);
+
+    format!(
+        "SITE D'EXTRACTION\nRessource : {resource}\nRéserve : {}\nRendement : {}/tick pendant {} ticks\nStatut : {status}",
+        site.remaining, rule.yield_per_tick, rule.harvest_ticks,
     )
 }
 
@@ -6665,6 +6740,14 @@ fn event_label(event: GameEvent) -> String {
                 ),
             },
             MissionResult::Transport(result) => transport_result_label(result),
+            MissionResult::Harvest(result) => format!(
+                "récolte terminée sur le site {} : {}, {} livré, {} conservé en soute, réserve restante {}",
+                result.site_id.raw(),
+                transport_cargo_label(result.collected),
+                transport_cargo_label(result.delivered),
+                transport_cargo_label(result.retained),
+                result.site_remaining,
+            ),
             MissionResult::Colonize(result) => match result.outcome {
                 ColonizationMissionOutcome::FoundationPrepared => format!(
                     "fondation prête sur le corps {} : Arche Pionnière et chargement déployés",
@@ -6798,6 +6881,36 @@ fn mission_error_text(error: galactic_sim::MissionError) -> String {
         }
         galactic_sim::MissionError::TransportCargoExceedsCapacity { capacity, .. } => {
             format!("la cargaison dépasse la capacité de la flotte ({capacity})")
+        }
+        galactic_sim::MissionError::HarvestOrderRequired => {
+            "utilisez l'ordre de récolte avec une colonie d'origine et un site analysé".to_string()
+        }
+        galactic_sim::MissionError::UnknownExtractionSite(_) => {
+            "le site d'extraction sélectionné n'existe plus".to_string()
+        }
+        galactic_sim::MissionError::HarvestTargetMismatch { .. } => {
+            "le site ne correspond plus à la planète sélectionnée".to_string()
+        }
+        galactic_sim::MissionError::HarvestPlanetNotAnalyzed { .. } => {
+            "la planète doit être sondée puis analysée avant toute récolte".to_string()
+        }
+        galactic_sim::MissionError::MissingHarvestTechnology(_) => {
+            "recherchez Prospection autonome avant de lancer une récolte".to_string()
+        }
+        galactic_sim::MissionError::ExtractionSiteOnColony(_) => {
+            "ce gisement appartient déjà à une colonie et n'est pas un site distant".to_string()
+        }
+        galactic_sim::MissionError::ExtractionSiteDepleted(_) => {
+            "ce site d'extraction est épuisé".to_string()
+        }
+        galactic_sim::MissionError::ExtractionSiteBusy { .. } => {
+            "ce site est déjà réservé par une autre mission".to_string()
+        }
+        galactic_sim::MissionError::HarvestFleetUnavailable(_) => {
+            "aucun Caboteur Sillage disponible ; construisez-en au chantier orbital".to_string()
+        }
+        galactic_sim::MissionError::HarvestFleetHasCargo(_) => {
+            "la flotte de récolte transporte déjà une cargaison".to_string()
         }
         galactic_sim::MissionError::ColonizationPlanetTargetRequired => {
             "une colonisation doit cibler une planète".to_string()
@@ -7470,6 +7583,8 @@ VmSwap:\t      2048 kB
         assert!(rendered.contains("Rapport établi au tick"));
         assert!(rendered.contains("POTENTIEL EXACT"));
         assert!(rendered.contains("COLONISABILITÉ — BLOQUÉE"));
+        assert!(rendered.contains("SITE D'EXTRACTION"));
+        assert!(rendered.contains("Prospection autonome requise"));
         assert!(!rendered.contains("Potentiel : analyse requise"));
     }
 
@@ -7721,6 +7836,7 @@ VmSwap:\t      2048 kB
             attack: None,
             colonization: None,
             transport: None,
+            harvest: None,
             result: None,
         };
 
@@ -7872,6 +7988,17 @@ VmSwap:\t      2048 kB
         keyboard.press(KeyCode::KeyM);
 
         assert_eq!(simulation_shortcut(&keyboard), Some(UiAction::LaunchAttack));
+    }
+
+    #[test]
+    fn harvest_shortcut_uses_h() {
+        let mut keyboard = ButtonInput::<KeyCode>::default();
+        keyboard.press(KeyCode::KeyH);
+
+        assert_eq!(
+            simulation_shortcut(&keyboard),
+            Some(UiAction::LaunchHarvest)
+        );
     }
 
     #[test]

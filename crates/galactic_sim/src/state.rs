@@ -1,23 +1,24 @@
 // MVP-023: faction-owned state with deterministic discovery frontiers.
 use galactic_domain::{
-    ColonyId, EnergyGrid, FactionId, FleetId, MissionId, Owned, Owner, PlanetId, ResourceLedger,
-    Route, SystemId,
+    ColonyId, EnergyGrid, ExtractionSiteId, FactionId, FleetId, MissionId, Owned, Owner, PlanetId,
+    ResourceLedger, Route, SystemId,
 };
 
 use crate::{
     BuildingLevels, ColonyFoundation, CombatReport, ConstructionQueue, CraftInventory, CraftQueue,
-    DiplomacyError, DiplomacyState, DiplomaticRelation, DiscoveryFrontier, FleetState,
-    KnowledgeChange, KnowledgeCounts, KnowledgeLevel, KnowledgeTarget, MissionReport, MissionState,
-    PlanetAnalysisReport, PlanetKnowledge, PlanetResourceProfile, PlanetaryIntelligenceReport,
-    PlanetaryPresence, ProductionRemainder, ResearchState, SelectionTarget, StartingScenario,
-    StartingScenarioError, StrategicClock, StrategicTick, SystemKnowledge, UniverseRepository,
+    DiplomacyError, DiplomacyState, DiplomaticRelation, DiscoveryFrontier, ExtractionSiteState,
+    FleetState, KnowledgeChange, KnowledgeCounts, KnowledgeLevel, KnowledgeTarget, MissionReport,
+    MissionState, PlanetAnalysisReport, PlanetKnowledge, PlanetResourceProfile,
+    PlanetaryIntelligenceReport, PlanetaryPresence, ProductionRemainder, ResearchState,
+    SelectionTarget, StartingScenario, StartingScenarioError, StrategicClock, StrategicTick,
+    SystemKnowledge, UniverseRepository, generate_extraction_sites,
     intelligence_precision_for_knowledge, planetary_presence_rules, refresh_planetary_intelligence,
 };
 
 /// Version of the mutable in-memory state contract.
 ///
-/// Version 25 persists transport commitments, cargo reservations and results.
-pub const GAME_STATE_VERSION: u32 = 25;
+/// Version 26 persists extraction sites, reservations and harvest cargo.
+pub const GAME_STATE_VERSION: u32 = 26;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemVisibility {
@@ -66,6 +67,7 @@ pub struct GameState {
     pub combat_reports: Vec<CombatReport>,
     pub colony_foundations: Vec<ColonyFoundation>,
     pub planet_analysis_reports: Vec<PlanetAnalysisReport>,
+    pub extraction_sites: Vec<ExtractionSiteState>,
     pub planetary_presences: Vec<PlanetaryPresence>,
     pub planetary_intelligence_reports: Vec<PlanetaryIntelligenceReport>,
     pub research: ResearchState,
@@ -141,6 +143,7 @@ impl GameState {
             combat_reports: Vec::new(),
             colony_foundations: Vec::new(),
             planet_analysis_reports: Vec::new(),
+            extraction_sites: generate_extraction_sites(universe),
             planetary_presences,
             planetary_intelligence_reports: Vec::new(),
             research: ResearchState::from_completed(scenario.initial_technologies.iter().copied()),
@@ -332,6 +335,23 @@ impl GameState {
         self.planet_analysis_reports
             .iter()
             .find(|report| report.planet_id == planet_id)
+    }
+
+    pub fn extraction_site(&self, id: ExtractionSiteId) -> Option<&ExtractionSiteState> {
+        self.extraction_sites.iter().find(|site| site.id == id)
+    }
+
+    pub fn extraction_site_mut(
+        &mut self,
+        id: ExtractionSiteId,
+    ) -> Option<&mut ExtractionSiteState> {
+        self.extraction_sites.iter_mut().find(|site| site.id == id)
+    }
+
+    pub fn extraction_site_on_planet(&self, planet_id: PlanetId) -> Option<&ExtractionSiteState> {
+        self.extraction_sites
+            .iter()
+            .find(|site| site.planet_id == planet_id)
     }
 
     pub fn planetary_presence(&self, planet_id: PlanetId) -> Option<&PlanetaryPresence> {

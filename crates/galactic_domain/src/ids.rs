@@ -35,6 +35,7 @@ stable_id!(FactionId);
 stable_id!(ColonyId);
 stable_id!(FleetId);
 stable_id!(MissionId);
+stable_id!(ExtractionSiteId);
 
 impl UniverseId {
     pub const MVP: Self = Self::new(0);
@@ -81,6 +82,12 @@ impl MoonId {
     }
 }
 
+impl ExtractionSiteId {
+    pub const fn for_planet(planet_id: PlanetId) -> Self {
+        Self::new(planet_id.raw())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -100,6 +107,10 @@ mod tests {
 
         let moon = MoonId::from_planet_index(planet_a1, 4);
         assert_eq!(moon.local_index(), 4);
+        assert_eq!(
+            ExtractionSiteId::for_planet(planet_a1).raw(),
+            planet_a1.raw()
+        );
     }
 
     #[test]
