@@ -452,6 +452,7 @@ fn handle_research_shortcuts(
     mut management: ResMut<ColonyManagementState>,
     mut craft: ResMut<CraftUiState>,
     mut fleet: ResMut<FleetUiState>,
+    mut navigation_ui: ResMut<super::navigation_ui::NavigationUiState>,
 ) {
     if keyboard.just_pressed(KeyCode::KeyT) {
         ui.open = !ui.open;
@@ -460,6 +461,8 @@ fn handle_research_shortcuts(
             management.open = false;
             craft.open = false;
             fleet.open = false;
+            navigation_ui.search_open = false;
+            navigation_ui.filters_open = false;
         }
         return;
     }
@@ -475,6 +478,7 @@ fn handle_research_buttons(
     mut management: ResMut<ColonyManagementState>,
     mut craft: ResMut<CraftUiState>,
     mut fleet: ResMut<FleetUiState>,
+    mut navigation_ui: ResMut<super::navigation_ui::NavigationUiState>,
     interactions: ResearchButtonInteractionQuery,
 ) {
     for (interaction, action) in &interactions {
@@ -490,6 +494,8 @@ fn handle_research_buttons(
                     management.open = false;
                     craft.open = false;
                     fleet.open = false;
+                    navigation_ui.search_open = false;
+                    navigation_ui.filters_open = false;
                 }
             }
             ResearchButtonAction::Close => {

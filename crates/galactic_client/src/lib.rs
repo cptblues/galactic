@@ -1,11 +1,16 @@
 mod craft_ui;
 mod fleet_ui;
+mod navigation_ui;
 mod research_ui;
 
 use craft_ui::CraftUiPlugin;
 use fleet_ui::FleetUiPlugin;
+use navigation_ui::NavigationUiPlugin;
 use research_ui::ResearchUiPlugin;
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
 
 use bevy::asset::RenderAssetUsages;
 use bevy::ecs::system::SystemParam;
@@ -19,8 +24,8 @@ use bevy::render::{
 use bevy::text::{FontAtlasSet, FontCx, FontSource};
 use bevy::window::{PresentMode, PrimaryWindow};
 use galactic_domain::{
-    ExtractionSiteId, PlanetId, PlanetKind, ResourceKind, ResourceStock, StarClass, SystemId,
-    UniverseConfig, UniverseScalePreset, WorldPosition,
+    ExtractionSiteId, PlanetId, PlanetKind, ResourceKind, ResourceStock, SectorId, StarClass,
+    SystemId, UniverseConfig, UniverseScalePreset, WorldPosition,
 };
 use galactic_sim::{
     AttackMissionOutcome, ColonizationBlocker, ColonizationMissionOutcome, CombatControlChange,
@@ -98,6 +103,9 @@ impl Plugin for ClientPlugin {
         .init_resource::<VisualAssets>()
         .insert_resource(navigation)
         .init_resource::<ViewRebuildRequest>()
+        .init_resource::<NavigationHistory>()
+        .init_resource::<LabelBudgetState>()
+        .init_resource::<SelectedMission>()
         .init_resource::<PointerSelectionState>()
         .init_resource::<ColonyManagementState>()
         .init_resource::<MemoryDiagnostics>()
@@ -106,6 +114,7 @@ impl Plugin for ClientPlugin {
         .add_plugins(ResearchUiPlugin)
         .add_plugins(CraftUiPlugin)
         .add_plugins(FleetUiPlugin)
+        .add_plugins(NavigationUiPlugin)
         .add_systems(Startup, log_startup)
         .add_systems(Update, log_memory_diagnostics);
     }
@@ -190,6 +199,7 @@ impl Plugin for PresentationPlugin {
                 update_system_visuals,
                 update_orbiting_visuals,
                 update_planet_spins,
+                compute_label_budget,
                 update_system_labels,
                 update_sector_labels,
                 update_pointer_halo_positions,
@@ -568,10 +578,283 @@ impl StrategicNavigation {
             UniverseProjection::Flattened => UniverseProjection::Spatial,
         };
     }
+
+    fn snapshot(&self, selected: SelectionTarget) -> ViewSnapshot {
+        ViewSnapshot {
+            mode: self.mode,
+            universe_focus: self.universe_focus,
+            universe_distance: self.universe_distance,
+            universe_yaw: self.universe_yaw,
+            universe_pitch: self.universe_pitch,
+            system_focus: self.system_focus,
+            system_distance: self.system_distance,
+            system_yaw: self.system_yaw,
+            system_pitch: self.system_pitch,
+            selected,
+        }
+    }
+
+    fn restore(&mut self, snapshot: &ViewSnapshot) {
+        self.mode = snapshot.mode;
+        self.universe_focus = snapshot.universe_focus;
+        self.universe_distance = snapshot.universe_distance;
+        self.universe_yaw = snapshot.universe_yaw;
+        self.universe_pitch = snapshot.universe_pitch;
+        self.system_focus = snapshot.system_focus;
+        self.system_distance = snapshot.system_distance;
+        self.system_yaw = snapshot.system_yaw;
+        self.system_pitch = snapshot.system_pitch;
+        self.lod = UniverseLod::from_distance(self.universe_distance);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ViewSnapshot {
+    mode: StrategicViewMode,
+    universe_focus: Vec3,
+    universe_distance: f32,
+    universe_yaw: f32,
+    universe_pitch: f32,
+    system_focus: Vec3,
+    system_distance: f32,
+    system_yaw: f32,
+    system_pitch: f32,
+    pub(crate) selected: SelectionTarget,
+}
+
+const MAX_NAVIGATION_HISTORY: usize = 50;
+
+#[derive(Resource, Default)]
+pub(crate) struct NavigationHistory {
+    back: Vec<ViewSnapshot>,
+    forward: Vec<ViewSnapshot>,
+}
+
+impl NavigationHistory {
+    pub(crate) fn push(&mut self, snapshot: ViewSnapshot) {
+        self.back.push(snapshot);
+        if self.back.len() > MAX_NAVIGATION_HISTORY {
+            self.back.remove(0);
+        }
+        self.forward.clear();
+    }
+
+    fn navigate_back(&mut self, current: ViewSnapshot) -> Option<ViewSnapshot> {
+        let previous = self.back.pop()?;
+        self.forward.push(current);
+        Some(previous)
+    }
+
+    fn navigate_forward(&mut self, current: ViewSnapshot) -> Option<ViewSnapshot> {
+        let next = self.forward.pop()?;
+        self.back.push(current);
+        Some(next)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HistoryDirection {
+    Back,
+    Forward,
+}
+
+fn history_shortcut(keyboard: &ButtonInput<KeyCode>) -> Option<HistoryDirection> {
+    if keyboard.just_pressed(KeyCode::Backspace) {
+        Some(HistoryDirection::Back)
+    } else if keyboard.just_pressed(KeyCode::BracketRight) {
+        Some(HistoryDirection::Forward)
+    } else {
+        None
+    }
+}
+
+fn navigate_history(
+    direction: HistoryDirection,
+    simulation: &mut SimulationResource,
+    navigation: &mut StrategicNavigation,
+    history: &mut NavigationHistory,
+    rebuild: &mut ViewRebuildRequest,
+) {
+    let current_selected = simulation.simulation.state().selected;
+    let current = navigation.snapshot(current_selected);
+    let target = match direction {
+        HistoryDirection::Back => history.navigate_back(current),
+        HistoryDirection::Forward => history.navigate_forward(current),
+    };
+    let Some(target) = target else {
+        return;
+    };
+    navigation.restore(&target);
+    apply_selection(simulation, target.selected);
+    rebuild.0 = true;
+}
+
+fn apply_selection(simulation: &mut SimulationResource, selected: SelectionTarget) {
+    let action = match selected {
+        SelectionTarget::None => return,
+        SelectionTarget::System(system_id) => GameAction::SelectSystem(system_id),
+        SelectionTarget::Planet {
+            system_id,
+            planet_id,
+        } => GameAction::SelectPlanet {
+            system_id,
+            planet_id,
+        },
+    };
+    apply_simulation_command(simulation, action);
+}
+
+const SEARCH_JUMP_DISTANCE: f32 = 62.0;
+const SECTOR_FOCUS_DISTANCE: f32 = 96.0;
+
+pub(crate) fn navigate_to_selection(
+    simulation: &mut SimulationResource,
+    navigation: &mut StrategicNavigation,
+    history: &mut NavigationHistory,
+    rebuild: &mut ViewRebuildRequest,
+    target: SelectionTarget,
+    enter_system: bool,
+) {
+    let target_system = match target {
+        SelectionTarget::None => return,
+        SelectionTarget::System(system_id) | SelectionTarget::Planet { system_id, .. } => system_id,
+    };
+    let Some(system) = simulation.simulation.universe().system(target_system) else {
+        return;
+    };
+    let position = system.position;
+    let current_selected = simulation.simulation.state().selected;
+    let snapshot = navigation.snapshot(current_selected);
+
+    apply_selection(simulation, target);
+
+    if enter_system {
+        navigation.enter_system(target_system);
+    } else {
+        navigation.exit_system();
+        navigation.universe_focus =
+            projected_universe_position(position, navigation.projection_mix);
+        navigation.universe_distance = SEARCH_JUMP_DISTANCE;
+        navigation.lod = UniverseLod::from_distance(navigation.universe_distance);
+    }
+
+    history.push(snapshot);
+    rebuild.0 = true;
+}
+
+pub(crate) fn navigate_to_sector(
+    simulation: &mut SimulationResource,
+    navigation: &mut StrategicNavigation,
+    history: &mut NavigationHistory,
+    rebuild: &mut ViewRebuildRequest,
+    sector_center: WorldPosition,
+) {
+    let current_selected = simulation.simulation.state().selected;
+    let snapshot = navigation.snapshot(current_selected);
+
+    navigation.exit_system();
+    navigation.universe_focus =
+        projected_universe_position(sector_center, navigation.projection_mix);
+    navigation.universe_distance = navigation.universe_max_distance.min(SECTOR_FOCUS_DISTANCE);
+    navigation.lod = UniverseLod::from_distance(navigation.universe_distance);
+
+    history.push(snapshot);
+    rebuild.0 = true;
+}
+
+pub(crate) fn navigate_to_galaxy(
+    simulation: &mut SimulationResource,
+    navigation: &mut StrategicNavigation,
+    history: &mut NavigationHistory,
+    rebuild: &mut ViewRebuildRequest,
+) {
+    if matches!(navigation.mode, StrategicViewMode::Universe) {
+        return;
+    }
+    let current_selected = simulation.simulation.state().selected;
+    let snapshot = navigation.snapshot(current_selected);
+    navigation.exit_system();
+    history.push(snapshot);
+    rebuild.0 = true;
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum BreadcrumbKind {
+    Galaxy,
+    Sector(WorldPosition),
+    System(SystemId),
+    Planet,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct BreadcrumbSegment {
+    pub(crate) label: String,
+    pub(crate) kind: BreadcrumbKind,
+}
+
+pub(crate) fn breadcrumb_segments(
+    simulation: &Simulation,
+    navigation: &StrategicNavigation,
+) -> Vec<BreadcrumbSegment> {
+    let mut segments = vec![BreadcrumbSegment {
+        label: "Galaxie".to_string(),
+        kind: BreadcrumbKind::Galaxy,
+    }];
+    let state = simulation.state();
+
+    match navigation.mode {
+        StrategicViewMode::Universe => {
+            if let Some(system_id) = selected_system(state.selected)
+                && let Some(sector) = simulation
+                    .universe_repository()
+                    .sector_for_system(system_id)
+            {
+                segments.push(BreadcrumbSegment {
+                    label: sector.name.clone(),
+                    kind: BreadcrumbKind::Sector(sector.center),
+                });
+            }
+        }
+        StrategicViewMode::System(system_id) => {
+            if let Some(sector) = simulation
+                .universe_repository()
+                .sector_for_system(system_id)
+            {
+                segments.push(BreadcrumbSegment {
+                    label: sector.name.clone(),
+                    kind: BreadcrumbKind::Sector(sector.center),
+                });
+            }
+            if let Some(system) = simulation.universe().system(system_id) {
+                segments.push(BreadcrumbSegment {
+                    label: system.name.clone(),
+                    kind: BreadcrumbKind::System(system_id),
+                });
+                if let SelectionTarget::Planet {
+                    system_id: selected_system_id,
+                    planet_id,
+                } = state.selected
+                    && selected_system_id == system_id
+                    && state.planet_knowledge_level(planet_id).reveals_identity()
+                    && let Some(planet) = system.planet(planet_id)
+                {
+                    segments.push(BreadcrumbSegment {
+                        label: planet.name.clone(),
+                        kind: BreadcrumbKind::Planet,
+                    });
+                }
+            }
+        }
+    }
+
+    segments
 }
 
 #[derive(Resource, Default)]
 struct ViewRebuildRequest(bool);
+
+#[derive(Resource, Default)]
+pub(crate) struct SelectedMission(pub(crate) Option<galactic_domain::MissionId>);
 
 #[derive(Component)]
 struct StrategicViewEntity;
@@ -594,6 +877,8 @@ struct SystemLabel {
 
 #[derive(Component)]
 struct SectorLabel {
+    id: SectorId,
+    base_text: String,
     position: WorldPosition,
 }
 
@@ -630,6 +915,7 @@ struct RouteVisualStyle {
 
 #[derive(Debug, Clone, PartialEq)]
 struct KnownSectorLabel {
+    id: SectorId,
     text: String,
     position: WorldPosition,
 }
@@ -1267,12 +1553,14 @@ fn spawn_universe_view(
         let position =
             projected_universe_position(sector_label.position, navigation.projection_mix);
         commands.spawn((
-            Text2d::new(sector_label.text),
+            Text2d::new(sector_label.text.clone()),
             ui_text_font(18.0),
             TextColor(Color::srgba(0.96, 0.74, 0.36, 0.88)),
             Transform::from_translation(position + Vec3::new(0.0, 4.2, 0.0))
                 .with_scale(Vec3::splat(0.36)),
             SectorLabel {
+                id: sector_label.id,
+                base_text: sector_label.text,
                 position: sector_label.position,
             },
             StrategicViewEntity,
@@ -1319,6 +1607,7 @@ fn known_sector_labels(simulation: &Simulation) -> Vec<KnownSectorLabel> {
                     });
 
             Some(KnownSectorLabel {
+                id: sector.id,
                 text: sector.name.clone(),
                 position: WorldPosition::new(
                     position.x / divisor,
@@ -1779,6 +2068,8 @@ fn spawn_ui(mut commands: Commands) {
             research_ui::spawn_research_toggle(parent);
             craft_ui::spawn_craft_toggle(parent);
             fleet_ui::spawn_fleet_toggle(parent);
+            navigation_ui::spawn_search_toggle(parent);
+            navigation_ui::spawn_filters_toggle(parent);
         });
 
     commands
@@ -2544,34 +2835,64 @@ fn handle_simulation_input(
     mut simulation: ResMut<SimulationResource>,
     mut navigation: ResMut<StrategicNavigation>,
     mut rebuild: ResMut<ViewRebuildRequest>,
+    mut history: ResMut<NavigationHistory>,
+    navigation_ui: Res<navigation_ui::NavigationUiState>,
 ) {
+    if navigation_ui.search_open {
+        return;
+    }
     if let Some(action) = simulation_shortcut(&keyboard) {
-        apply_ui_action(action, &mut simulation, &mut navigation, &mut rebuild);
+        apply_ui_action(
+            action,
+            &mut simulation,
+            &mut navigation,
+            &mut rebuild,
+            &mut history,
+        );
     }
 }
 
+#[derive(SystemParam)]
+struct ViewInputState<'w> {
+    keyboard: Res<'w, ButtonInput<KeyCode>>,
+    simulation: ResMut<'w, SimulationResource>,
+    navigation: ResMut<'w, StrategicNavigation>,
+    rebuild: ResMut<'w, ViewRebuildRequest>,
+    pointer_state: ResMut<'w, PointerSelectionState>,
+    management: ResMut<'w, ColonyManagementState>,
+    history: ResMut<'w, NavigationHistory>,
+}
+
+#[allow(clippy::type_complexity)]
 fn handle_view_input(
-    keyboard: Res<ButtonInput<KeyCode>>,
-    mut simulation: ResMut<SimulationResource>,
-    mut navigation: ResMut<StrategicNavigation>,
-    mut rebuild: ResMut<ViewRebuildRequest>,
-    mut pointer_state: ResMut<PointerSelectionState>,
-    mut management: ResMut<ColonyManagementState>,
+    input: ViewInputState,
     mut overlays: ParamSet<(
         Res<research_ui::ResearchUiState>,
         Res<craft_ui::CraftUiState>,
         Res<fleet_ui::FleetUiState>,
+        ResMut<navigation_ui::NavigationUiState>,
     )>,
 ) {
+    let ViewInputState {
+        keyboard,
+        mut simulation,
+        mut navigation,
+        mut rebuild,
+        mut pointer_state,
+        mut management,
+        mut history,
+    } = input;
+
     let research_open = overlays.p0().open;
     let craft_open = overlays.p1().open;
     let fleet_open = overlays.p2().open;
-    if research_open || craft_open || fleet_open {
+    let navigation_ui_open = overlays.p3().is_open();
+    if research_open || craft_open || fleet_open || navigation_ui_open {
         return;
     }
 
     if keyboard.just_pressed(KeyCode::KeyC) {
-        toggle_colony_management(&mut management, &mut simulation);
+        toggle_colony_management(&mut management, &mut simulation, &mut overlays.p3());
         pointer_state.ambiguity = None;
         return;
     }
@@ -2605,8 +2926,25 @@ fn handle_view_input(
         }
     }
 
+    if let Some(direction) = history_shortcut(&keyboard) {
+        navigate_history(
+            direction,
+            &mut simulation,
+            &mut navigation,
+            &mut history,
+            &mut rebuild,
+        );
+        return;
+    }
+
     if let Some(action) = view_shortcut(&keyboard) {
-        apply_ui_action(action, &mut simulation, &mut navigation, &mut rebuild);
+        apply_ui_action(
+            action,
+            &mut simulation,
+            &mut navigation,
+            &mut rebuild,
+            &mut history,
+        );
     }
 }
 
@@ -2615,6 +2953,7 @@ fn handle_action_buttons(
     mut simulation: ResMut<SimulationResource>,
     mut navigation: ResMut<StrategicNavigation>,
     mut rebuild: ResMut<ViewRebuildRequest>,
+    mut history: ResMut<NavigationHistory>,
 ) {
     for (interaction, button) in &mut interactions {
         if matches!(interaction, Interaction::Pressed) {
@@ -2623,6 +2962,7 @@ fn handle_action_buttons(
                 &mut simulation,
                 &mut navigation,
                 &mut rebuild,
+                &mut history,
             );
         }
     }
@@ -3065,6 +3405,7 @@ fn pick_target_matches_selection(target: PickTarget, selection: SelectionTarget)
 fn handle_colony_management_buttons(
     mut simulation: ResMut<SimulationResource>,
     mut management: ResMut<ColonyManagementState>,
+    mut navigation_ui: ResMut<navigation_ui::NavigationUiState>,
     interactions: ManagementButtonInteractionQuery,
 ) {
     for (interaction, action) in &interactions {
@@ -3074,7 +3415,7 @@ fn handle_colony_management_buttons(
 
         match *action {
             ManagementButtonAction::Toggle => {
-                toggle_colony_management(&mut management, &mut simulation);
+                toggle_colony_management(&mut management, &mut simulation, &mut navigation_ui);
             }
             ManagementButtonAction::Close => {
                 management.open = false;
@@ -3469,13 +3810,16 @@ fn update_colony_management_transport(
 fn toggle_colony_management(
     management: &mut ColonyManagementState,
     simulation: &mut SimulationResource,
+    navigation_ui: &mut navigation_ui::NavigationUiState,
 ) {
     management.open = !management.open;
     management.feedback.clear();
-    if management.open
-        && let Some(colony_id) = selected_player_colony_id(simulation.simulation())
-    {
-        apply_simulation_command(simulation, GameAction::SelectColony { colony_id });
+    if management.open {
+        navigation_ui.search_open = false;
+        navigation_ui.filters_open = false;
+        if let Some(colony_id) = selected_player_colony_id(simulation.simulation()) {
+            apply_simulation_command(simulation, GameAction::SelectColony { colony_id });
+        }
     }
 }
 
@@ -4235,6 +4579,7 @@ fn apply_ui_action(
     simulation: &mut SimulationResource,
     navigation: &mut StrategicNavigation,
     rebuild: &mut ViewRebuildRequest,
+    history: &mut NavigationHistory,
 ) {
     if !action_available(action, simulation, navigation) {
         return;
@@ -4260,11 +4605,15 @@ fn apply_ui_action(
             if let Some(system_id) =
                 enterable_selected_system(simulation, navigation.debug_full_graph)
             {
+                let selected = simulation.simulation.state().selected;
+                history.push(navigation.snapshot(selected));
                 navigation.enter_system(system_id);
                 rebuild.0 = true;
             }
         }
         UiAction::ExitSystem => {
+            let selected = simulation.simulation.state().selected;
+            history.push(navigation.snapshot(selected));
             navigation.exit_system();
             rebuild.0 = true;
         }
@@ -4617,6 +4966,7 @@ struct StrategicCameraInput<'w> {
     management: Res<'w, ColonyManagementState>,
     research: Res<'w, research_ui::ResearchUiState>,
     craft: Res<'w, craft_ui::CraftUiState>,
+    navigation_ui: Res<'w, navigation_ui::NavigationUiState>,
 }
 
 fn update_strategic_camera(
@@ -4627,7 +4977,11 @@ fn update_strategic_camera(
     let Ok(mut transform) = query.single_mut() else {
         return;
     };
-    if input.management.open || input.research.open || input.craft.open {
+    if input.management.open
+        || input.research.open
+        || input.craft.open
+        || input.navigation_ui.is_open()
+    {
         return;
     }
 
@@ -4933,9 +5287,181 @@ fn update_planet_spins(
     }
 }
 
+const LABEL_HIDE_DELAY_SECONDS: f32 = 0.4;
+const OVERVIEW_LABEL_BUDGET: usize = 12;
+const REGIONAL_LABEL_BUDGET: usize = 30;
+const LABEL_MIN_SEPARATION_FACTOR: f32 = 0.09;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct LabelMemory {
+    visible: bool,
+    losing_since: Option<f32>,
+}
+
+#[derive(Resource, Default)]
+struct LabelBudgetState {
+    systems: HashMap<SystemId, LabelMemory>,
+}
+
+const fn label_budget_for_lod(lod: UniverseLod) -> Option<usize> {
+    match lod {
+        UniverseLod::Overview => Some(OVERVIEW_LABEL_BUDGET),
+        UniverseLod::Regional => Some(REGIONAL_LABEL_BUDGET),
+        UniverseLod::Local => None,
+    }
+}
+
+fn labels_overlap(a: Vec2, b: Vec2, min_distance: f32) -> bool {
+    a.distance(b) < min_distance
+}
+
+fn advance_label_memory(
+    previous: Option<LabelMemory>,
+    currently_winning: bool,
+    now: f32,
+    hide_delay: f32,
+) -> LabelMemory {
+    let previous = previous.unwrap_or(LabelMemory {
+        visible: currently_winning,
+        losing_since: None,
+    });
+
+    if currently_winning {
+        return LabelMemory {
+            visible: true,
+            losing_since: None,
+        };
+    }
+
+    if !previous.visible {
+        return LabelMemory {
+            visible: false,
+            losing_since: None,
+        };
+    }
+
+    let losing_since = previous.losing_since.unwrap_or(now);
+    if now - losing_since >= hide_delay {
+        LabelMemory {
+            visible: false,
+            losing_since: None,
+        }
+    } else {
+        LabelMemory {
+            visible: true,
+            losing_since: Some(losing_since),
+        }
+    }
+}
+
+fn compute_label_budget(
+    time: Res<Time>,
+    navigation: Res<StrategicNavigation>,
+    simulation: Res<SimulationResource>,
+    mut budget: ResMut<LabelBudgetState>,
+    system_labels: Query<&SystemLabel>,
+) {
+    let now = time.elapsed_secs();
+    if !matches!(navigation.mode, StrategicViewMode::Universe) {
+        budget.systems.clear();
+        return;
+    }
+
+    let simulation = simulation.simulation();
+    let state = simulation.state();
+    let universe = simulation.universe();
+    let selected = selected_system(state.selected);
+    let focus = Vec2::new(navigation.universe_focus.x, navigation.universe_focus.z);
+
+    let mut always_visible = Vec::new();
+    let mut candidates: Vec<(SystemId, f32)> = Vec::new();
+
+    for label in &system_labels {
+        let Some(system) = universe.system(label.id) else {
+            continue;
+        };
+        let is_selected = Some(label.id) == selected;
+        let is_colony = state
+            .colonies
+            .iter()
+            .any(|colony| colony.system_id == label.id);
+        let naive_visible = is_selected
+            || is_colony
+            || match navigation.lod {
+                UniverseLod::Overview => false,
+                UniverseLod::Regional => label.visibility == SystemVisibility::Known,
+                UniverseLod::Local => true,
+            };
+        if !naive_visible {
+            continue;
+        }
+        if is_selected || is_colony {
+            always_visible.push(label.id);
+            continue;
+        }
+        let position = projected_universe_position(system.position, navigation.projection_mix);
+        let distance = Vec2::new(position.x, position.z).distance(focus);
+        let base = if label.visibility == SystemVisibility::Known {
+            20.0
+        } else {
+            10.0
+        };
+        candidates.push((label.id, base - distance * 0.02));
+    }
+
+    candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    let budget_limit = label_budget_for_lod(navigation.lod);
+    let min_separation = navigation.universe_distance * LABEL_MIN_SEPARATION_FACTOR;
+
+    let mut accepted_positions = Vec::new();
+    let mut winning: HashSet<SystemId> = always_visible.iter().copied().collect();
+    for id in &always_visible {
+        if let Some(system) = universe.system(*id) {
+            let position = projected_universe_position(system.position, navigation.projection_mix);
+            accepted_positions.push(Vec2::new(position.x, position.z));
+        }
+    }
+
+    let mut extra_accepted = 0usize;
+    for (id, _priority) in &candidates {
+        if let Some(limit) = budget_limit
+            && extra_accepted >= limit
+        {
+            break;
+        }
+        let Some(system) = universe.system(*id) else {
+            continue;
+        };
+        let position = projected_universe_position(system.position, navigation.projection_mix);
+        let point = Vec2::new(position.x, position.z);
+        if accepted_positions
+            .iter()
+            .any(|other| labels_overlap(point, *other, min_separation))
+        {
+            continue;
+        }
+        accepted_positions.push(point);
+        winning.insert(*id);
+        extra_accepted += 1;
+    }
+
+    let mut next = HashMap::new();
+    for label in &system_labels {
+        let currently_winning = winning.contains(&label.id);
+        let previous = budget.systems.get(&label.id).copied();
+        next.insert(
+            label.id,
+            advance_label_memory(previous, currently_winning, now, LABEL_HIDE_DELAY_SECONDS),
+        );
+    }
+    budget.systems = next;
+}
+
 fn update_system_labels(
     simulation: Res<SimulationResource>,
     navigation: Res<StrategicNavigation>,
+    budget: Res<LabelBudgetState>,
     mut query: Query<(&SystemLabel, &mut Transform, &mut Visibility)>,
 ) {
     if !matches!(navigation.mode, StrategicViewMode::Universe) {
@@ -4959,13 +5485,17 @@ fn update_system_labels(
             .iter()
             .any(|colony| colony.system_id == label.id);
 
+        let budget_allows = budget
+            .systems
+            .get(&label.id)
+            .is_none_or(|memory| memory.visible);
         let should_show = is_selected
             || is_colony
-            || match navigation.lod {
+            || (match navigation.lod {
                 UniverseLod::Overview => false,
                 UniverseLod::Regional => label.visibility == SystemVisibility::Known,
                 UniverseLod::Local => true,
-            };
+            } && budget_allows);
 
         let next_visibility = if should_show {
             Visibility::Visible
@@ -4978,13 +5508,41 @@ fn update_system_labels(
     }
 }
 
+fn group_missions_by_sector<'a>(
+    missions: impl Iterator<Item = &'a galactic_sim::MissionState>,
+    universe: &galactic_sim::UniverseRepository,
+) -> HashMap<SectorId, usize> {
+    let mut counts = HashMap::new();
+    for mission in missions {
+        if let Some(sector) = universe.sector_for_system(mission.order.origin) {
+            *counts.entry(sector.id).or_insert(0usize) += 1;
+        }
+    }
+    counts
+}
+
 fn update_sector_labels(
+    simulation: Res<SimulationResource>,
     navigation: Res<StrategicNavigation>,
-    mut query: Query<(&SectorLabel, &mut Transform, &mut Visibility)>,
+    mut query: Query<(&SectorLabel, &mut Transform, &mut Visibility, &mut Text2d)>,
 ) {
     let should_show = matches!(navigation.mode, StrategicViewMode::Universe)
         && navigation.lod == UniverseLod::Overview;
-    for (label, mut transform, mut visibility) in &mut query {
+
+    let mission_counts = if should_show {
+        let simulation = simulation.simulation();
+        group_missions_by_sector(
+            simulation
+                .state()
+                .player_missions()
+                .filter(|mission| !mission.phase.is_terminal()),
+            simulation.universe_repository(),
+        )
+    } else {
+        HashMap::new()
+    };
+
+    for (label, mut transform, mut visibility, mut text) in &mut query {
         let next = projected_universe_position(label.position, navigation.projection_mix)
             + Vec3::new(0.0, 4.2, 0.0);
         if transform.translation != next {
@@ -4997,6 +5555,13 @@ fn update_sector_labels(
         };
         if *visibility != next_visibility {
             *visibility = next_visibility;
+        }
+        let next_text = match mission_counts.get(&label.id) {
+            Some(count) if *count > 0 => format!("{} • {} mission(s)", label.base_text, count),
+            _ => label.base_text.clone(),
+        };
+        if text.0 != next_text {
+            text.0 = next_text;
         }
     }
 }
@@ -5027,12 +5592,19 @@ fn draw_strategic_overlays(
     mut gizmos: Gizmos,
     simulation: Res<SimulationResource>,
     navigation: Res<StrategicNavigation>,
+    selected_mission: Res<SelectedMission>,
     time: Res<Time>,
 ) {
     match navigation.mode {
         StrategicViewMode::Universe => {
             draw_universe_routes(&mut gizmos, simulation.simulation(), &navigation);
             draw_universe_missions(&mut gizmos, simulation.simulation(), &navigation);
+            draw_selected_mission_highlight(
+                &mut gizmos,
+                simulation.simulation(),
+                &navigation,
+                selected_mission.0,
+            );
         }
         StrategicViewMode::System(system_id) => {
             draw_system_orbits(&mut gizmos, simulation.simulation(), system_id);
@@ -5041,8 +5613,71 @@ fn draw_strategic_overlays(
                 simulation.simulation(),
                 system_id,
                 time.elapsed_secs(),
+                selected_mission.0,
             );
         }
+    }
+}
+
+fn draw_selected_mission_highlight(
+    gizmos: &mut Gizmos,
+    simulation: &Simulation,
+    navigation: &StrategicNavigation,
+    selected_mission: Option<galactic_domain::MissionId>,
+) {
+    let Some(mission_id) = selected_mission else {
+        return;
+    };
+    let Some(mission) = simulation.state().mission(mission_id) else {
+        return;
+    };
+    if mission.phase.is_terminal() || mission.plan.route.len() < 2 {
+        return;
+    }
+
+    let universe = simulation.universe();
+    for pair in mission.plan.route.windows(2) {
+        draw_route(
+            gizmos,
+            universe,
+            pair[0],
+            pair[1],
+            navigation.projection_mix,
+            RouteVisualStyle {
+                color: Color::srgba(1.0, 0.92, 0.42, 0.96),
+                dash_length: 2.6,
+                gap_length: 0.35,
+            },
+        );
+    }
+
+    if let Some(origin) = mission
+        .plan
+        .route
+        .first()
+        .and_then(|id| universe.system(*id))
+    {
+        draw_circle_xz(
+            gizmos,
+            projected_universe_position(origin.position, navigation.projection_mix),
+            2.4,
+            32,
+            Color::srgba(0.42, 0.96, 0.52, 0.96),
+        );
+    }
+    if let Some(target) = mission
+        .plan
+        .route
+        .last()
+        .and_then(|id| universe.system(*id))
+    {
+        draw_circle_xz(
+            gizmos,
+            projected_universe_position(target.position, navigation.projection_mix),
+            2.4,
+            32,
+            Color::srgba(0.98, 0.66, 0.28, 0.96),
+        );
     }
 }
 
@@ -5178,16 +5813,22 @@ fn draw_system_orbits(gizmos: &mut Gizmos, simulation: &Simulation, system_id: S
 
     for index in 0..system.planets.len() {
         let radius = 6.0 + index as f32 * 4.8;
-        draw_circle_xz(gizmos, radius, 48, Color::srgba(0.32, 0.46, 0.62, 0.26));
+        draw_circle_xz(
+            gizmos,
+            Vec3::ZERO,
+            radius,
+            48,
+            Color::srgba(0.32, 0.46, 0.62, 0.26),
+        );
     }
 }
 
-fn draw_circle_xz(gizmos: &mut Gizmos, radius: f32, segments: usize, color: Color) {
+fn draw_circle_xz(gizmos: &mut Gizmos, center: Vec3, radius: f32, segments: usize, color: Color) {
     for segment in 0..segments {
         let start_angle = segment as f32 / segments as f32 * std::f32::consts::TAU;
         let end_angle = (segment + 1) as f32 / segments as f32 * std::f32::consts::TAU;
-        let start = Vec3::new(start_angle.cos() * radius, 0.0, start_angle.sin() * radius);
-        let end = Vec3::new(end_angle.cos() * radius, 0.0, end_angle.sin() * radius);
+        let start = center + Vec3::new(start_angle.cos() * radius, 0.0, start_angle.sin() * radius);
+        let end = center + Vec3::new(end_angle.cos() * radius, 0.0, end_angle.sin() * radius);
         gizmos.line(start, end, color);
     }
 }
@@ -5223,6 +5864,7 @@ fn draw_system_missions(
     simulation: &Simulation,
     system_id: SystemId,
     elapsed_seconds: f32,
+    selected_mission: Option<galactic_domain::MissionId>,
 ) {
     let current_tick = simulation.state().clock.current_tick();
     let Some(system) = simulation.universe().system(system_id) else {
@@ -5268,7 +5910,29 @@ fn draw_system_missions(
             planet_orbit(origin_index, origin_radius, 0.32).translation_at(elapsed_seconds);
         let target =
             planet_orbit(target_index, target_radius, 0.32).translation_at(elapsed_seconds);
-        gizmos.line(origin, target, Color::srgba(0.32, 0.88, 0.96, 0.24));
+        let is_selected = selected_mission == Some(mission.id);
+        let line_color = if is_selected {
+            Color::srgba(1.0, 0.92, 0.42, 0.96)
+        } else {
+            Color::srgba(0.32, 0.88, 0.96, 0.24)
+        };
+        gizmos.line(origin, target, line_color);
+        if is_selected {
+            draw_circle_xz(
+                gizmos,
+                origin,
+                1.1,
+                24,
+                Color::srgba(0.42, 0.96, 0.52, 0.96),
+            );
+            draw_circle_xz(
+                gizmos,
+                target,
+                1.1,
+                24,
+                Color::srgba(0.98, 0.66, 0.28, 0.96),
+            );
+        }
         draw_probe_marker(gizmos, origin.lerp(target, progress), 0.62);
     }
 }
@@ -7935,6 +8599,183 @@ VmSwap:\t      2048 kB
     }
 
     #[test]
+    fn navigation_history_round_trip_restores_view_and_selection() {
+        let mut simulation = SimulationResource {
+            simulation: Simulation::new(UniverseConfig::mvp()),
+            pending_events: Vec::new(),
+        };
+        let mut navigation = StrategicNavigation {
+            mode: StrategicViewMode::Universe,
+            universe_focus: Vec3::new(4.0, 0.0, -2.0),
+            universe_distance: 70.0,
+            ..default()
+        };
+        let mut history = NavigationHistory::default();
+        let mut rebuild = ViewRebuildRequest::default();
+
+        apply_simulation_command(
+            &mut simulation,
+            GameAction::SelectSystem(MVP_HOME_SYSTEM_ID),
+        );
+        let start_focus = navigation.universe_focus;
+        let start_distance = navigation.universe_distance;
+        let start_selected = simulation.simulation.state().selected;
+
+        apply_ui_action(
+            UiAction::EnterSystem,
+            &mut simulation,
+            &mut navigation,
+            &mut rebuild,
+            &mut history,
+        );
+        assert_eq!(
+            navigation.mode,
+            StrategicViewMode::System(MVP_HOME_SYSTEM_ID)
+        );
+
+        apply_ui_action(
+            UiAction::ExitSystem,
+            &mut simulation,
+            &mut navigation,
+            &mut rebuild,
+            &mut history,
+        );
+        assert_eq!(navigation.mode, StrategicViewMode::Universe);
+
+        navigate_history(
+            HistoryDirection::Back,
+            &mut simulation,
+            &mut navigation,
+            &mut history,
+            &mut rebuild,
+        );
+        assert_eq!(
+            navigation.mode,
+            StrategicViewMode::System(MVP_HOME_SYSTEM_ID)
+        );
+
+        navigate_history(
+            HistoryDirection::Back,
+            &mut simulation,
+            &mut navigation,
+            &mut history,
+            &mut rebuild,
+        );
+        assert_eq!(navigation.mode, StrategicViewMode::Universe);
+        assert_eq!(navigation.universe_focus, start_focus);
+        assert_eq!(navigation.universe_distance, start_distance);
+        assert_eq!(simulation.simulation.state().selected, start_selected);
+
+        navigate_history(
+            HistoryDirection::Forward,
+            &mut simulation,
+            &mut navigation,
+            &mut history,
+            &mut rebuild,
+        );
+        assert_eq!(
+            navigation.mode,
+            StrategicViewMode::System(MVP_HOME_SYSTEM_ID)
+        );
+
+        navigate_history(
+            HistoryDirection::Forward,
+            &mut simulation,
+            &mut navigation,
+            &mut history,
+            &mut rebuild,
+        );
+        assert_eq!(navigation.mode, StrategicViewMode::Universe);
+    }
+
+    #[test]
+    fn history_shortcuts_use_backspace_and_bracket_right() {
+        let mut keyboard = ButtonInput::<KeyCode>::default();
+        keyboard.press(KeyCode::Backspace);
+        assert_eq!(history_shortcut(&keyboard), Some(HistoryDirection::Back));
+
+        let mut keyboard = ButtonInput::<KeyCode>::default();
+        keyboard.press(KeyCode::BracketRight);
+        assert_eq!(history_shortcut(&keyboard), Some(HistoryDirection::Forward));
+    }
+
+    #[test]
+    fn breadcrumb_reaches_planet_level_when_a_known_planet_is_selected() {
+        let mut simulation_resource = SimulationResource {
+            simulation: Simulation::new(UniverseConfig::mvp()),
+            pending_events: Vec::new(),
+        };
+        let planet_id = simulation_resource
+            .simulation
+            .universe()
+            .system(MVP_HOME_SYSTEM_ID)
+            .and_then(|system| system.planets.first())
+            .expect("home system has at least one planet")
+            .id;
+        apply_simulation_command(
+            &mut simulation_resource,
+            GameAction::SelectPlanet {
+                system_id: MVP_HOME_SYSTEM_ID,
+                planet_id,
+            },
+        );
+        let navigation = StrategicNavigation {
+            mode: StrategicViewMode::System(MVP_HOME_SYSTEM_ID),
+            ..default()
+        };
+
+        let segments = breadcrumb_segments(&simulation_resource.simulation, &navigation);
+        assert!(matches!(segments[0].kind, BreadcrumbKind::Galaxy));
+        assert!(segments.iter().any(
+            |segment| matches!(segment.kind, BreadcrumbKind::System(id) if id == MVP_HOME_SYSTEM_ID)
+        ));
+        assert!(
+            segments
+                .iter()
+                .any(|segment| matches!(segment.kind, BreadcrumbKind::Planet))
+        );
+    }
+
+    #[test]
+    fn labels_overlap_detects_nearby_points_only() {
+        assert!(labels_overlap(Vec2::ZERO, Vec2::new(1.0, 0.0), 2.0));
+        assert!(!labels_overlap(Vec2::ZERO, Vec2::new(5.0, 0.0), 2.0));
+    }
+
+    #[test]
+    fn advance_label_memory_keeps_a_winning_label_visible_without_delay() {
+        let memory = advance_label_memory(None, true, 0.0, 0.4);
+        assert!(memory.visible);
+        assert_eq!(memory.losing_since, None);
+    }
+
+    #[test]
+    fn advance_label_memory_hides_only_after_losing_for_the_full_delay() {
+        let visible = LabelMemory {
+            visible: true,
+            losing_since: None,
+        };
+
+        let still_visible = advance_label_memory(Some(visible), false, 0.1, 0.4);
+        assert!(still_visible.visible);
+        assert_eq!(still_visible.losing_since, Some(0.1));
+
+        let now_hidden = advance_label_memory(Some(still_visible), false, 0.6, 0.4);
+        assert!(!now_hidden.visible);
+    }
+
+    #[test]
+    fn advance_label_memory_winning_again_cancels_the_hide_timer() {
+        let losing = LabelMemory {
+            visible: true,
+            losing_since: Some(0.1),
+        };
+        let recovered = advance_label_memory(Some(losing), true, 0.2, 0.4);
+        assert!(recovered.visible);
+        assert_eq!(recovered.losing_since, None);
+    }
+
+    #[test]
     fn mouse_orbit_clamps_pitch() {
         let mut yaw = 0.0;
         let mut pitch = 0.0;
@@ -8098,6 +8939,63 @@ VmSwap:\t      2048 kB
         assert!(status.contains("Reconnaissance"));
         assert!(status.contains("Signal"));
         assert!(status.contains("transit aller"));
+    }
+
+    #[test]
+    fn group_missions_by_sector_counts_only_the_origin_sector() {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+        let colony_id = simulation.state().colonies[0].id;
+        let origin = simulation.state().colonies[0].system_id;
+        let target = simulation.universe_repository().neighboring_systems(origin)[0];
+        let colony = &mut simulation.state_mut().colonies[0];
+        colony
+            .buildings
+            .set_level(galactic_sim::BuildingKind::CONSTRUCTION_CENTER, 2);
+        colony
+            .buildings
+            .set_level(galactic_sim::BuildingKind::METAL_MINE, 2);
+        colony
+            .buildings
+            .set_level(galactic_sim::BuildingKind::CRYSTAL_EXTRACTOR, 2);
+        colony
+            .buildings
+            .set_level(galactic_sim::BuildingKind::SHIPYARD, 1);
+        colony.energy =
+            galactic_sim::default_building_catalog().energy_grid_for_levels(colony.buildings);
+        colony
+            .resources
+            .credit(ResourceStock::new(1_000, 1_000, 1_000))
+            .expect("test funding fits");
+        simulation.state_mut().research = galactic_sim::ResearchState::from_completed([
+            galactic_sim::TechnologyId::SPATIAL_DETECTION,
+        ]);
+        simulation.apply_player_action(GameAction::QueueCraft {
+            colony_id,
+            craftable: galactic_sim::CraftableId::LIGHT_PROBE,
+        });
+        simulation.advance(Duration::from_secs(50));
+        simulation.apply_player_action(GameAction::LaunchProbe {
+            colony_id,
+            target: MissionTarget::System(target),
+        });
+        simulation.advance(Duration::from_secs(1));
+
+        let origin_sector = simulation
+            .universe_repository()
+            .sector_for_system(origin)
+            .expect("origin belongs to a sector")
+            .id;
+        let missions = simulation
+            .state()
+            .player_missions()
+            .filter(|mission| !mission.phase.is_terminal())
+            .collect::<Vec<_>>();
+        assert_eq!(missions.len(), 1);
+
+        let counts =
+            group_missions_by_sector(missions.into_iter(), simulation.universe_repository());
+        assert_eq!(counts.get(&origin_sector), Some(&1));
+        assert_eq!(counts.len(), 1);
     }
 
     #[test]

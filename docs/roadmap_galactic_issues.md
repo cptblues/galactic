@@ -7,8 +7,8 @@
 ## Vue d’ensemble
 
 - **45 issues** au total
-- **36 terminées**
-- **9 à faire**
+- **37 terminées**
+- **8 à faire**
 
 ## Sommaire de la roadmap
 
@@ -50,7 +50,7 @@
 | ✅ | [MVP-029](#eng-37) — Ajouter les missions de transport entre colonies | [ENG-37](https://cadylo.app/galactic/issue/ENG-37) | P1 | 5 |
 | ✅ | [MVP-029-B](#eng-53) — Ajouter les sites d'extraction et la récolte distante | [ENG-53](https://cadylo.app/galactic/issue/ENG-53) | P1 | — |
 | ✅ | [MVP-030](#eng-38) — Créer le HUD des flottes et missions | [ENG-38](https://cadylo.app/galactic/issue/ENG-38) | P2 | 8 |
-| ⬜ | [MVP-030-B](#eng-50) — Ajouter la navigation galactique avancée | [ENG-50](https://cadylo.app/galactic/issue/ENG-50) | P1 | 8 |
+| ✅ | [MVP-030-B](#eng-50) — Ajouter la navigation galactique avancée | [ENG-50](https://cadylo.app/galactic/issue/ENG-50) | P1 | 8 |
 | ⬜ | [MVP-031](#eng-39) — Implémenter sauvegarde, chargement et migration V1 | [ENG-39](https://cadylo.app/galactic/issue/ENG-39) | P1 | 8 |
 | ⬜ | [MVP-032](#eng-40) — Ajouter onboarding et objectifs contextuels | [ENG-40](https://cadylo.app/galactic/issue/ENG-40) | P2 | 5 |
 | ⬜ | [MVP-033](#eng-41) — Définir et implémenter la condition de réussite du MVP | [ENG-41](https://cadylo.app/galactic/issue/ENG-41) | P2 | 3 |
@@ -1523,11 +1523,11 @@ Permettre de préparer, lancer et suivre les missions sans outil de debug.
 | Métadonnée | Valeur |
 |---|---|
 | Issue | [ENG-50](https://cadylo.app/galactic/issue/ENG-50) |
-| Statut | À faire |
+| Statut | Terminée |
 | Priorité | P1 |
 | Estimation | 8 points |
 | Créée le | 23/07/2026 |
-| Mise à jour le | 23/07/2026 |
+| Mise à jour le | 01/08/2026 |
 
 ### Objectif
 Permettre au joueur de retrouver et comprendre rapidement les objets importants lorsque colonies, flottes et missions se multiplient.
@@ -1543,13 +1543,13 @@ Permettre au joueur de retrouver et comprendre rapidement les objets importants 
 - Garantir que recherche, filtres et agrégations respectent les niveaux de connaissance.
 
 ### Critères d'acceptation
-- [ ] Le joueur peut retrouver par nom tout objet qu'il est autorisé à connaître.
-- [ ] Retour et suivant restaurent le contexte visuel précédent.
-- [ ] Le fil d'Ariane permet de revenir de planète à système, secteur puis galaxie.
-- [ ] Aucun filtre ou résultat de recherche ne révèle un objet inconnu.
-- [ ] La carte reste lisible avec au moins dix missions et plusieurs colonies.
-- [ ] Les labels prioritaires restent stables et ne clignotent pas excessivement.
-- [ ] Une mission sélectionnée focalise clairement son trajet, son origine et sa destination.
+- [x] Le joueur peut retrouver par nom tout objet qu'il est autorisé à connaître.
+- [x] Retour et suivant restaurent le contexte visuel précédent.
+- [x] Le fil d'Ariane permet de revenir de planète à système, secteur puis galaxie.
+- [x] Aucun filtre ou résultat de recherche ne révèle un objet inconnu.
+- [x] La carte reste lisible avec au moins dix missions et plusieurs colonies.
+- [x] Les labels prioritaires restent stables et ne clignotent pas excessivement.
+- [x] Une mission sélectionnée focalise clairement son trajet, son origine et sa destination.
 
 ### Dépendances
 - MVP-030

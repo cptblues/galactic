@@ -11,12 +11,12 @@ use galactic_sim::{
 };
 
 use super::{
-    ColonyManagementState, PresentationUpdateSet, SimulationResource, TransportCargoPreset,
-    UiPointerBlocker, action_button_color, action_button_outline, apply_simulation_command,
-    collect_presentation_events, craft_ui::CraftUiState, format_strategic_duration,
-    mission_error_text, mission_kind_label, mission_next_deadline, mission_phase_label,
-    mission_result_text, mission_target_label, panel_background, panel_outline,
-    provisional_planet_label, research_ui::ResearchUiState, ui_text_font,
+    ColonyManagementState, PresentationUpdateSet, SelectedMission, SimulationResource,
+    TransportCargoPreset, UiPointerBlocker, action_button_color, action_button_outline,
+    apply_simulation_command, collect_presentation_events, craft_ui::CraftUiState,
+    format_strategic_duration, mission_error_text, mission_kind_label, mission_next_deadline,
+    mission_phase_label, mission_result_text, mission_target_label, panel_background,
+    panel_outline, provisional_planet_label, research_ui::ResearchUiState, ui_text_font,
 };
 
 const FLEET_Z_INDEX: i32 = 130;
@@ -130,6 +130,7 @@ enum FleetButtonAction {
     CancelMission(usize),
     FocusOrigin(usize),
     FocusTarget(usize),
+    HighlightMission(usize),
 }
 
 type FleetButtonInteractionQuery<'w, 's> = Query<
@@ -794,6 +795,7 @@ fn spawn_mission_row(parent: &mut ChildSpawnerCommands, slot: usize) {
             ));
             spawn_row_action_button(row, "Origine", FleetButtonAction::FocusOrigin(slot));
             spawn_row_action_button(row, "Cible", FleetButtonAction::FocusTarget(slot));
+            spawn_row_action_button(row, "Surligner", FleetButtonAction::HighlightMission(slot));
             row.spawn((
                 Button,
                 Node {
@@ -906,6 +908,7 @@ fn handle_fleet_shortcuts(
     mut management: ResMut<ColonyManagementState>,
     mut research: ResMut<ResearchUiState>,
     mut craft: ResMut<CraftUiState>,
+    mut navigation_ui: ResMut<super::navigation_ui::NavigationUiState>,
 ) {
     if keyboard.just_pressed(KeyCode::KeyV) {
         ui.open = !ui.open;
@@ -914,6 +917,8 @@ fn handle_fleet_shortcuts(
             management.open = false;
             research.open = false;
             craft.open = false;
+            navigation_ui.search_open = false;
+            navigation_ui.filters_open = false;
         }
         return;
     }
@@ -928,6 +933,7 @@ fn handle_fleet_tab_buttons(
     mut management: ResMut<ColonyManagementState>,
     mut research: ResMut<ResearchUiState>,
     mut craft: ResMut<CraftUiState>,
+    mut navigation_ui: ResMut<super::navigation_ui::NavigationUiState>,
     interactions: FleetButtonInteractionQuery,
 ) {
     for (interaction, action) in &interactions {
@@ -942,6 +948,8 @@ fn handle_fleet_tab_buttons(
                     management.open = false;
                     research.open = false;
                     craft.open = false;
+                    navigation_ui.search_open = false;
+                    navigation_ui.filters_open = false;
                 }
             }
             FleetButtonAction::Close => ui.open = false,
@@ -1056,6 +1064,7 @@ fn handle_launch_button(
 fn handle_active_mission_buttons(
     mut simulation: ResMut<SimulationResource>,
     mut ui: ResMut<FleetUiState>,
+    mut selected_mission: ResMut<SelectedMission>,
     interactions: FleetButtonInteractionQuery,
     rows: Query<&MissionRow>,
 ) {
@@ -1086,6 +1095,17 @@ fn handle_active_mission_buttons(
                         },
                     };
                     apply_simulation_command(&mut simulation, select);
+                }
+            }
+            FleetButtonAction::HighlightMission(slot) => {
+                if let Some(row) = rows.iter().find(|row| row.slot == slot)
+                    && let Some(mission_id) = row.mission_id
+                {
+                    selected_mission.0 = if selected_mission.0 == Some(mission_id) {
+                        None
+                    } else {
+                        Some(mission_id)
+                    };
                 }
             }
             FleetButtonAction::CancelMission(slot) => {

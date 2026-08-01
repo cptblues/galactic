@@ -1511,3 +1511,50 @@ sondée. Les refus (composition invalide, ressources insuffisantes, portée,
 cible non éligible, annulation impossible) réutilisent les messages français
 déjà validés pour les raccourcis clavier, désormais partagés via des fonctions
 `pub(crate)`.
+
+## MVP-030-B — Navigation galactique avancée
+
+Ce checkpoint reste entièrement dans `galactic_client` : aucun changement à
+`galactic_sim` ni `galactic_domain`. Il ajoute un historique de navigation, une
+recherche globale, des filtres, un budget de labels anti-encombrement, une
+agrégation des missions lointaines et un surlignage de la mission
+sélectionnée, tous strictement dérivés des niveaux de connaissance déjà
+appliqués ailleurs dans le jeu.
+
+`NavigationHistory` empile des `ViewSnapshot` (mode, focus, distance, yaw,
+pitch des deux vues, sélection) à chaque transition de navigation initiée par
+le joueur — entrée/sortie de système, résultat de recherche, clic de fil
+d'Ariane. `Retour arrière` et `]` restaurent respectivement la pile précédente
+et suivante en réappliquant `SelectSystem`/`SelectPlanet`, jamais en écrivant
+directement `GameState.selected`. Une nouvelle navigation vide la pile avant.
+
+Le fil d'Ariane (Galaxie › secteur › système › planète) est entièrement dérivé
+chaque frame depuis le mode de vue courant et la sélection ; le secteur reste
+un concept de présentation, cliquer dessus recentre la vue Univers en zoom
+Overview sans introduire de nouveau mode caméra.
+
+La recherche s'ouvre avec `/` et reconstruit son index à la volée à chaque
+frame où le panneau est ouvert, en filtrant systématiquement par le niveau de
+connaissance avant tout autre critère : un système non sondé ou une planète
+dont l'identité n'est pas révélée n'apparaissent jamais, quelle que soit la
+requête. Les flottes et missions du joueur sont indexées avec un libellé
+synthétique (type, cible, identifiant), faute de nom persistant dans
+`galactic_sim`. Les filtres (`B`) composent avec cette même porte de
+connaissance : ils ne peuvent que restreindre les résultats, jamais révéler un
+objet inconnu.
+
+Le budget de labels attribue un score de priorité par système (sélection,
+colonie du joueur, distance au centre de la caméra), retient les douze
+meilleurs en zoom Overview et les trente meilleurs en zoom Regional, masque
+les chevauchements en espace écran, puis applique une hystérésis de 0,4
+seconde avant de cacher un label perdant pour éviter le scintillement. Les
+missions lointaines sont regroupées par secteur en zoom Overview au lieu
+d'afficher un point par mission, ce qui garde la carte lisible avec dix
+missions actives ou plus.
+
+Sélectionner « Surligner » sur une ligne de mission active dans le HUD
+flottes bascule un `Resource SelectedMission` lu par le rendu de la vue
+Univers et de la vue Système : la route complète de la mission est tracée en
+surbrillance et ses points d'origine et de destination reçoivent un marqueur
+distinct, dérivés chaque frame de l'état de simulation sans aucune géométrie
+mise en cache.

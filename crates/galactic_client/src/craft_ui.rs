@@ -455,6 +455,7 @@ fn handle_craft_shortcuts(
     mut management: ResMut<ColonyManagementState>,
     mut research: ResMut<ResearchUiState>,
     mut fleet: ResMut<FleetUiState>,
+    mut navigation_ui: ResMut<super::navigation_ui::NavigationUiState>,
 ) {
     if keyboard.just_pressed(KeyCode::KeyY) {
         ui.open = !ui.open;
@@ -463,6 +464,8 @@ fn handle_craft_shortcuts(
             management.open = false;
             research.open = false;
             fleet.open = false;
+            navigation_ui.search_open = false;
+            navigation_ui.filters_open = false;
         }
         return;
     }
@@ -478,6 +481,7 @@ fn handle_craft_buttons(
     mut management: ResMut<ColonyManagementState>,
     mut research: ResMut<ResearchUiState>,
     mut fleet: ResMut<FleetUiState>,
+    mut navigation_ui: ResMut<super::navigation_ui::NavigationUiState>,
     interactions: CraftButtonInteractionQuery,
 ) {
     for (interaction, action) in &interactions {
@@ -493,6 +497,8 @@ fn handle_craft_buttons(
                     management.open = false;
                     research.open = false;
                     fleet.open = false;
+                    navigation_ui.search_open = false;
+                    navigation_ui.filters_open = false;
                 }
             }
             CraftButtonAction::Close => ui.open = false,

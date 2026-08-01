@@ -73,6 +73,10 @@ Référence éditoriale : `docs/universe_bible.md`.
 | Analyser la planète sondée sélectionnée | `L` |
 | Basculer projection 3D / 2,5D | `P` |
 | Reconstruire les vues Bevy | `R` |
+| Recherche globale (systèmes, planètes, colonies, flottes, missions) | `/` |
+| Filtres de la carte | `B` |
+| Navigation précédente | `Retour arrière` |
+| Navigation suivante | `]` |
 
 ## Baseline
 
@@ -246,8 +250,26 @@ reste du jeu (reconnaissance, attaque, récolte, colonisation, transport).
 
 « Missions actives » affiche jusqu'à seize missions en cours avec leur cible,
 leur phase et le temps restant, et permet de recentrer la sélection sur
-l'origine ou la cible d'une mission, ou de l'annuler tant qu'elle est encore en
-préparation. « Rapports » liste les résolutions de mission passées. Cet écran
-ne remplace pas les raccourcis existants `K`/`L`/`M`/`H`/`N` : il les complète
-pour lancer et suivre une mission sans dépendre d'une sélection préalable sur
-la carte.
+l'origine ou la cible d'une mission, de surligner sa route sur la carte, ou de
+l'annuler tant qu'elle est encore en préparation. « Rapports » liste les
+résolutions de mission passées. Cet écran ne remplace pas les raccourcis
+existants `K`/`L`/`M`/`H`/`N` : il les complète pour lancer et suivre une
+mission sans dépendre d'une sélection préalable sur la carte.
+
+## MVP-030-B — Navigation galactique avancée
+
+La touche `/` ouvre une recherche globale qui retrouve par nom tout système,
+planète, colonie, flotte ou mission que le joueur est autorisé à connaître ;
+un système non sondé ou une planète non identifiée ne peuvent jamais
+apparaître dans les résultats. La touche `B` ouvre des filtres (connaissance,
+secteur, type) qui ne font que restreindre davantage ce même ensemble.
+
+Un fil d'Ariane (Galaxie › secteur › système › planète) reste visible et
+cliquable à tout moment ; `Retour arrière` et `]` naviguent dans l'historique
+des vues précédentes et suivantes en restaurant exactement le focus, le zoom
+et la sélection de chaque étape. La vue Univers applique désormais un budget
+de labels avec priorité, anti-collision à l'écran et stabilisation temporelle
+pour rester lisible, et regroupe les missions lointaines par secteur au lieu
+d'un point par mission. Le bouton « Surligner » d'une mission active dans le
+HUD flottes met en évidence sa route complète ainsi que son origine et sa
+destination sur la carte.
