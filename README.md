@@ -68,6 +68,7 @@ Référence éditoriale : `docs/universe_bible.md`.
 | Gestion planétaire | `C` |
 | Recherche | `T` |
 | Chantier orbital | `Y` |
+| Flottes & missions | `V` |
 | Sonder le système ou la planète sélectionnés | `K` |
 | Analyser la planète sondée sélectionnée | `L` |
 | Basculer projection 3D / 2,5D | `P` |
@@ -233,3 +234,20 @@ récolte depuis la colonie active. Le moteur sélectionne ou forme un cargo,
 réserve le site, prélève au plus sa réserve et la capacité de la flotte, puis
 livre le chargement au retour. La réservation, la cargaison, l'épuisement et le
 rapport survivent aux sauvegardes sans perte ni duplication.
+
+## MVP-030 — HUD des flottes et missions
+
+La touche `V` ouvre un écran dédié aux flottes et aux missions, avec quatre
+onglets. « Flottes » liste les flottes contrôlées et permet d'en composer une
+nouvelle depuis les vaisseaux disponibles au dock de la colonie active.
+« Lancer une mission » choisit un type de mission puis une cible parmi une
+liste calculée selon les mêmes règles de connaissance et d'éligibilité que le
+reste du jeu (reconnaissance, attaque, récolte, colonisation, transport).
+
+« Missions actives » affiche jusqu'à seize missions en cours avec leur cible,
+leur phase et le temps restant, et permet de recentrer la sélection sur
+l'origine ou la cible d'une mission, ou de l'annuler tant qu'elle est encore en
+préparation. « Rapports » liste les résolutions de mission passées. Cet écran
+ne remplace pas les raccourcis existants `K`/`L`/`M`/`H`/`N` : il les complète
+pour lancer et suivre une mission sans dépendre d'une sélection préalable sur
+la carte.

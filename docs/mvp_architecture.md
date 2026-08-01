@@ -1470,3 +1470,44 @@ Versions après ce checkpoint :
 - `GAME_STATE_VERSION = 26` ;
 - `SAVE_VERSION = 27` ;
 - `RULESET_SCHEMA_VERSION = 11`.
+
+## MVP-030 — HUD des flottes et missions
+
+Ce checkpoint reste entièrement dans `galactic_client`, dans un nouveau module
+`fleet_ui`. Il ne modifie ni `GameState`, ni le moteur de missions, ni les
+versions de génération, de sauvegarde ou de ruleset : l'écran s'appuie
+uniquement sur les commandes et le modèle déjà exposés par `galactic_sim`
+(`FormFleet`, `LaunchProbe`, `LaunchAttack`, `LaunchHarvest`, `LaunchColonization`,
+`LaunchTransport`, `CancelMission`).
+
+L'écran s'ouvre avec `V` et se ferme avec `V` ou `Échap`, selon le même
+mécanisme d'exclusion mutuelle que la gestion planétaire, la recherche et le
+chantier orbital. Il comporte quatre onglets. « Flottes » liste les flottes
+contrôlées par le joueur (composition, localisation, cargaison, affectation) et
+propose un compositeur : chaque type de vaisseau du catalogue s'incrémente
+depuis le stock au dock jusqu'à une nouvelle `FleetComposition`, formée par
+`FormFleet`. « Lancer une mission » choisit un type de mission puis une cible
+parmi une liste calculée dynamiquement selon les règles déjà appliquées
+ailleurs dans le jeu : systèmes ou planètes détectés pour une reconnaissance,
+planètes analysées et occupées par une faction étrangère pour une attaque,
+planètes colonisables pour une colonisation, sites d'extraction analysés et
+libres pour une récolte, colonies possédées pour un transport (avec les mêmes
+préréglages de cargaison que l'écran de gestion planétaire). Le lancement
+réutilise la colonie active comme origine, exactement comme les raccourcis
+`K`/`M`/`H`/`N` existants.
+
+« Missions actives » affiche jusqu'à seize missions non terminées avec leur
+cible, leur phase et le temps restant avant leur prochaine étape, calculé avec
+la même fonction que la ligne de statut existante. Sélectionner « Origine » ou
+« Cible » sur une ligne envoie `SelectSystem` ou `SelectPlanet`, réutilisant la
+sélection stratégique déjà pilotée par le reste de l'interface. « Annuler »
+n'apparaît que pour une mission encore en préparation. « Rapports » réutilise
+telle quelle la description textuelle déjà produite pour le flux d'événements
+afin de résumer chaque résolution de mission passée.
+
+Toutes les cibles proposées respectent les niveaux de connaissance existants :
+une planète seulement détectée n'affiche jamais son nom réel avant d'avoir été
+sondée. Les refus (composition invalide, ressources insuffisantes, portée,
+cible non éligible, annulation impossible) réutilisent les messages français
+déjà validés pour les raccourcis clavier, désormais partagés via des fonctions
+`pub(crate)`.

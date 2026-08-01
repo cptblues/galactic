@@ -1,7 +1,9 @@
 mod craft_ui;
+mod fleet_ui;
 mod research_ui;
 
 use craft_ui::CraftUiPlugin;
+use fleet_ui::FleetUiPlugin;
 use research_ui::ResearchUiPlugin;
 use std::{collections::HashMap, time::Duration};
 
@@ -103,6 +105,7 @@ impl Plugin for ClientPlugin {
         .add_plugins(PresentationPlugin)
         .add_plugins(ResearchUiPlugin)
         .add_plugins(CraftUiPlugin)
+        .add_plugins(FleetUiPlugin)
         .add_systems(Startup, log_startup)
         .add_systems(Update, log_memory_diagnostics);
     }
@@ -688,7 +691,7 @@ impl Default for ColonyManagementState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TransportCargoPreset {
+pub(crate) enum TransportCargoPreset {
     Metal,
     Crystal,
     Fuel,
@@ -696,9 +699,9 @@ enum TransportCargoPreset {
 }
 
 impl TransportCargoPreset {
-    const ALL: [Self; 4] = [Self::Metal, Self::Crystal, Self::Fuel, Self::Mixed];
+    pub(crate) const ALL: [Self; 4] = [Self::Metal, Self::Crystal, Self::Fuel, Self::Mixed];
 
-    const fn cargo(self) -> ResourceStock {
+    pub(crate) const fn cargo(self) -> ResourceStock {
         match self {
             Self::Metal => ResourceStock::new(400, 0, 0),
             Self::Crystal => ResourceStock::new(0, 400, 0),
@@ -707,7 +710,7 @@ impl TransportCargoPreset {
         }
     }
 
-    const fn short_label(self) -> &'static str {
+    pub(crate) const fn short_label(self) -> &'static str {
         match self {
             Self::Metal => "M 400",
             Self::Crystal => "C 400",
@@ -1775,6 +1778,7 @@ fn spawn_ui(mut commands: Commands) {
             spawn_colony_management_toggle(parent);
             research_ui::spawn_research_toggle(parent);
             craft_ui::spawn_craft_toggle(parent);
+            fleet_ui::spawn_fleet_toggle(parent);
         });
 
     commands
@@ -2556,11 +2560,13 @@ fn handle_view_input(
     mut overlays: ParamSet<(
         Res<research_ui::ResearchUiState>,
         Res<craft_ui::CraftUiState>,
+        Res<fleet_ui::FleetUiState>,
     )>,
 ) {
     let research_open = overlays.p0().open;
     let craft_open = overlays.p1().open;
-    if research_open || craft_open {
+    let fleet_open = overlays.p2().open;
+    if research_open || craft_open || fleet_open {
         return;
     }
 
@@ -2993,7 +2999,7 @@ fn planet_display_label(
     Some(provisional_planet_label(&system.name, index))
 }
 
-fn provisional_planet_label(system_name: &str, orbit_index: usize) -> String {
+pub(crate) fn provisional_planet_label(system_name: &str, orbit_index: usize) -> String {
     const ROMAN: [&str; 12] = [
         "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII",
     ];
@@ -5412,6 +5418,41 @@ fn update_ui(
     }
 }
 
+pub(crate) fn mission_kind_label(kind: MissionKind) -> &'static str {
+    match kind {
+        MissionKind::Probe => "Reconnaissance",
+        MissionKind::Attack => "Attaque",
+        MissionKind::Transport => "Transport",
+        MissionKind::Harvest => "Récolte",
+        MissionKind::Colonize => "Colonisation",
+    }
+}
+
+pub(crate) fn mission_phase_label(phase: MissionPhase) -> &'static str {
+    match phase {
+        MissionPhase::Preparation => "préparation",
+        MissionPhase::Outbound => "transit aller",
+        MissionPhase::OnSite => "sur place",
+        MissionPhase::Returning => "transit retour",
+        MissionPhase::Completed => "terminée",
+        MissionPhase::Cancelled => "annulée",
+        MissionPhase::Failed => "échec",
+    }
+}
+
+pub(crate) fn mission_next_deadline(
+    mission: &galactic_sim::MissionState,
+    current_tick: galactic_sim::StrategicTick,
+) -> galactic_sim::StrategicTick {
+    match mission.phase {
+        MissionPhase::Preparation => mission.order.departure_at,
+        MissionPhase::Outbound => mission.plan.outbound_arrival_at,
+        MissionPhase::OnSite => mission.plan.return_departure_at,
+        MissionPhase::Returning => mission.plan.return_arrival_at,
+        MissionPhase::Completed | MissionPhase::Cancelled | MissionPhase::Failed => current_tick,
+    }
+}
+
 fn mission_status_line(simulation: &Simulation) -> String {
     let state = simulation.state();
     let Some(mission) = state
@@ -5422,34 +5463,12 @@ fn mission_status_line(simulation: &Simulation) -> String {
         return "Missions : aucune mission active".to_string();
     };
     let target = mission_target_label(simulation, mission.order.target);
-    let phase = match mission.phase {
-        MissionPhase::Preparation => "préparation",
-        MissionPhase::Outbound => "transit aller",
-        MissionPhase::OnSite => "sur place",
-        MissionPhase::Returning => "transit retour",
-        MissionPhase::Completed => "terminée",
-        MissionPhase::Cancelled => "annulée",
-        MissionPhase::Failed => "échec",
-    };
-    let deadline = match mission.phase {
-        MissionPhase::Preparation => mission.order.departure_at,
-        MissionPhase::Outbound => mission.plan.outbound_arrival_at,
-        MissionPhase::OnSite => mission.plan.return_departure_at,
-        MissionPhase::Returning => mission.plan.return_arrival_at,
-        MissionPhase::Completed | MissionPhase::Cancelled | MissionPhase::Failed => {
-            state.clock.current_tick()
-        }
-    };
+    let phase = mission_phase_label(mission.phase);
+    let deadline = mission_next_deadline(mission, state.clock.current_tick());
     let remaining = deadline
         .value()
         .saturating_sub(state.clock.current_tick().value());
-    let kind = match mission.order.kind {
-        MissionKind::Probe => "Reconnaissance",
-        MissionKind::Attack => "Attaque",
-        MissionKind::Transport => "Transport",
-        MissionKind::Harvest => "Récolte",
-        MissionKind::Colonize => "Colonisation",
-    };
+    let kind = mission_kind_label(mission.order.kind);
 
     format!(
         "Mission {} • {} vers {} • {} • prochaine étape dans {}",
@@ -5461,7 +5480,7 @@ fn mission_status_line(simulation: &Simulation) -> String {
     )
 }
 
-fn mission_target_label(simulation: &Simulation, target: MissionTarget) -> String {
+pub(crate) fn mission_target_label(simulation: &Simulation, target: MissionTarget) -> String {
     let state = simulation.state();
     match target {
         MissionTarget::System(system_id) => simulation
@@ -6709,57 +6728,7 @@ fn event_label(event: GameEvent) -> String {
             "mission {:?} : {:?} -> {:?}",
             transition.mission_id, transition.from, transition.to,
         ),
-        GameEventKind::MissionResolved(resolution) => match resolution.result {
-            MissionResult::Probe(result) => match result.target {
-                MissionTarget::System(system_id) => format!(
-                    "reconnaissance terminée : système {} sondé, {} nouveaux signaux, {} routes et {} planètes révélées",
-                    system_id.index(),
-                    result.newly_detected_systems,
-                    result.revealed_routes,
-                    result.revealed_planets,
-                ),
-                MissionTarget::Planet { planet_id, .. } => format!(
-                    "reconnaissance planétaire terminée : corps {} identifié",
-                    planet_id.index(),
-                ),
-            },
-            MissionResult::Attack(result) => match result.outcome {
-                AttackMissionOutcome::Resolved(outcome) => format!(
-                    "combat terminé sur le corps {} : {}{}",
-                    result.target.index(),
-                    combat_outcome_label(outcome),
-                    if result.secured {
-                        ", planète sécurisée"
-                    } else {
-                        ""
-                    },
-                ),
-                AttackMissionOutcome::TargetInvalid(_) => format!(
-                    "attaque annulée sur le corps {} : cible devenue invalide",
-                    result.target.index(),
-                ),
-            },
-            MissionResult::Transport(result) => transport_result_label(result),
-            MissionResult::Harvest(result) => format!(
-                "récolte terminée sur le site {} : {}, {} livré, {} conservé en soute, réserve restante {}",
-                result.site_id.raw(),
-                transport_cargo_label(result.collected),
-                transport_cargo_label(result.delivered),
-                transport_cargo_label(result.retained),
-                result.site_remaining,
-            ),
-            MissionResult::Colonize(result) => match result.outcome {
-                ColonizationMissionOutcome::FoundationPrepared => format!(
-                    "fondation prête sur le corps {} : Arche Pionnière et chargement déployés",
-                    result.target.index(),
-                ),
-                ColonizationMissionOutcome::TargetInvalid(blocker) => format!(
-                    "colonisation annulée sur le corps {} : {}",
-                    result.target.index(),
-                    colonization_arrival_failure_label(blocker),
-                ),
-            },
-        },
+        GameEventKind::MissionResolved(resolution) => mission_result_text(resolution.result),
         GameEventKind::ColonyFoundationPrepared(foundation) => format!(
             "fondation coloniale préparée sur le corps {} au tick {}",
             foundation.planet_id.index(),
@@ -6821,7 +6790,61 @@ fn colonization_arrival_failure_label(blocker: ColonizationBlocker) -> &'static 
     }
 }
 
-fn mission_error_text(error: galactic_sim::MissionError) -> String {
+pub(crate) fn mission_result_text(result: MissionResult) -> String {
+    match result {
+        MissionResult::Probe(result) => match result.target {
+            MissionTarget::System(system_id) => format!(
+                "reconnaissance terminée : système {} sondé, {} nouveaux signaux, {} routes et {} planètes révélées",
+                system_id.index(),
+                result.newly_detected_systems,
+                result.revealed_routes,
+                result.revealed_planets,
+            ),
+            MissionTarget::Planet { planet_id, .. } => format!(
+                "reconnaissance planétaire terminée : corps {} identifié",
+                planet_id.index(),
+            ),
+        },
+        MissionResult::Attack(result) => match result.outcome {
+            AttackMissionOutcome::Resolved(outcome) => format!(
+                "combat terminé sur le corps {} : {}{}",
+                result.target.index(),
+                combat_outcome_label(outcome),
+                if result.secured {
+                    ", planète sécurisée"
+                } else {
+                    ""
+                },
+            ),
+            AttackMissionOutcome::TargetInvalid(_) => format!(
+                "attaque annulée sur le corps {} : cible devenue invalide",
+                result.target.index(),
+            ),
+        },
+        MissionResult::Transport(result) => transport_result_label(result),
+        MissionResult::Harvest(result) => format!(
+            "récolte terminée sur le site {} : {}, {} livré, {} conservé en soute, réserve restante {}",
+            result.site_id.raw(),
+            transport_cargo_label(result.collected),
+            transport_cargo_label(result.delivered),
+            transport_cargo_label(result.retained),
+            result.site_remaining,
+        ),
+        MissionResult::Colonize(result) => match result.outcome {
+            ColonizationMissionOutcome::FoundationPrepared => format!(
+                "fondation prête sur le corps {} : Arche Pionnière et chargement déployés",
+                result.target.index(),
+            ),
+            ColonizationMissionOutcome::TargetInvalid(blocker) => format!(
+                "colonisation annulée sur le corps {} : {}",
+                result.target.index(),
+                colonization_arrival_failure_label(blocker),
+            ),
+        },
+    }
+}
+
+pub(crate) fn mission_error_text(error: galactic_sim::MissionError) -> String {
     match error {
         galactic_sim::MissionError::ProbeUnavailable(_) => {
             "aucune Sonde Luciole disponible ; construisez-en une au chantier orbital".to_string()

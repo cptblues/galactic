@@ -1,12 +1,14 @@
 # Roadmap Galactic — Issues MVP
 
 > Document généré depuis l’export JSON Cadylo fourni le 27 juillet 2026.
+> Statuts resynchronisés manuellement le 31 juillet 2026 avec `docs/mvp_architecture.md`
+> et l'état réel du code (MVP-017 à MVP-023-C étaient marquées à tort « À faire »).
 
 ## Vue d’ensemble
 
 - **45 issues** au total
-- **24 terminées**
-- **21 à faire**
+- **36 terminées**
+- **9 à faire**
 
 ## Sommaire de la roadmap
 
@@ -29,16 +31,16 @@
 | ✅ | [MVP-014](#eng-22) — Implémenter la file de construction et les améliorations | [ENG-22](https://cadylo.app/galactic/issue/ENG-22) | P1 | 8 |
 | ✅ | [MVP-015](#eng-23) — Construire l'écran de gestion planétaire | [ENG-23](https://cadylo.app/galactic/issue/ENG-23) | P1 | 8 |
 | ✅ | [MVP-016](#eng-24) — Implémenter la recherche et l'arbre technologique minimal | [ENG-24](https://cadylo.app/galactic/issue/ENG-24) | P1 | 8 |
-| ⬜ | [MVP-016-B](#eng-51) — Externaliser le ruleset économique V1 | [ENG-51](https://cadylo.app/galactic/issue/ENG-51) | P1 | — |
-| ⬜ | [MVP-017](#eng-25) — Ajouter une file générique de craft au chantier spatial | [ENG-25](https://cadylo.app/galactic/issue/ENG-25) | P1 | 8 |
-| ⬜ | [MVP-018](#eng-26) — Généraliser la propriété avec les factions | [ENG-26](https://cadylo.app/galactic/issue/ENG-26) | P1 | 5 |
-| ⬜ | [MVP-019](#eng-27) — Introduire les commandes génériques et relations dormantes | [ENG-27](https://cadylo.app/galactic/issue/ENG-27) | P2 | 8 |
-| ⬜ | [MVP-020](#eng-28) — Définir les flottes, vaisseaux et capacités | [ENG-28](https://cadylo.app/galactic/issue/ENG-28) | P1 | 8 |
-| ⬜ | [MVP-021](#eng-29) — Implémenter le moteur de trajet et la machine d'état des missions | [ENG-29](https://cadylo.app/galactic/issue/ENG-29) | P1 | 8 |
-| ⬜ | [MVP-022](#eng-30) — Ajouter la sonde et la mission de reconnaissance | [ENG-30](https://cadylo.app/galactic/issue/ENG-30) | P1 | 8 |
-| ⬜ | [MVP-023](#eng-31) — Propager la découverte aux systèmes suivants | [ENG-31](https://cadylo.app/galactic/issue/ENG-31) | P1 | 5 |
-| ⬜ | [MVP-023-B](#eng-48) — Structurer la galaxie en secteurs déterministes | [ENG-48](https://cadylo.app/galactic/issue/ENG-48) | P1 | 8 |
-| ⬜ | [MVP-023-C](#eng-49) — Ajouter la projection aplatie et les presets d'échelle galactique | [ENG-49](https://cadylo.app/galactic/issue/ENG-49) | P1 | 8 |
+| ✅ | [MVP-016-B](#eng-51) — Externaliser le ruleset économique V1 | [ENG-51](https://cadylo.app/galactic/issue/ENG-51) | P1 | — |
+| ✅ | [MVP-017](#eng-25) — Ajouter une file générique de craft au chantier spatial | [ENG-25](https://cadylo.app/galactic/issue/ENG-25) | P1 | 8 |
+| ✅ | [MVP-018](#eng-26) — Généraliser la propriété avec les factions | [ENG-26](https://cadylo.app/galactic/issue/ENG-26) | P1 | 5 |
+| ✅ | [MVP-019](#eng-27) — Introduire les commandes génériques et relations dormantes | [ENG-27](https://cadylo.app/galactic/issue/ENG-27) | P2 | 8 |
+| ✅ | [MVP-020](#eng-28) — Définir les flottes, vaisseaux et capacités | [ENG-28](https://cadylo.app/galactic/issue/ENG-28) | P1 | 8 |
+| ✅ | [MVP-021](#eng-29) — Implémenter le moteur de trajet et la machine d'état des missions | [ENG-29](https://cadylo.app/galactic/issue/ENG-29) | P1 | 8 |
+| ✅ | [MVP-022](#eng-30) — Ajouter la sonde et la mission de reconnaissance | [ENG-30](https://cadylo.app/galactic/issue/ENG-30) | P1 | 8 |
+| ✅ | [MVP-023](#eng-31) — Propager la découverte aux systèmes suivants | [ENG-31](https://cadylo.app/galactic/issue/ENG-31) | P1 | 5 |
+| ✅ | [MVP-023-B](#eng-48) — Structurer la galaxie en secteurs déterministes | [ENG-48](https://cadylo.app/galactic/issue/ENG-48) | P1 | 8 |
+| ✅ | [MVP-023-C](#eng-49) — Ajouter la projection aplatie et les presets d'échelle galactique | [ENG-49](https://cadylo.app/galactic/issue/ENG-49) | P1 | 8 |
 | ✅ | [MVP-024](#eng-32) — Ajouter l'analyse planétaire et les règles de colonisabilité | [ENG-32](https://cadylo.app/galactic/issue/ENG-32) | P1 | 8 |
 | ✅ | [MVP-025](#eng-33) — Ajouter les occupants, forces et défenses planétaires | [ENG-33](https://cadylo.app/galactic/issue/ENG-33) | P1 | 5 |
 | ✅ | [MVP-025-B](#eng-52) — Ajouter les attaques, le combat V1 et les rapports | [ENG-52](https://cadylo.app/galactic/issue/ENG-52) | P1 | — |
@@ -47,7 +49,7 @@
 | ✅ | [MVP-028](#eng-36) — Ajouter la gestion multi-colonies | [ENG-36](https://cadylo.app/galactic/issue/ENG-36) | P1 | 8 |
 | ✅ | [MVP-029](#eng-37) — Ajouter les missions de transport entre colonies | [ENG-37](https://cadylo.app/galactic/issue/ENG-37) | P1 | 5 |
 | ✅ | [MVP-029-B](#eng-53) — Ajouter les sites d'extraction et la récolte distante | [ENG-53](https://cadylo.app/galactic/issue/ENG-53) | P1 | — |
-| ⬜ | [MVP-030](#eng-38) — Créer le HUD des flottes et missions | [ENG-38](https://cadylo.app/galactic/issue/ENG-38) | P2 | 8 |
+| ✅ | [MVP-030](#eng-38) — Créer le HUD des flottes et missions | [ENG-38](https://cadylo.app/galactic/issue/ENG-38) | P2 | 8 |
 | ⬜ | [MVP-030-B](#eng-50) — Ajouter la navigation galactique avancée | [ENG-50](https://cadylo.app/galactic/issue/ENG-50) | P1 | 8 |
 | ⬜ | [MVP-031](#eng-39) — Implémenter sauvegarde, chargement et migration V1 | [ENG-39](https://cadylo.app/galactic/issue/ENG-39) | P1 | 8 |
 | ⬜ | [MVP-032](#eng-40) — Ajouter onboarding et objectifs contextuels | [ENG-40](https://cadylo.app/galactic/issue/ENG-40) | P2 | 5 |
@@ -746,11 +748,11 @@ d'ajouter le craft, les vaisseaux et les missions.
 | Métadonnée | Valeur |
 |---|---|
 | Issue | [ENG-25](https://cadylo.app/galactic/issue/ENG-25) |
-| Statut | À faire |
+| Statut | Terminée |
 | Priorité | P1 |
 | Estimation | 8 points |
 | Créée le | 23/07/2026 |
-| Mise à jour le | 27/07/2026 |
+| Mise à jour le | 31/07/2026 |
 
 ### Objectif
 
@@ -793,11 +795,11 @@ vaisseaux, sondes, transports, défenses et modules de soutien.
 | Métadonnée | Valeur |
 |---|---|
 | Issue | [ENG-26](https://cadylo.app/galactic/issue/ENG-26) |
-| Statut | À faire |
+| Statut | Terminée |
 | Priorité | P1 |
 | Estimation | 5 points |
 | Créée le | 23/07/2026 |
-| Mise à jour le | 27/07/2026 |
+| Mise à jour le | 31/07/2026 |
 
 ### Objectif
 
@@ -836,11 +838,11 @@ sans confondre connaissance, occupation et contrôle territorial.
 | Métadonnée | Valeur |
 |---|---|
 | Issue | [ENG-27](https://cadylo.app/galactic/issue/ENG-27) |
-| Statut | À faire |
+| Statut | Terminée |
 | Priorité | P2 |
 | Estimation | 8 points |
 | Créée le | 23/07/2026 |
-| Mise à jour le | 27/07/2026 |
+| Mise à jour le | 31/07/2026 |
 
 ### Objectif
 
@@ -877,11 +879,11 @@ factions, sans implémenter prématurément un système diplomatique complet.
 | Métadonnée | Valeur |
 |---|---|
 | Issue | [ENG-28](https://cadylo.app/galactic/issue/ENG-28) |
-| Statut | À faire |
+| Statut | Terminée |
 | Priorité | P1 |
 | Estimation | 8 points |
 | Créée le | 23/07/2026 |
-| Mise à jour le | 27/07/2026 |
+| Mise à jour le | 31/07/2026 |
 
 ### Objectif
 
@@ -923,11 +925,11 @@ configurable, sans encore déplacer ni engager les flottes.
 | Métadonnée | Valeur |
 |---|---|
 | Issue | [ENG-29](https://cadylo.app/galactic/issue/ENG-29) |
-| Statut | À faire |
+| Statut | Terminée |
 | Priorité | P1 |
 | Estimation | 8 points |
 | Créée le | 23/07/2026 |
-| Mise à jour le | 27/07/2026 |
+| Mise à jour le | 31/07/2026 |
 
 ### Objectif
 
@@ -966,11 +968,11 @@ réutilisables par la reconnaissance, l'attaque, le transport et la colonisation
 | Métadonnée | Valeur |
 |---|---|
 | Issue | [ENG-30](https://cadylo.app/galactic/issue/ENG-30) |
-| Statut | À faire |
+| Statut | Terminée |
 | Priorité | P1 |
 | Estimation | 8 points |
 | Créée le | 23/07/2026 |
-| Mise à jour le | 27/07/2026 |
+| Mise à jour le | 31/07/2026 |
 
 ### Objectif
 
@@ -1010,11 +1012,11 @@ daté et potentiellement incomplet sur une planète cible.
 | Métadonnée | Valeur |
 |---|---|
 | Issue | [ENG-31](https://cadylo.app/galactic/issue/ENG-31) |
-| Statut | À faire |
+| Statut | Terminée |
 | Priorité | P1 |
 | Estimation | 5 points |
 | Créée le | 23/07/2026 |
-| Mise à jour le | 23/07/2026 |
+| Mise à jour le | 31/07/2026 |
 
 ### Objectif
 Créer une frontière d'exploration progressive après chaque sondage.
@@ -1027,10 +1029,10 @@ Créer une frontière d'exploration progressive après chaque sondage.
 - Éviter les révélations récursives involontaires.
 
 ### Critères d'acceptation
-- [ ] Sonder un système ouvre exactement le prochain anneau de découverte prévu.
-- [ ] Les systèmes nouvellement détectés sont sélectionnables mais non détaillés.
-- [ ] Les routes affichées correspondent à la connaissance du joueur.
-- [ ] La progression est reproductible après sauvegarde/chargement.
+- [x] Sonder un système ouvre exactement le prochain anneau de découverte prévu.
+- [x] Les systèmes nouvellement détectés sont sélectionnables mais non détaillés.
+- [x] Les routes affichées correspondent à la connaissance du joueur.
+- [x] La progression est reproductible après sauvegarde/chargement.
 
 ### Dépendances
 - MVP-022
@@ -1046,11 +1048,11 @@ Créer une frontière d'exploration progressive après chaque sondage.
 | Métadonnée | Valeur |
 |---|---|
 | Issue | [ENG-48](https://cadylo.app/galactic/issue/ENG-48) |
-| Statut | À faire |
+| Statut | Terminée |
 | Priorité | P1 |
 | Estimation | 8 points |
 | Créée le | 23/07/2026 |
-| Mise à jour le | 23/07/2026 |
+| Mise à jour le | 31/07/2026 |
 
 ### Objectif
 Donner une structure mentale et géographique à la galaxie avant d'augmenter fortement le nombre de systèmes.
@@ -1066,12 +1068,12 @@ Donner une structure mentale et géographique à la galaxie avant d'augmenter fo
 - Versionner la génération et le fingerprint si la définition de l'univers change.
 
 ### Critères d'acceptation
-- [ ] Une même seed et un même preset produisent les mêmes secteurs et identifiants.
-- [ ] Tous les systèmes appartiennent exactement à un secteur.
-- [ ] Les secteurs restent cohérents avec le graphe et ses routes intersectorielles.
-- [ ] Les labels sectoriels ne révèlent aucun système inconnu.
-- [ ] La vue globale permet d'identifier plusieurs régions distinctes sans afficher tous les labels.
-- [ ] Les données sectorielles sont accessibles sans dépendre des entités Bevy.
+- [x] Une même seed et un même preset produisent les mêmes secteurs et identifiants.
+- [x] Tous les systèmes appartiennent exactement à un secteur.
+- [x] Les secteurs restent cohérents avec le graphe et ses routes intersectorielles.
+- [x] Les labels sectoriels ne révèlent aucun système inconnu.
+- [x] La vue globale permet d'identifier plusieurs régions distinctes sans afficher tous les labels.
+- [x] Les données sectorielles sont accessibles sans dépendre des entités Bevy.
 
 ### Dépendances
 - MVP-023
@@ -1088,11 +1090,11 @@ Donner une structure mentale et géographique à la galaxie avant d'augmenter fo
 | Métadonnée | Valeur |
 |---|---|
 | Issue | [ENG-49](https://cadylo.app/galactic/issue/ENG-49) |
-| Statut | À faire |
+| Statut | Terminée |
 | Priorité | P1 |
 | Estimation | 8 points |
 | Créée le | 23/07/2026 |
-| Mise à jour le | 23/07/2026 |
+| Mise à jour le | 31/07/2026 |
 
 ### Objectif
 Permettre de lire facilement la galaxie en 2,5D et augmenter sa taille sans sacrifier la navigation ni la lisibilité.
@@ -1108,13 +1110,13 @@ Permettre de lire facilement la galaxie en 2,5D et augmenter sa taille sans sacr
 - Ajouter un test de performance simple du preset MVP en mode graphique Low.
 
 ### Critères d'acceptation
-- [ ] Le preset MVP génère 64 systèmes reproductibles et plusieurs secteurs.
-- [ ] Le passage 3D ↔ aplati ne modifie aucune distance ou route métier.
-- [ ] La sélection souris reste exacte pendant et après la transition.
-- [ ] Les systèmes inconnus restent masqués dans les deux projections.
-- [ ] Le retour en 3D restaure la disposition attendue sans dérive.
-- [ ] Le preset Test reste disponible pour les tests rapides et unitaires.
-- [ ] Le preset Stress permet de mesurer 128 systèmes sans devenir la configuration par défaut.
+- [x] Le preset MVP génère 64 systèmes reproductibles et plusieurs secteurs.
+- [x] Le passage 3D ↔ aplati ne modifie aucune distance ou route métier.
+- [x] La sélection souris reste exacte pendant et après la transition.
+- [x] Les systèmes inconnus restent masqués dans les deux projections.
+- [x] Le retour en 3D restaure la disposition attendue sans dérive.
+- [x] Le preset Test reste disponible pour les tests rapides et unitaires.
+- [x] Le preset Stress permet de mesurer 128 systèmes sans devenir la configuration par défaut.
 
 ### Dépendances
 - MVP-023-B
@@ -1482,11 +1484,11 @@ sites distants après stabilisation de la boucle militaire et multi-colonies.
 | Métadonnée | Valeur |
 |---|---|
 | Issue | [ENG-38](https://cadylo.app/galactic/issue/ENG-38) |
-| Statut | À faire |
+| Statut | Terminée |
 | Priorité | P2 |
 | Estimation | 8 points |
 | Créée le | 23/07/2026 |
-| Mise à jour le | 23/07/2026 |
+| Mise à jour le | 31/07/2026 |
 
 ### Objectif
 Permettre de préparer, lancer et suivre les missions sans outil de debug.
@@ -1499,10 +1501,10 @@ Permettre de préparer, lancer et suivre les missions sans outil de debug.
 - Afficher les rapports terminés.
 
 ### Critères d'acceptation
-- [ ] Le joueur peut lancer les missions du MVP depuis l'interface.
-- [ ] Les erreurs de portée, route, technologie et capacité sont explicites.
-- [ ] La sélection d'une mission permet de focaliser son origine ou sa destination.
-- [ ] La liste reste lisible avec au moins dix missions.
+- [x] Le joueur peut lancer les missions du MVP depuis l'interface.
+- [x] Les erreurs de portée, route, technologie et capacité sont explicites.
+- [x] La sélection d'une mission permet de focaliser son origine ou sa destination.
+- [x] La liste reste lisible avec au moins dix missions.
 
 ### Dépendances
 - MVP-022

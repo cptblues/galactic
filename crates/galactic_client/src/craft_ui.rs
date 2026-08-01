@@ -9,8 +9,8 @@ use galactic_sim::{
 use super::{
     ColonyManagementState, PresentationUpdateSet, SimulationResource, UiPointerBlocker,
     action_button_color, action_button_outline, apply_simulation_command,
-    collect_presentation_events, format_strategic_duration, panel_background, panel_outline,
-    research_ui::ResearchUiState, ui_text_font,
+    collect_presentation_events, fleet_ui::FleetUiState, format_strategic_duration,
+    panel_background, panel_outline, research_ui::ResearchUiState, ui_text_font,
 };
 
 const CRAFT_Z_INDEX: i32 = 120;
@@ -454,6 +454,7 @@ fn handle_craft_shortcuts(
     mut ui: ResMut<CraftUiState>,
     mut management: ResMut<ColonyManagementState>,
     mut research: ResMut<ResearchUiState>,
+    mut fleet: ResMut<FleetUiState>,
 ) {
     if keyboard.just_pressed(KeyCode::KeyY) {
         ui.open = !ui.open;
@@ -461,6 +462,7 @@ fn handle_craft_shortcuts(
         if ui.open {
             management.open = false;
             research.open = false;
+            fleet.open = false;
         }
         return;
     }
@@ -475,6 +477,7 @@ fn handle_craft_buttons(
     mut ui: ResMut<CraftUiState>,
     mut management: ResMut<ColonyManagementState>,
     mut research: ResMut<ResearchUiState>,
+    mut fleet: ResMut<FleetUiState>,
     interactions: CraftButtonInteractionQuery,
 ) {
     for (interaction, action) in &interactions {
@@ -489,6 +492,7 @@ fn handle_craft_buttons(
                 if ui.open {
                     management.open = false;
                     research.open = false;
+                    fleet.open = false;
                 }
             }
             CraftButtonAction::Close => ui.open = false,
