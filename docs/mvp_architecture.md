@@ -1558,3 +1558,74 @@ Univers et de la vue Système : la route complète de la mission est tracée en
 surbrillance et ses points d'origine et de destination reçoivent un marqueur
 distinct, dérivés chaque frame de l'état de simulation sans aucune géométrie
 mise en cache.
+
+## Refactor technique — Modularisation interne
+
+Passe technique pure, sans changement de comportement ni de gameplay, menée
+en préparation d'une refonte de design du jeu. Objectif : éliminer les
+fichiers monolithiques à trop grosses responsabilités, réduire le couplage
+entre modules, et sécuriser le code encore non testé avant d'y toucher.
+
+**`galactic_client/src/lib.rs`** passe de 9109 à 1669 lignes. Son contenu est
+éclaté en `src/presentation/` par responsabilité : `strategic_navigation.rs`
+(historique, fil d'Ariane, `StrategicNavigation`), `components.rs` (marqueurs
+Bevy, `ColonyManagementState`, `UiAction`), `scene.rs` (spawn de la scène 3D
+et de l'UI), `input.rs` (picking souris, dispatch d'input), `shortcuts.rs`
+(raccourcis clavier et disponibilité des actions), `strategic_camera.rs`
+(orbit/pan/zoom), `overlays.rs` (rendu gizmo des routes et missions),
+`universe_labels.rs` (budget de labels, hystérésis), `resource_hud.rs` et
+`inspector_panel.rs` (formatage pur du HUD et des panneaux d'inspection),
+`colony_management_ui.rs` (panneau de gestion de colonie),
+`procedural_materials.rs` (textures procédurales). `lib.rs` ne conserve plus
+que `run()`, `ClientPlugin` (wiring des systèmes, ordre inchangé) et les
+enums de configuration graphique. Les quatre modules UI préexistants
+(`fleet_ui.rs`, `craft_ui.rs`, `research_ui.rs`, `navigation_ui.rs`) ne sont
+pas déplacés : ils étaient déjà correctement isolés.
+
+Le couplage bidirectionnel entre `lib.rs` et ces quatre modules — chacun
+possédant son propre booléen d'ouverture, consulté individuellement par les
+systèmes de caméra et d'input pour l'exclusion mutuelle des panneaux — est
+remplacé par une Resource unique `OpenPanel` (`None`, `Fleet`, `Craft`,
+`Research`, `Navigation`, `Colony`). Ouvrir un panneau devient une seule
+écriture qui ferme implicitement tous les autres ; `input.rs` et
+`strategic_camera.rs` n'ont plus besoin de connaître les Resources internes
+de chaque module UI pour arbitrer le blocage caméra/raccourcis. Une
+asymétrie préexistante (le panneau Flotte ne bloquait pas la caméra,
+contrairement aux quatre autres) a été strictement préservée à l'identique.
+
+Avant ce découpage, `fleet_ui.rs` et `craft_ui.rs` (les deux plus gros
+modules UI, sans aucun test) ont reçu une couverture de tests sur leurs
+fonctions pures — en particulier le filtrage des cibles de mission par
+`KnowledgeLevel` — pour servir de filet de non-régression comportementale.
+
+Côté `galactic_sim`, `mission.rs` (4340 lignes, tous les types de mission
+réunis) est réparti en un fichier coordinateur (types communs,
+`plan_mission`, `launch_mission`, `cancel_mission`, dispatcher court de
+`validate_mission_state`) et un dossier `mission/` avec un fichier par type
+(`probe.rs`, `transport.rs`, `harvest.rs`, `colonize.rs`, `attack.rs`),
+chacun portant sa fonction de lancement et sa validation de transition
+extraite du `match` géant d'origine. Les tests restent groupés dans le
+fichier coordinateur : ce sont des tests d'intégration partageant des
+fixtures de scénario communes à plusieurs types de mission.
+
+`simulation.rs` (2033 lignes) est réduit à son cœur (`Simulation::new`,
+`from_parts`, accesseurs, `apply_command` — dispatcher de `GameAction` déjà
+propre, conservé tel quel —, `advance`, `validate_command`, et les tests) et
+trois sous-modules imbriqués sous `simulation/` (seule structure compatible
+avec l'accès aux champs privés `universe`/`state` de `Simulation` depuis un
+autre fichier) : `selection.rs` (sélection de système/planète/colonie
+active), `build_error.rs` (`SimulationBuildError`), `reconstruction.rs`
+(`validate_state`, la validation d'un `GameState` reconstruit).
+
+`galactic_persistence/src/lib.rs` (1339 lignes, seul fichier de toute la
+crate, non consommée par le binaire jouable) est réparti en `save.rs`
+(types de sauvegarde), `snapshot.rs` (`snapshot_from_simulation`) et
+`restore.rs` (`restore_from_snapshot`), tests conservés ensemble dans
+`lib.rs` (tests d'aller-retour exerçant systématiquement les deux
+fonctions).
+
+Chaque étape a été vérifiée indépendamment par les quatre commandes qualité
+(`cargo fmt --all --check`, `cargo clippy --workspace --all-targets
+--all-features -- -D warnings`, `cargo test --workspace`, `cargo build
+--release`) avec un compte de tests strictement inchangé par crate, complété
+par un lancement manuel en `--scale stress`.

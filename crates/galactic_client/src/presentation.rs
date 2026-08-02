@@ -1,0 +1,12 @@
+pub(crate) mod colony_management_ui;
+pub(crate) mod components;
+pub(crate) mod input;
+pub(crate) mod inspector_panel;
+pub(crate) mod overlays;
+pub(crate) mod procedural_materials;
+pub(crate) mod resource_hud;
+pub(crate) mod scene;
+pub(crate) mod shortcuts;
+pub(crate) mod strategic_camera;
+pub(crate) mod strategic_navigation;
+pub(crate) mod universe_labels;

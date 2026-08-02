@@ -7,10 +7,9 @@ use galactic_sim::{
 };
 
 use super::{
-    ColonyManagementState, PresentationUpdateSet, SimulationResource, UiPointerBlocker,
-    action_button_color, action_button_outline, apply_simulation_command,
-    collect_presentation_events, fleet_ui::FleetUiState, format_strategic_duration,
-    panel_background, panel_outline, research_ui::ResearchUiState, ui_text_font,
+    OpenPanel, PresentationUpdateSet, SimulationResource, UiPointerBlocker, action_button_color,
+    action_button_outline, apply_simulation_command, collect_presentation_events,
+    format_strategic_duration, panel_background, panel_outline, ui_text_font,
 };
 
 const CRAFT_Z_INDEX: i32 = 120;
@@ -50,7 +49,6 @@ impl Plugin for CraftUiPlugin {
 
 #[derive(Resource)]
 pub(crate) struct CraftUiState {
-    pub(crate) open: bool,
     selected: CraftableId,
     feedback: String,
 }
@@ -58,7 +56,6 @@ pub(crate) struct CraftUiState {
 impl Default for CraftUiState {
     fn default() -> Self {
         Self {
-            open: false,
             selected: craftable_catalog()
                 .ids()
                 .next()
@@ -452,35 +449,33 @@ fn spawn_craft_queue(row: &mut ChildSpawnerCommands) {
 fn handle_craft_shortcuts(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut ui: ResMut<CraftUiState>,
-    mut management: ResMut<ColonyManagementState>,
-    mut research: ResMut<ResearchUiState>,
-    mut fleet: ResMut<FleetUiState>,
+    mut open_panel: ResMut<OpenPanel>,
     mut navigation_ui: ResMut<super::navigation_ui::NavigationUiState>,
 ) {
     if keyboard.just_pressed(KeyCode::KeyY) {
-        ui.open = !ui.open;
+        let opening = *open_panel != OpenPanel::Craft;
+        *open_panel = if opening {
+            OpenPanel::Craft
+        } else {
+            OpenPanel::None
+        };
         ui.feedback.clear();
-        if ui.open {
-            management.open = false;
-            research.open = false;
-            fleet.open = false;
+        if opening {
             navigation_ui.search_open = false;
             navigation_ui.filters_open = false;
         }
         return;
     }
 
-    if ui.open && keyboard.just_pressed(KeyCode::Escape) {
-        ui.open = false;
+    if *open_panel == OpenPanel::Craft && keyboard.just_pressed(KeyCode::Escape) {
+        *open_panel = OpenPanel::None;
     }
 }
 
 fn handle_craft_buttons(
     mut simulation: ResMut<SimulationResource>,
     mut ui: ResMut<CraftUiState>,
-    mut management: ResMut<ColonyManagementState>,
-    mut research: ResMut<ResearchUiState>,
-    mut fleet: ResMut<FleetUiState>,
+    mut open_panel: ResMut<OpenPanel>,
     mut navigation_ui: ResMut<super::navigation_ui::NavigationUiState>,
     interactions: CraftButtonInteractionQuery,
 ) {
@@ -491,17 +486,19 @@ fn handle_craft_buttons(
 
         match *action {
             CraftButtonAction::Toggle => {
-                ui.open = !ui.open;
+                let opening = *open_panel != OpenPanel::Craft;
+                *open_panel = if opening {
+                    OpenPanel::Craft
+                } else {
+                    OpenPanel::None
+                };
                 ui.feedback.clear();
-                if ui.open {
-                    management.open = false;
-                    research.open = false;
-                    fleet.open = false;
+                if opening {
                     navigation_ui.search_open = false;
                     navigation_ui.filters_open = false;
                 }
             }
-            CraftButtonAction::Close => ui.open = false,
+            CraftButtonAction::Close => *open_panel = OpenPanel::None,
             CraftButtonAction::PreviousColony => {
                 cycle_craft_colony(&mut ui, &mut simulation, true);
             }
@@ -545,12 +542,13 @@ fn capture_craft_feedback(simulation: Res<SimulationResource>, mut ui: ResMut<Cr
 }
 
 fn update_craft_visibility(
-    ui: Res<CraftUiState>,
+    open_panel: Res<OpenPanel>,
     mut roots: Query<&mut Visibility, With<CraftRoot>>,
     mut texts: Query<(&CraftTextRole, &mut Text)>,
 ) {
+    let is_open = *open_panel == OpenPanel::Craft;
     for mut visibility in &mut roots {
-        let next = if ui.open {
+        let next = if is_open {
             Visibility::Visible
         } else {
             Visibility::Hidden
@@ -561,7 +559,7 @@ fn update_craft_visibility(
     }
     for (role, mut text) in &mut texts {
         if *role == CraftTextRole::Toggle {
-            let next = if ui.open {
+            let next = if is_open {
                 "Fermer chantier".to_string()
             } else {
                 "Chantier orbital  [Y]".to_string()
@@ -576,9 +574,10 @@ fn update_craft_visibility(
 fn update_craft_summary(
     simulation: Res<SimulationResource>,
     ui: Res<CraftUiState>,
+    open_panel: Res<OpenPanel>,
     mut texts: Query<(&CraftTextRole, &mut Text)>,
 ) {
-    if !ui.open {
+    if *open_panel != OpenPanel::Craft {
         return;
     }
     let colony = active_colony(simulation.simulation());
@@ -616,6 +615,7 @@ fn update_craft_summary(
 fn update_craftable_buttons(
     simulation: Res<SimulationResource>,
     ui: Res<CraftUiState>,
+    open_panel: Res<OpenPanel>,
     mut buttons: Query<(
         &CraftableButton,
         &Interaction,
@@ -624,7 +624,7 @@ fn update_craftable_buttons(
     )>,
     mut labels: Query<(&CraftableButtonText, &mut Text, &mut TextColor)>,
 ) {
-    if !ui.open {
+    if *open_panel != OpenPanel::Craft {
         return;
     }
     let colony = active_colony(simulation.simulation());
@@ -655,10 +655,11 @@ fn update_craftable_buttons(
 fn update_craft_detail(
     simulation: Res<SimulationResource>,
     ui: Res<CraftUiState>,
+    open_panel: Res<OpenPanel>,
     mut texts: Query<(&CraftTextRole, &mut Text, &mut TextColor)>,
     mut button: Query<(&Interaction, &mut BackgroundColor, &mut Outline), With<QueueCraftButton>>,
 ) {
-    if !ui.open {
+    if *open_panel != OpenPanel::Craft {
         return;
     }
     let state = simulation.simulation().state();
@@ -699,11 +700,11 @@ fn update_craft_detail(
 
 fn update_craft_queue(
     simulation: Res<SimulationResource>,
-    ui: Res<CraftUiState>,
+    open_panel: Res<OpenPanel>,
     mut texts: Query<(&CraftTextRole, &mut Text)>,
     mut progress: Query<&mut Node, With<CraftProgressFill>>,
 ) {
-    if !ui.open {
+    if *open_panel != OpenPanel::Craft {
         return;
     }
     let colony = active_colony(simulation.simulation());
@@ -952,5 +953,161 @@ fn craftable_button_outline(selected: bool) -> Color {
         Color::srgba(1.0, 0.62, 0.22, 0.82)
     } else {
         Color::srgba(0.54, 0.34, 0.15, 0.48)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use galactic_domain::UniverseConfig;
+    use galactic_sim::Simulation;
+
+    use super::*;
+
+    fn first_craftable() -> CraftableId {
+        craftable_catalog()
+            .ids()
+            .next()
+            .expect("ruleset defines at least one craftable")
+    }
+
+    #[test]
+    fn active_colony_returns_the_player_home_colony() {
+        let simulation = Simulation::new(UniverseConfig::mvp());
+
+        let colony = active_colony(&simulation).expect("home colony exists");
+
+        assert_eq!(
+            Some(colony.id),
+            simulation.state().active_player_colony().map(|c| c.id)
+        );
+    }
+
+    #[test]
+    fn craft_error_text_translates_every_variant_to_french() {
+        assert_eq!(
+            craft_error_text(CraftError::NoShipyardCapacity),
+            "Chantier orbital requis"
+        );
+        assert_eq!(
+            craft_error_text(CraftError::QueueFull { maximum: 5 }),
+            "File pleine (5)"
+        );
+    }
+
+    #[test]
+    fn craft_detail_text_reports_blocking_error_when_quote_fails() {
+        let craftable = first_craftable();
+        let quote = Err(CraftError::NoShipyardCapacity);
+
+        let text = craft_detail_text(craftable, quote);
+
+        assert!(text.contains("BLOCAGE"));
+        assert!(text.contains("Chantier orbital requis"));
+    }
+
+    fn simulation_with_shipyard() -> Simulation {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+        let colony = simulation
+            .state_mut()
+            .colonies
+            .first_mut()
+            .expect("home colony exists");
+        colony
+            .buildings
+            .set_level(galactic_sim::BuildingKind::CONSTRUCTION_CENTER, 2);
+        colony
+            .buildings
+            .set_level(galactic_sim::BuildingKind::METAL_MINE, 2);
+        colony
+            .buildings
+            .set_level(galactic_sim::BuildingKind::CRYSTAL_EXTRACTOR, 2);
+        colony
+            .buildings
+            .set_level(galactic_sim::BuildingKind::SHIPYARD, 1);
+        colony.energy =
+            galactic_sim::default_building_catalog().energy_grid_for_levels(colony.buildings);
+        colony
+            .resources
+            .credit(galactic_domain::ResourceStock::new(1_000, 1_000, 1_000))
+            .expect("resource credit fits");
+        simulation.state_mut().research = galactic_sim::ResearchState::from_completed([
+            galactic_sim::TechnologyId::SPATIAL_DETECTION,
+        ]);
+        simulation
+    }
+
+    #[test]
+    fn craft_detail_text_reports_estimate_when_quote_succeeds() {
+        let simulation = simulation_with_shipyard();
+        let colony_id = simulation
+            .state()
+            .active_player_colony()
+            .expect("home colony exists")
+            .id;
+        let craftable = CraftableId::LIGHT_PROBE;
+        let quote = craft_quote(
+            simulation.state(),
+            simulation.state().player_faction,
+            colony_id,
+            craftable,
+        );
+
+        let text = craft_detail_text(craftable, quote);
+
+        assert!(text.contains("Durée estimée"));
+        assert!(text.contains("Résultat"));
+    }
+
+    #[test]
+    fn craft_queue_text_shows_empty_queue_hint() {
+        let simulation = Simulation::new(UniverseConfig::mvp());
+        let colony = simulation
+            .state()
+            .active_player_colony()
+            .expect("home colony exists");
+
+        let text = craft_queue_text(colony);
+
+        assert!(text.contains("FILE VIDE"));
+    }
+
+    #[test]
+    fn craft_queue_text_reports_active_order_progress() {
+        let mut simulation = simulation_with_shipyard();
+        let colony_id = simulation
+            .state()
+            .active_player_colony()
+            .expect("home colony exists")
+            .id;
+        let craftable = CraftableId::LIGHT_PROBE;
+
+        simulation.apply_player_action(GameAction::QueueCraft {
+            colony_id,
+            craftable,
+        });
+        let colony = simulation
+            .state()
+            .active_player_colony()
+            .expect("home colony exists");
+
+        let text = craft_queue_text(colony);
+
+        assert!(text.contains("EN COURS"));
+    }
+
+    #[test]
+    fn craftable_button_color_prioritizes_selected_state() {
+        let selected = craftable_button_color(true, &Interaction::Hovered);
+        let unselected = craftable_button_color(false, &Interaction::None);
+
+        assert_ne!(selected, unselected);
+    }
+
+    #[test]
+    fn craftable_button_outline_differs_when_selected() {
+        assert_ne!(
+            craftable_button_outline(true),
+            craftable_button_outline(false)
+        );
     }
 }

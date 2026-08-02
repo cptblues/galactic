@@ -11,12 +11,11 @@ use galactic_sim::{
 };
 
 use super::{
-    ColonyManagementState, PresentationUpdateSet, SelectedMission, SimulationResource,
-    TransportCargoPreset, UiPointerBlocker, action_button_color, action_button_outline,
-    apply_simulation_command, collect_presentation_events, craft_ui::CraftUiState,
-    format_strategic_duration, mission_error_text, mission_kind_label, mission_next_deadline,
-    mission_phase_label, mission_result_text, mission_target_label, panel_background,
-    panel_outline, provisional_planet_label, research_ui::ResearchUiState, ui_text_font,
+    OpenPanel, PresentationUpdateSet, SelectedMission, SimulationResource, TransportCargoPreset,
+    UiPointerBlocker, action_button_color, action_button_outline, apply_simulation_command,
+    collect_presentation_events, format_strategic_duration, mission_error_text, mission_kind_label,
+    mission_next_deadline, mission_phase_label, mission_result_text, mission_target_label,
+    panel_background, panel_outline, provisional_planet_label, ui_text_font,
 };
 
 const FLEET_Z_INDEX: i32 = 130;
@@ -93,7 +92,6 @@ enum LaunchTarget {
 
 #[derive(Resource)]
 pub(crate) struct FleetUiState {
-    pub(crate) open: bool,
     tab: FleetUiTab,
     mission_kind: MissionKind,
     selected_target: Option<LaunchTarget>,
@@ -105,7 +103,6 @@ pub(crate) struct FleetUiState {
 impl Default for FleetUiState {
     fn default() -> Self {
         Self {
-            open: false,
             tab: FleetUiTab::Fleets,
             mission_kind: MissionKind::Probe,
             selected_target: None,
@@ -905,34 +902,32 @@ fn spawn_reports_tab(root: &mut ChildSpawnerCommands) {
 fn handle_fleet_shortcuts(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut ui: ResMut<FleetUiState>,
-    mut management: ResMut<ColonyManagementState>,
-    mut research: ResMut<ResearchUiState>,
-    mut craft: ResMut<CraftUiState>,
+    mut open_panel: ResMut<OpenPanel>,
     mut navigation_ui: ResMut<super::navigation_ui::NavigationUiState>,
 ) {
     if keyboard.just_pressed(KeyCode::KeyV) {
-        ui.open = !ui.open;
+        let opening = *open_panel != OpenPanel::Fleet;
+        *open_panel = if opening {
+            OpenPanel::Fleet
+        } else {
+            OpenPanel::None
+        };
         ui.feedback.clear();
-        if ui.open {
-            management.open = false;
-            research.open = false;
-            craft.open = false;
+        if opening {
             navigation_ui.search_open = false;
             navigation_ui.filters_open = false;
         }
         return;
     }
 
-    if ui.open && keyboard.just_pressed(KeyCode::Escape) {
-        ui.open = false;
+    if *open_panel == OpenPanel::Fleet && keyboard.just_pressed(KeyCode::Escape) {
+        *open_panel = OpenPanel::None;
     }
 }
 
 fn handle_fleet_tab_buttons(
     mut ui: ResMut<FleetUiState>,
-    mut management: ResMut<ColonyManagementState>,
-    mut research: ResMut<ResearchUiState>,
-    mut craft: ResMut<CraftUiState>,
+    mut open_panel: ResMut<OpenPanel>,
     mut navigation_ui: ResMut<super::navigation_ui::NavigationUiState>,
     interactions: FleetButtonInteractionQuery,
 ) {
@@ -942,17 +937,19 @@ fn handle_fleet_tab_buttons(
         }
         match *action {
             FleetButtonAction::Toggle => {
-                ui.open = !ui.open;
+                let opening = *open_panel != OpenPanel::Fleet;
+                *open_panel = if opening {
+                    OpenPanel::Fleet
+                } else {
+                    OpenPanel::None
+                };
                 ui.feedback.clear();
-                if ui.open {
-                    management.open = false;
-                    research.open = false;
-                    craft.open = false;
+                if opening {
                     navigation_ui.search_open = false;
                     navigation_ui.filters_open = false;
                 }
             }
-            FleetButtonAction::Close => ui.open = false,
+            FleetButtonAction::Close => *open_panel = OpenPanel::None,
             FleetButtonAction::SelectTab(tab) => ui.tab = tab,
             _ => {}
         }
@@ -1166,12 +1163,14 @@ fn capture_fleet_feedback(simulation: Res<SimulationResource>, mut ui: ResMut<Fl
 
 fn update_fleet_visibility(
     ui: Res<FleetUiState>,
+    open_panel: Res<OpenPanel>,
     mut roots: Query<&mut Visibility, (With<FleetRoot>, Without<TabContent>)>,
     mut tabs: Query<(&TabContent, &mut Visibility), Without<FleetRoot>>,
     mut texts: Query<(&FleetTextRole, &mut Text)>,
 ) {
+    let is_open = *open_panel == OpenPanel::Fleet;
     for mut visibility in &mut roots {
-        let next = if ui.open {
+        let next = if is_open {
             Visibility::Visible
         } else {
             Visibility::Hidden
@@ -1181,7 +1180,7 @@ fn update_fleet_visibility(
         }
     }
     for (content, mut visibility) in &mut tabs {
-        let next = if ui.open && content.0 == ui.tab {
+        let next = if is_open && content.0 == ui.tab {
             Visibility::Visible
         } else {
             Visibility::Hidden
@@ -1192,7 +1191,7 @@ fn update_fleet_visibility(
     }
     for (role, mut text) in &mut texts {
         if *role == FleetTextRole::Toggle {
-            let next = if ui.open {
+            let next = if is_open {
                 "Fermer flottes".to_string()
             } else {
                 "Flottes & missions  [V]".to_string()
@@ -1204,8 +1203,12 @@ fn update_fleet_visibility(
     }
 }
 
-fn update_feedback_text(ui: Res<FleetUiState>, mut texts: Query<(&FleetTextRole, &mut Text)>) {
-    if !ui.open {
+fn update_feedback_text(
+    ui: Res<FleetUiState>,
+    open_panel: Res<OpenPanel>,
+    mut texts: Query<(&FleetTextRole, &mut Text)>,
+) {
+    if *open_panel != OpenPanel::Fleet {
         return;
     }
     for (role, mut text) in &mut texts {
@@ -1218,9 +1221,10 @@ fn update_feedback_text(ui: Res<FleetUiState>, mut texts: Query<(&FleetTextRole,
 fn update_fleet_list_rows(
     simulation: Res<SimulationResource>,
     ui: Res<FleetUiState>,
+    open_panel: Res<OpenPanel>,
     mut rows: Query<(&FleetListRow, &mut Text, &mut Visibility)>,
 ) {
-    if !ui.open || ui.tab != FleetUiTab::Fleets {
+    if *open_panel != OpenPanel::Fleet || ui.tab != FleetUiTab::Fleets {
         return;
     }
     let simulation = simulation.simulation();
@@ -1248,9 +1252,10 @@ fn update_fleet_list_rows(
 fn update_ship_stepper_rows(
     simulation: Res<SimulationResource>,
     ui: Res<FleetUiState>,
+    open_panel: Res<OpenPanel>,
     mut rows: Query<(&ShipStepperRow, &mut Text)>,
 ) {
-    if !ui.open || ui.tab != FleetUiTab::Fleets {
+    if *open_panel != OpenPanel::Fleet || ui.tab != FleetUiTab::Fleets {
         return;
     }
     let colony = active_colony(simulation.simulation());
@@ -1271,6 +1276,7 @@ fn update_ship_stepper_rows(
 
 fn update_launch_kind_buttons(
     ui: Res<FleetUiState>,
+    open_panel: Res<OpenPanel>,
     mut buttons: Query<(
         &LaunchKindButton,
         &Interaction,
@@ -1278,7 +1284,7 @@ fn update_launch_kind_buttons(
         &mut Outline,
     )>,
 ) {
-    if !ui.open || ui.tab != FleetUiTab::Launch {
+    if *open_panel != OpenPanel::Fleet || ui.tab != FleetUiTab::Launch {
         return;
     }
     for (button, interaction, mut background, mut outline) in &mut buttons {
@@ -1290,6 +1296,7 @@ fn update_launch_kind_buttons(
 
 fn update_transport_cargo_buttons(
     ui: Res<FleetUiState>,
+    open_panel: Res<OpenPanel>,
     mut buttons: Query<(
         &TransportCargoButton,
         &mut Visibility,
@@ -1298,7 +1305,9 @@ fn update_transport_cargo_buttons(
         &mut Outline,
     )>,
 ) {
-    let show = ui.open && ui.tab == FleetUiTab::Launch && ui.mission_kind == MissionKind::Transport;
+    let show = *open_panel == OpenPanel::Fleet
+        && ui.tab == FleetUiTab::Launch
+        && ui.mission_kind == MissionKind::Transport;
     for (button, mut visibility, interaction, mut background, mut outline) in &mut buttons {
         *visibility = if show {
             Visibility::Inherited
@@ -1314,10 +1323,11 @@ fn update_transport_cargo_buttons(
 fn update_launch_target_rows(
     simulation: Res<SimulationResource>,
     ui: Res<FleetUiState>,
+    open_panel: Res<OpenPanel>,
     mut rows: Query<(&mut TargetRow, &mut Visibility, &Children)>,
     mut texts: Query<&mut Text>,
 ) {
-    if !ui.open || ui.tab != FleetUiTab::Launch {
+    if *open_panel != OpenPanel::Fleet || ui.tab != FleetUiTab::Launch {
         return;
     }
     let candidates = eligible_launch_targets(simulation.simulation(), ui.mission_kind);
@@ -1343,11 +1353,12 @@ fn update_launch_target_rows(
 fn update_active_mission_rows(
     simulation: Res<SimulationResource>,
     ui: Res<FleetUiState>,
+    open_panel: Res<OpenPanel>,
     mut rows: Query<(&mut MissionRow, &mut Visibility, &Children)>,
     mut texts: Query<&mut Text>,
     mut cancel_buttons: Query<(&MissionCancelButton, &mut Visibility), Without<MissionRow>>,
 ) {
-    if !ui.open || ui.tab != FleetUiTab::Active {
+    if *open_panel != OpenPanel::Fleet || ui.tab != FleetUiTab::Active {
         return;
     }
     let simulation = simulation.simulation();
@@ -1409,9 +1420,10 @@ fn update_active_mission_rows(
 fn update_report_rows(
     simulation: Res<SimulationResource>,
     ui: Res<FleetUiState>,
+    open_panel: Res<OpenPanel>,
     mut rows: Query<(&ReportRow, &mut Text, &mut Visibility)>,
 ) {
-    if !ui.open || ui.tab != FleetUiTab::Reports {
+    if *open_panel != OpenPanel::Fleet || ui.tab != FleetUiTab::Reports {
         return;
     }
     let reports = simulation
@@ -1804,4 +1816,271 @@ fn fleet_composition_error_text(error: FleetCompositionError) -> String {
 
 fn active_colony(simulation: &Simulation) -> Option<&galactic_sim::ColonyState> {
     simulation.state().active_player_colony()
+}
+
+#[cfg(test)]
+mod tests {
+    use bevy::ecs::system::RunSystemOnce;
+    use galactic_domain::UniverseConfig;
+
+    use super::*;
+
+    fn other_system_id(simulation: &Simulation) -> SystemId {
+        let home_system = simulation
+            .state()
+            .active_player_colony()
+            .expect("home colony exists")
+            .system_id;
+        simulation
+            .universe_repository()
+            .definition()
+            .systems
+            .iter()
+            .map(|system| system.id)
+            .find(|id| *id != home_system)
+            .expect("universe has more than one system")
+    }
+
+    fn unknown_system_id(simulation: &Simulation) -> SystemId {
+        let state = simulation.state();
+        simulation
+            .universe_repository()
+            .definition()
+            .systems
+            .iter()
+            .map(|system| system.id)
+            .find(|id| state.system_knowledge_level(*id) == KnowledgeLevel::Unknown)
+            .expect("universe has an unexplored system")
+    }
+
+    #[test]
+    fn mission_target_from_launch_target_maps_system_and_planet_only() {
+        let system_id = SystemId::new(0);
+        let planet_id = PlanetId::new(0);
+
+        assert_eq!(
+            mission_target_from_launch_target(LaunchTarget::System(system_id)),
+            Some(MissionTarget::System(system_id))
+        );
+        assert_eq!(
+            mission_target_from_launch_target(LaunchTarget::Planet {
+                system_id,
+                planet_id
+            }),
+            Some(MissionTarget::Planet {
+                system_id,
+                planet_id
+            })
+        );
+        assert_eq!(
+            mission_target_from_launch_target(LaunchTarget::Colony(ColonyId::new(0))),
+            None
+        );
+        assert_eq!(
+            mission_target_from_launch_target(LaunchTarget::Site(ExtractionSiteId::new(0))),
+            None
+        );
+    }
+
+    #[test]
+    fn probe_candidates_never_include_an_unknown_system() {
+        let simulation = Simulation::new(UniverseConfig::mvp());
+
+        let candidates = probe_candidates(&simulation);
+
+        let system_id = unknown_system_id(&simulation);
+        assert!(
+            !candidates
+                .iter()
+                .any(|(target, _)| *target == LaunchTarget::System(system_id))
+        );
+    }
+
+    #[test]
+    fn probe_candidates_include_a_detected_system() {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+        let system_id = other_system_id(&simulation);
+        let universe = simulation.universe_repository().clone();
+        simulation.state_mut().advance_system_knowledge(
+            &universe,
+            system_id,
+            KnowledgeLevel::Detected,
+        );
+
+        let candidates = probe_candidates(&simulation);
+
+        assert!(
+            candidates
+                .iter()
+                .any(|(target, _)| *target == LaunchTarget::System(system_id))
+        );
+    }
+
+    #[test]
+    fn attack_candidates_are_empty_without_analyzed_intelligence() {
+        let simulation = Simulation::new(UniverseConfig::mvp());
+
+        assert!(attack_candidates(&simulation).is_empty());
+    }
+
+    #[test]
+    fn colonize_candidates_are_empty_without_analyzed_planets() {
+        let simulation = Simulation::new(UniverseConfig::mvp());
+
+        assert!(colonize_candidates(&simulation).is_empty());
+    }
+
+    #[test]
+    fn harvest_candidates_are_empty_without_remote_extraction_research() {
+        let simulation = Simulation::new(UniverseConfig::mvp());
+
+        assert!(harvest_candidates(&simulation).is_empty());
+    }
+
+    #[test]
+    fn transport_candidates_exclude_the_active_colony() {
+        let simulation = Simulation::new(UniverseConfig::mvp());
+        let active = simulation.state().active_colony_id;
+
+        let candidates = transport_candidates(&simulation);
+
+        assert!(
+            !candidates
+                .iter()
+                .any(|(target, _)| *target == LaunchTarget::Colony(active.unwrap()))
+        );
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn eligible_launch_targets_dispatches_by_mission_kind_and_truncates() {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+        let system_id = other_system_id(&simulation);
+        let universe = simulation.universe_repository().clone();
+        simulation.state_mut().advance_system_knowledge(
+            &universe,
+            system_id,
+            KnowledgeLevel::Detected,
+        );
+
+        let targets = eligible_launch_targets(&simulation, MissionKind::Probe);
+
+        assert_eq!(targets, probe_candidates(&simulation));
+        assert!(targets.len() <= MAX_TARGET_ROWS);
+    }
+
+    #[test]
+    fn resource_kind_label_translates_every_variant_to_french() {
+        assert_eq!(resource_kind_label(ResourceKind::Metal), "métal");
+        assert_eq!(resource_kind_label(ResourceKind::Crystal), "cristal");
+        assert_eq!(resource_kind_label(ResourceKind::Fuel), "carburant");
+        assert_eq!(resource_kind_label(ResourceKind::Energy), "énergie");
+    }
+
+    #[test]
+    fn fleet_assignment_label_distinguishes_idle_from_mission() {
+        assert_eq!(fleet_assignment_label(FleetAssignment::Idle), "disponible");
+        assert!(
+            fleet_assignment_label(FleetAssignment::Mission(galactic_domain::MissionId::new(3)))
+                .contains('3')
+        );
+    }
+
+    #[test]
+    fn fleet_composition_summary_lists_ship_stacks_with_quantities() {
+        let composition =
+            FleetComposition::from_stacks([ShipStack::new(CraftableId::LIGHT_PROBE, 3)])
+                .expect("light probe is a valid ship stack");
+        let fleet = FleetState {
+            id: galactic_domain::FleetId::new(0),
+            owner: galactic_domain::Owner::Faction(galactic_domain::FactionId::new(0)),
+            location: FleetLocation::Docked(ColonyId::new(0)),
+            composition,
+            cargo: galactic_domain::ResourceStock::default(),
+            assignment: FleetAssignment::Idle,
+        };
+
+        let summary = fleet_composition_summary(&fleet);
+
+        assert!(summary.contains("x3"));
+        assert!(summary.contains(craftable_definition(CraftableId::LIGHT_PROBE).name));
+    }
+
+    #[test]
+    fn fleet_location_label_reports_docked_colony() {
+        let simulation = Simulation::new(UniverseConfig::mvp());
+        let colony = active_colony(&simulation).expect("home colony exists");
+
+        let label = fleet_location_label(&simulation, FleetLocation::Docked(colony.id));
+
+        assert!(label.contains("amarrée"));
+        assert!(label.contains(&colony.name));
+    }
+
+    #[test]
+    fn fleet_error_text_translates_every_variant_to_french() {
+        assert_eq!(
+            fleet_error_text(FleetError::FleetIdOverflow),
+            "Trop de flottes ont été formées."
+        );
+        assert_eq!(
+            fleet_error_text(FleetError::InvalidComposition(FleetCompositionError::Empty)),
+            "Sélectionnez au moins une unité."
+        );
+    }
+
+    #[test]
+    fn fleet_composition_error_text_translates_every_variant_to_french() {
+        assert_eq!(
+            fleet_composition_error_text(FleetCompositionError::Empty),
+            "Sélectionnez au moins une unité."
+        );
+        assert_eq!(
+            fleet_composition_error_text(FleetCompositionError::ShipCountOverflow),
+            "Composition trop importante."
+        );
+    }
+
+    #[test]
+    fn active_colony_returns_the_player_home_colony() {
+        let simulation = Simulation::new(UniverseConfig::mvp());
+
+        let colony = active_colony(&simulation).expect("home colony exists");
+
+        assert_eq!(Some(colony.id), simulation.state().active_colony_id);
+    }
+
+    #[test]
+    fn opening_fleet_panel_overrides_another_open_panel() {
+        let mut world = World::new();
+        world.insert_resource(OpenPanel::Craft);
+        world.insert_resource(FleetUiState::default());
+        world.insert_resource(super::super::navigation_ui::NavigationUiState::default());
+        let mut keyboard = ButtonInput::<KeyCode>::default();
+        keyboard.press(KeyCode::KeyV);
+        world.insert_resource(keyboard);
+
+        world
+            .run_system_once(handle_fleet_shortcuts)
+            .expect("handle_fleet_shortcuts runs");
+
+        assert_eq!(*world.resource::<OpenPanel>(), OpenPanel::Fleet);
+    }
+
+    #[test]
+    fn escape_closes_the_fleet_panel() {
+        let mut world = World::new();
+        world.insert_resource(OpenPanel::Fleet);
+        world.insert_resource(FleetUiState::default());
+        world.insert_resource(super::super::navigation_ui::NavigationUiState::default());
+        let mut keyboard = ButtonInput::<KeyCode>::default();
+        keyboard.press(KeyCode::Escape);
+        world.insert_resource(keyboard);
+
+        world
+            .run_system_once(handle_fleet_shortcuts)
+            .expect("handle_fleet_shortcuts runs");
+
+        assert_eq!(*world.resource::<OpenPanel>(), OpenPanel::None);
+    }
 }

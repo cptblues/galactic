@@ -1,5 +1,4 @@
 // MVP-030-B: global search, filters and navigation breadcrumb.
-use bevy::ecs::system::SystemParam;
 use bevy::input::ButtonState;
 use bevy::input::keyboard::KeyboardInput;
 use bevy::prelude::*;
@@ -10,12 +9,11 @@ use galactic_sim::{
 };
 
 use super::{
-    BreadcrumbKind, ColonyManagementState, NavigationHistory, PresentationUpdateSet,
-    SimulationResource, StrategicNavigation, UiPointerBlocker, ViewRebuildRequest,
-    action_button_color, action_button_outline, breadcrumb_segments, craft_ui::CraftUiState,
-    fleet_ui::FleetUiState, mission_kind_label, mission_target_label, navigate_to_galaxy,
-    navigate_to_sector, navigate_to_selection, panel_background, panel_outline,
-    research_ui::ResearchUiState, ui_text_font,
+    BreadcrumbKind, NavigationHistory, OpenPanel, PresentationUpdateSet, SimulationResource,
+    StrategicNavigation, UiPointerBlocker, ViewRebuildRequest, action_button_color,
+    action_button_outline, breadcrumb_segments, mission_kind_label, mission_target_label,
+    navigate_to_galaxy, navigate_to_sector, navigate_to_selection, panel_background, panel_outline,
+    ui_text_font,
 };
 
 const NAVIGATION_Z_INDEX: i32 = 140;
@@ -82,12 +80,6 @@ pub(crate) struct NavigationUiState {
     pub(crate) filters_open: bool,
     query: String,
     filters: NavigationFilters,
-}
-
-impl NavigationUiState {
-    pub(crate) fn is_open(&self) -> bool {
-        self.search_open || self.filters_open
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -669,19 +661,13 @@ fn spawn_search_row(parent: &mut ChildSpawnerCommands, slot: usize) {
 fn handle_navigation_shortcuts(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut ui: ResMut<NavigationUiState>,
-    mut management: ResMut<ColonyManagementState>,
-    mut research: ResMut<ResearchUiState>,
-    mut craft: ResMut<CraftUiState>,
-    mut fleet: ResMut<FleetUiState>,
+    mut open_panel: ResMut<OpenPanel>,
 ) {
     if keyboard.just_pressed(KeyCode::Slash) && !ui.search_open {
         ui.search_open = true;
         ui.filters_open = false;
         ui.query.clear();
-        management.open = false;
-        research.open = false;
-        craft.open = false;
-        fleet.open = false;
+        *open_panel = OpenPanel::Navigation;
         return;
     }
 
@@ -689,26 +675,28 @@ fn handle_navigation_shortcuts(
         ui.filters_open = !ui.filters_open;
         if ui.filters_open {
             ui.search_open = false;
-            management.open = false;
-            research.open = false;
-            craft.open = false;
-            fleet.open = false;
+            *open_panel = OpenPanel::Navigation;
+        } else {
+            *open_panel = OpenPanel::None;
         }
         return;
     }
 
     if ui.search_open && keyboard.just_pressed(KeyCode::Escape) {
         ui.search_open = false;
+        *open_panel = OpenPanel::None;
         return;
     }
     if ui.filters_open && keyboard.just_pressed(KeyCode::Escape) {
         ui.filters_open = false;
+        *open_panel = OpenPanel::None;
     }
 }
 
 fn handle_search_text_input(
     mut events: MessageReader<KeyboardInput>,
     mut ui: ResMut<NavigationUiState>,
+    mut open_panel: ResMut<OpenPanel>,
     mut simulation: ResMut<SimulationResource>,
     mut navigation: ResMut<StrategicNavigation>,
     mut history: ResMut<NavigationHistory>,
@@ -740,6 +728,7 @@ fn handle_search_text_input(
                         &mut rebuild,
                     );
                     ui.search_open = false;
+                    *open_panel = OpenPanel::None;
                 }
             }
             _ => {
@@ -839,26 +828,9 @@ fn select_search_entry(
     }
 }
 
-#[derive(SystemParam)]
-struct OtherPanels<'w> {
-    management: ResMut<'w, ColonyManagementState>,
-    research: ResMut<'w, ResearchUiState>,
-    craft: ResMut<'w, CraftUiState>,
-    fleet: ResMut<'w, FleetUiState>,
-}
-
-impl OtherPanels<'_> {
-    fn close_all(&mut self) {
-        self.management.open = false;
-        self.research.open = false;
-        self.craft.open = false;
-        self.fleet.open = false;
-    }
-}
-
 fn handle_navigation_toggle_buttons(
     mut ui: ResMut<NavigationUiState>,
-    mut others: OtherPanels,
+    mut open_panel: ResMut<OpenPanel>,
     interactions: NavButtonInteractionQuery,
 ) {
     for (interaction, action) in &interactions {
@@ -871,14 +843,18 @@ fn handle_navigation_toggle_buttons(
                 if ui.search_open {
                     ui.filters_open = false;
                     ui.query.clear();
-                    others.close_all();
+                    *open_panel = OpenPanel::Navigation;
+                } else {
+                    *open_panel = OpenPanel::None;
                 }
             }
             NavAction::ToggleFilters => {
                 ui.filters_open = !ui.filters_open;
                 if ui.filters_open {
                     ui.search_open = false;
-                    others.close_all();
+                    *open_panel = OpenPanel::Navigation;
+                } else {
+                    *open_panel = OpenPanel::None;
                 }
             }
             _ => {}
@@ -886,8 +862,10 @@ fn handle_navigation_toggle_buttons(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_search_result_buttons(
     mut ui: ResMut<NavigationUiState>,
+    mut open_panel: ResMut<OpenPanel>,
     mut simulation: ResMut<SimulationResource>,
     mut navigation: ResMut<StrategicNavigation>,
     mut history: ResMut<NavigationHistory>,
@@ -911,6 +889,7 @@ fn handle_search_result_buttons(
                 &mut rebuild,
             );
             ui.search_open = false;
+            *open_panel = OpenPanel::None;
         }
     }
 }

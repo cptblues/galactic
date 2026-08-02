@@ -8,9 +8,8 @@ use galactic_sim::{
 };
 
 use super::{
-    ColonyManagementState, PresentationUpdateSet, SimulationResource, UiPointerBlocker,
-    action_button_color, action_button_outline, apply_simulation_command,
-    collect_presentation_events, craft_ui::CraftUiState, fleet_ui::FleetUiState,
+    OpenPanel, PresentationUpdateSet, SimulationResource, UiPointerBlocker, action_button_color,
+    action_button_outline, apply_simulation_command, collect_presentation_events,
     format_strategic_duration, panel_background, panel_outline, ui_text_font,
 };
 
@@ -51,7 +50,6 @@ impl Plugin for ResearchUiPlugin {
 
 #[derive(Resource)]
 pub(crate) struct ResearchUiState {
-    pub(crate) open: bool,
     selected: TechnologyId,
     feedback: String,
 }
@@ -59,7 +57,6 @@ pub(crate) struct ResearchUiState {
 impl Default for ResearchUiState {
     fn default() -> Self {
         Self {
-            open: false,
             selected: technology_catalog()
                 .ids()
                 .next()
@@ -449,35 +446,33 @@ fn spawn_research_queue(row: &mut ChildSpawnerCommands) {
 fn handle_research_shortcuts(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut ui: ResMut<ResearchUiState>,
-    mut management: ResMut<ColonyManagementState>,
-    mut craft: ResMut<CraftUiState>,
-    mut fleet: ResMut<FleetUiState>,
+    mut open_panel: ResMut<OpenPanel>,
     mut navigation_ui: ResMut<super::navigation_ui::NavigationUiState>,
 ) {
     if keyboard.just_pressed(KeyCode::KeyT) {
-        ui.open = !ui.open;
+        let opening = *open_panel != OpenPanel::Research;
+        *open_panel = if opening {
+            OpenPanel::Research
+        } else {
+            OpenPanel::None
+        };
         ui.feedback.clear();
-        if ui.open {
-            management.open = false;
-            craft.open = false;
-            fleet.open = false;
+        if opening {
             navigation_ui.search_open = false;
             navigation_ui.filters_open = false;
         }
         return;
     }
 
-    if ui.open && keyboard.just_pressed(KeyCode::Escape) {
-        ui.open = false;
+    if *open_panel == OpenPanel::Research && keyboard.just_pressed(KeyCode::Escape) {
+        *open_panel = OpenPanel::None;
     }
 }
 
 fn handle_research_buttons(
     mut simulation: ResMut<SimulationResource>,
     mut ui: ResMut<ResearchUiState>,
-    mut management: ResMut<ColonyManagementState>,
-    mut craft: ResMut<CraftUiState>,
-    mut fleet: ResMut<FleetUiState>,
+    mut open_panel: ResMut<OpenPanel>,
     mut navigation_ui: ResMut<super::navigation_ui::NavigationUiState>,
     interactions: ResearchButtonInteractionQuery,
 ) {
@@ -488,18 +483,20 @@ fn handle_research_buttons(
 
         match *action {
             ResearchButtonAction::Toggle => {
-                ui.open = !ui.open;
+                let opening = *open_panel != OpenPanel::Research;
+                *open_panel = if opening {
+                    OpenPanel::Research
+                } else {
+                    OpenPanel::None
+                };
                 ui.feedback.clear();
-                if ui.open {
-                    management.open = false;
-                    craft.open = false;
-                    fleet.open = false;
+                if opening {
                     navigation_ui.search_open = false;
                     navigation_ui.filters_open = false;
                 }
             }
             ResearchButtonAction::Close => {
-                ui.open = false;
+                *open_panel = OpenPanel::None;
             }
             ResearchButtonAction::Select(technology) => {
                 ui.selected = technology;
@@ -538,12 +535,13 @@ fn capture_research_feedback(simulation: Res<SimulationResource>, mut ui: ResMut
 }
 
 fn update_research_visibility(
-    ui: Res<ResearchUiState>,
+    open_panel: Res<OpenPanel>,
     mut roots: Query<&mut Visibility, With<ResearchRoot>>,
     mut texts: Query<(&ResearchTextRole, &mut Text)>,
 ) {
+    let is_open = *open_panel == OpenPanel::Research;
     for mut visibility in &mut roots {
-        let next = if ui.open {
+        let next = if is_open {
             Visibility::Visible
         } else {
             Visibility::Hidden
@@ -554,7 +552,7 @@ fn update_research_visibility(
     }
     for (role, mut text) in &mut texts {
         if *role == ResearchTextRole::Toggle {
-            let next = if ui.open {
+            let next = if is_open {
                 "Fermer recherche".to_string()
             } else {
                 "Recherche  [T]".to_string()
@@ -569,9 +567,10 @@ fn update_research_visibility(
 fn update_research_summary(
     simulation: Res<SimulationResource>,
     ui: Res<ResearchUiState>,
+    open_panel: Res<OpenPanel>,
     mut texts: Query<(&ResearchTextRole, &mut Text)>,
 ) {
-    if !ui.open {
+    if *open_panel != OpenPanel::Research {
         return;
     }
     let state = simulation.simulation().state();
@@ -608,6 +607,7 @@ fn update_research_summary(
 fn update_research_technology_buttons(
     simulation: Res<SimulationResource>,
     ui: Res<ResearchUiState>,
+    open_panel: Res<OpenPanel>,
     mut buttons: Query<(
         &TechnologyButton,
         &Interaction,
@@ -616,7 +616,7 @@ fn update_research_technology_buttons(
     )>,
     mut labels: Query<(&TechnologyButtonText, &mut Text, &mut TextColor)>,
 ) {
-    if !ui.open {
+    if *open_panel != OpenPanel::Research {
         return;
     }
     let state = simulation.simulation().state();
@@ -644,13 +644,14 @@ fn update_research_technology_buttons(
 fn update_research_detail(
     simulation: Res<SimulationResource>,
     ui: Res<ResearchUiState>,
+    open_panel: Res<OpenPanel>,
     mut texts: Query<(&ResearchTextRole, &mut Text, &mut TextColor)>,
     mut button: Query<
         (&Interaction, &mut BackgroundColor, &mut Outline),
         With<QueueResearchButton>,
     >,
 ) {
-    if !ui.open {
+    if *open_panel != OpenPanel::Research {
         return;
     }
     let state = simulation.simulation().state();
@@ -688,11 +689,11 @@ fn update_research_detail(
 
 fn update_research_queue(
     simulation: Res<SimulationResource>,
-    ui: Res<ResearchUiState>,
+    open_panel: Res<OpenPanel>,
     mut texts: Query<(&ResearchTextRole, &mut Text)>,
     mut progress: Query<&mut Node, With<ResearchProgressFill>>,
 ) {
-    if !ui.open {
+    if *open_panel != OpenPanel::Research {
         return;
     }
     let state = simulation.simulation().state();
