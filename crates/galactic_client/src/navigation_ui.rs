@@ -10,10 +10,10 @@ use galactic_sim::{
 
 use super::{
     BreadcrumbKind, NavigationHistory, OpenPanel, PresentationUpdateSet, SimulationResource,
-    StrategicNavigation, UiPointerBlocker, ViewRebuildRequest, action_button_color,
-    action_button_outline, breadcrumb_segments, mission_kind_label, mission_target_label,
-    navigate_to_galaxy, navigate_to_sector, navigate_to_selection, panel_background, panel_outline,
-    ui_text_font,
+    StrategicNavigation, UiPointerBlocker, ViewRebuildRequest, accent_fleet_blue,
+    action_button_color, action_button_outline, breadcrumb_segments, mission_kind_label,
+    mission_target_label, navigate_to_galaxy, navigate_to_sector, navigate_to_selection,
+    panel_background, panel_outline, ui_text_font,
 };
 
 const NAVIGATION_Z_INDEX: i32 = 140;
@@ -355,11 +355,7 @@ pub(crate) fn spawn_search_toggle(parent: &mut ChildSpawnerCommands) {
                 ..default()
             },
             BackgroundColor(Color::srgba(0.06, 0.10, 0.18, 0.96)),
-            Outline::new(
-                Val::Px(1.0),
-                Val::ZERO,
-                Color::srgba(0.42, 0.62, 0.94, 0.60),
-            ),
+            Outline::new(Val::Px(1.0), Val::ZERO, accent_fleet_blue()),
             NavAction::ToggleSearch,
             UiPointerBlocker,
         ))
@@ -385,11 +381,7 @@ pub(crate) fn spawn_filters_toggle(parent: &mut ChildSpawnerCommands) {
                 ..default()
             },
             BackgroundColor(Color::srgba(0.06, 0.10, 0.18, 0.96)),
-            Outline::new(
-                Val::Px(1.0),
-                Val::ZERO,
-                Color::srgba(0.42, 0.62, 0.94, 0.60),
-            ),
+            Outline::new(Val::Px(1.0), Val::ZERO, accent_fleet_blue()),
             NavAction::ToggleFilters,
             UiPointerBlocker,
         ))
@@ -409,7 +401,7 @@ fn spawn_navigation_panels(mut commands: Commands) {
                 position_type: PositionType::Absolute,
                 left: Val::Px(300.0),
                 right: Val::Px(370.0),
-                top: Val::Px(10.0),
+                top: Val::Px(64.0),
                 padding: UiRect::axes(Val::Px(10.0), Val::Px(6.0)),
                 border: UiRect::all(Val::Px(1.0)),
                 border_radius: BorderRadius::all(Val::Px(6.0)),
@@ -436,7 +428,7 @@ fn spawn_navigation_panels(mut commands: Commands) {
                 position_type: PositionType::Absolute,
                 left: Val::Px(300.0),
                 right: Val::Px(370.0),
-                top: Val::Px(46.0),
+                top: Val::Px(102.0),
                 padding: UiRect::all(Val::Px(12.0)),
                 border: UiRect::all(Val::Px(1.0)),
                 border_radius: BorderRadius::all(Val::Px(6.0)),
@@ -475,7 +467,7 @@ fn spawn_navigation_panels(mut commands: Commands) {
                 position_type: PositionType::Absolute,
                 left: Val::Px(300.0),
                 right: Val::Px(370.0),
-                top: Val::Px(46.0),
+                top: Val::Px(102.0),
                 padding: UiRect::all(Val::Px(12.0)),
                 border: UiRect::all(Val::Px(1.0)),
                 border_radius: BorderRadius::all(Val::Px(6.0)),

@@ -1,3 +1,4 @@
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use galactic_domain::{PlanetId, ResourceKind, SystemId};
 use galactic_sim::{
@@ -13,9 +14,13 @@ use crate::presentation::input::provisional_planet_label;
 use crate::presentation::procedural_materials::{
     colonization_arrival_failure_label, event_label, selection_label,
 };
-use crate::presentation::scene::known_sector_labels;
+use crate::presentation::scene::{action_button_color, action_button_outline, known_sector_labels};
 use crate::presentation::strategic_navigation::{StrategicNavigation, StrategicViewMode};
-use crate::{InfoPanelText, InspectorContent, PresentationLog, SimulationResource, TopBarText};
+use crate::{
+    InspectorContent, InspectorSection, InspectorTabBarRoot, InspectorTabButton,
+    InspectorTabButtonQuery, InspectorTabLabelQuery, InspectorTabState, InspectorTextQuery,
+    InspectorTextRole, PresentationLog, SimulationResource, TopBarText,
+};
 
 pub(crate) fn information_panel_content(simulation: &Simulation) -> InspectorContent {
     match simulation.state().selected {
@@ -47,29 +52,34 @@ fn home_inspector_content(simulation: &Simulation) -> InspectorContent {
         level: Some(KnowledgeLevel::Colonized),
         badge: knowledge_badge_fr(KnowledgeLevel::Colonized).to_string(),
         title: format!("{} — {}", system.name, planet.name),
-        body: format!(
-            "Faction : {}
-Habitabilité : {}%
-
-{}
-
-POTENTIEL EXACT
-Métal : {}
-Cristal : {}
-Carburant : {}
-Énergie : {}
-
-INFRASTRUCTURE
-{}",
-            faction.name,
-            planet.habitability,
-            colony_economy_text(colony),
-            colony.resource_profile.metal,
-            colony.resource_profile.crystal,
-            colony.resource_profile.fuel,
-            colony.resource_profile.energy,
-            colony_buildings_text(colony),
-        ),
+        sections: vec![
+            InspectorSection {
+                title: "Aperçu".to_string(),
+                body: format!(
+                    "Faction : {}\nHabitabilité : {}%",
+                    faction.name, planet.habitability
+                ),
+            },
+            InspectorSection {
+                title: "Économie".to_string(),
+                body: colony_economy_text(colony),
+            },
+            InspectorSection {
+                title: "Potentiel".to_string(),
+                body: format!(
+                    "Métal : {}\nCristal : {}\nCarburant : {}\nÉnergie : {}",
+                    colony.resource_profile.metal,
+                    colony.resource_profile.crystal,
+                    colony.resource_profile.fuel,
+                    colony.resource_profile.energy,
+                ),
+            },
+            InspectorSection {
+                title: "Infrastructure".to_string(),
+                body: colony_buildings_text(colony),
+            },
+        ],
+        footer: None,
         hint: "Colonie active : ressources et énergie sont exactes.".to_string(),
     }
 }
@@ -96,8 +106,7 @@ fn colony_economy_text(colony: &galactic_sim::ColonyState) -> String {
         .unwrap_or_else(|| "aucune".to_string());
 
     format!(
-        "ÉCONOMIE — RÉSUMÉ
-Disponible : {} métal, {} cristal, {} carburant
+        "Disponible : {} métal, {} cristal, {} carburant
 Production : +{:.2} / +{:.2} / +{:.2} par seconde
 Énergie : {} produite, {} consommée
 Construction : {}
@@ -217,7 +226,11 @@ fn system_inspector_content(simulation: &Simulation, system_id: SystemId) -> Ins
         level: Some(level),
         badge: knowledge_badge_fr(level).to_string(),
         title,
-        body,
+        sections: vec![InspectorSection {
+            title: "Aperçu".to_string(),
+            body,
+        }],
+        footer: None,
         hint: system_knowledge_hint(level).to_string(),
     }
 }
@@ -257,130 +270,118 @@ fn planet_inspector_content(
         .position(|candidate| candidate.id == planet_id)
         .unwrap_or_default();
 
-    let (title, mut body) = match level {
+    let (title, mut sections, footer) = match level {
         KnowledgeLevel::Unknown => (
             "Corps inconnu".to_string(),
-            format!(
-                "Système : {}
-Nom : ???
-Type : ???
-Habitabilité : ???
-Potentiel : ???
-Lunes : ???
-{}",
-                system_label, selection_note,
-            ),
+            vec![InspectorSection {
+                title: "Aperçu".to_string(),
+                body: format!(
+                    "Système : {system_label}\nNom : ???\nType : ???\nHabitabilité : ???\nPotentiel : ???",
+                ),
+            }],
+            format!("Lunes : ???\n{selection_note}"),
         ),
         KnowledgeLevel::Detected => (
             provisional_planet_label(&system.name, orbit_index),
-            format!(
-                "Système : {}
-Identité : non déterminée
-Orbite : {}
-Type : ???
-Habitabilité : ???
-Potentiel : analyse requise
-Lunes : non recensées
-{}",
-                system_label,
-                orbit_index + 1,
-                selection_note,
-            ),
+            vec![InspectorSection {
+                title: "Aperçu".to_string(),
+                body: format!(
+                    "Système : {system_label}\nIdentité : non déterminée\nOrbite : {}\nType : ???\nHabitabilité : ???\nPotentiel : analyse requise",
+                    orbit_index + 1,
+                ),
+            }],
+            format!("Lunes : non recensées\n{selection_note}"),
         ),
         KnowledgeLevel::Probed => (
             planet.name.clone(),
-            format!(
-                "Système : {}
-Type : {:?}
-Habitabilité estimée : {}
-Potentiel : analyse requise
-
-{}
-
-Lunes : non recensées
-{}",
-                system_label,
-                planet.kind,
-                habitability_estimate(planet.habitability),
-                planetary_intelligence_text(simulation, planet_id),
-                selection_note,
-            ),
+            vec![
+                InspectorSection {
+                    title: "Aperçu".to_string(),
+                    body: format!(
+                        "Système : {system_label}\nType : {:?}\nHabitabilité estimée : {}\nPotentiel : analyse requise",
+                        planet.kind,
+                        habitability_estimate(planet.habitability),
+                    ),
+                },
+                InspectorSection {
+                    title: "Renseignement".to_string(),
+                    body: planetary_intelligence_text(simulation, planet_id),
+                },
+            ],
+            format!("Lunes : non recensées\n{selection_note}"),
         ),
         KnowledgeLevel::Analyzed => (
             planet.name.clone(),
-            analyzed_planet_text(simulation, &system_label, planet, selection_note),
+            analyzed_planet_sections(simulation, &system_label, planet),
+            format!("Lunes : aucune donnée disponible\n{selection_note}"),
         ),
         KnowledgeLevel::Colonized => (
             planet.name.clone(),
-            format!(
-                "Système : {}
-Type : {:?}
-Habitabilité exacte : {}%
-Statut : {}
-
-{}
-
-Lunes : aucune donnée disponible
-{}",
-                system_label,
-                planet.kind,
-                planet.habitability,
-                colony
-                    .map(|value| value.name.as_str())
-                    .unwrap_or("colonie non référencée"),
-                planetary_intelligence_text(simulation, planet_id),
-                selection_note,
-            ),
+            vec![
+                InspectorSection {
+                    title: "Aperçu".to_string(),
+                    body: format!(
+                        "Système : {system_label}\nType : {:?}\nHabitabilité exacte : {}%\nStatut : {}",
+                        planet.kind,
+                        planet.habitability,
+                        colony
+                            .map(|value| value.name.as_str())
+                            .unwrap_or("colonie non référencée"),
+                    ),
+                },
+                InspectorSection {
+                    title: "Renseignement".to_string(),
+                    body: planetary_intelligence_text(simulation, planet_id),
+                },
+            ],
+            format!("Lunes : aucune donnée disponible\n{selection_note}"),
         ),
     };
 
     if let Some(colony) = colony {
-        body.push_str(&format!(
-            "
-
-{}
-
-POTENTIEL EXACT
-Métal : {}
-Cristal : {}
-Carburant : {}
-Énergie : {}
-
-INFRASTRUCTURE
-{}",
-            colony_economy_text(colony),
-            colony.resource_profile.metal,
-            colony.resource_profile.crystal,
-            colony.resource_profile.fuel,
-            colony.resource_profile.energy,
-            colony_buildings_text(colony),
-        ));
+        sections.push(InspectorSection {
+            title: "Économie".to_string(),
+            body: colony_economy_text(colony),
+        });
+        sections.push(InspectorSection {
+            title: "Potentiel".to_string(),
+            body: format!(
+                "Métal : {}\nCristal : {}\nCarburant : {}\nÉnergie : {}",
+                colony.resource_profile.metal,
+                colony.resource_profile.crystal,
+                colony.resource_profile.fuel,
+                colony.resource_profile.energy,
+            ),
+        });
+        sections.push(InspectorSection {
+            title: "Infrastructure".to_string(),
+            body: colony_buildings_text(colony),
+        });
     }
 
     InspectorContent {
         level: Some(level),
         badge: knowledge_badge_fr(level).to_string(),
         title,
-        body,
+        sections,
+        footer: Some(footer),
         hint: planet_knowledge_hint(level).to_string(),
     }
 }
 
-fn analyzed_planet_text(
+fn analyzed_planet_sections(
     simulation: &Simulation,
     system_label: &str,
     planet: &galactic_domain::Planet,
-    selection_note: &str,
-) -> String {
+) -> Vec<InspectorSection> {
     let Some(report) = simulation.state().planet_analysis_report(planet.id) else {
-        return format!(
-            "Système : {system_label}
-Type : {:?}
-Habitabilité exacte : {}%
-Rapport d'analyse : manquant
-{selection_note}",
-            planet.kind, planet.habitability,
-        );
+        return vec![InspectorSection {
+            title: "Aperçu".to_string(),
+            body: format!(
+                "Système : {system_label}\nType : {:?}\nHabitabilité exacte : {}%\nRapport d'analyse : manquant",
+                planet.kind, planet.habitability,
+            ),
+        }];
     };
     let constraints = report
         .constraints
@@ -399,40 +400,40 @@ Rapport d'analyse : manquant
         planet.id,
     );
 
-    let mut body = format!(
-        "Système : {system_label}
-Type : {:?}
-Environnement : {}
-Habitabilité exacte : {}%
-Contraintes : {constraints}
-Rapport établi au tick {}
-
-POTENTIEL EXACT
-Métal : {}
-Cristal : {}
-Carburant : {}
-Énergie : {}
-
-{}
-
-{}
-
-Lunes : aucune donnée disponible
-{selection_note}",
-        planet.kind,
-        planet_environment_label(report.environment),
-        report.habitability,
-        report.analyzed_at.value(),
-        report.resource_profile.metal,
-        report.resource_profile.crystal,
-        report.resource_profile.fuel,
-        report.resource_profile.energy,
-        planetary_intelligence_text(simulation, planet.id),
-        colonizability_text(&assessment, simulation.state()),
-    );
-    body.push_str("\n\n");
-    body.push_str(&extraction_site_text(simulation, planet.id));
-    body
+    vec![
+        InspectorSection {
+            title: "Aperçu".to_string(),
+            body: format!(
+                "Système : {system_label}\nType : {:?}\nEnvironnement : {}\nHabitabilité exacte : {}%\nContraintes : {constraints}\nRapport établi au tick {}",
+                planet.kind,
+                planet_environment_label(report.environment),
+                report.habitability,
+                report.analyzed_at.value(),
+            ),
+        },
+        InspectorSection {
+            title: "Potentiel".to_string(),
+            body: format!(
+                "Métal : {}\nCristal : {}\nCarburant : {}\nÉnergie : {}",
+                report.resource_profile.metal,
+                report.resource_profile.crystal,
+                report.resource_profile.fuel,
+                report.resource_profile.energy,
+            ),
+        },
+        InspectorSection {
+            title: "Renseignement".to_string(),
+            body: planetary_intelligence_text(simulation, planet.id),
+        },
+        InspectorSection {
+            title: "Colonisation".to_string(),
+            body: format!(
+                "{}\n\n{}",
+                colonizability_text(&assessment, simulation.state()),
+                extraction_site_text(simulation, planet.id),
+            ),
+        },
+    ]
 }
 
 fn extraction_site_text(simulation: &Simulation, planet_id: PlanetId) -> String {
@@ -765,7 +766,7 @@ Investissement requis : {} métal, {} cristal, {} carburant",
     )
 }
 
-fn colonization_blocker_label(
+pub(crate) fn colonization_blocker_label(
     blocker: ColonizationBlocker,
     state: &galactic_sim::GameState,
 ) -> String {
@@ -822,7 +823,11 @@ fn inspector_error(message: &str) -> InspectorContent {
         level: None,
         badge: "[ERREUR D’INSPECTEUR]".to_string(),
         title: "Donnée indisponible".to_string(),
-        body: message.to_string(),
+        sections: vec![InspectorSection {
+            title: "Erreur".to_string(),
+            body: message.to_string(),
+        }],
+        footer: None,
         hint: "La sélection ne correspond pas à une donnée valide.".to_string(),
     }
 }
@@ -1073,21 +1078,101 @@ pub(crate) fn mission_target_label(simulation: &Simulation, target: MissionTarge
     }
 }
 
+pub(crate) fn handle_inspector_tab_buttons(
+    mut tab_state: ResMut<InspectorTabState>,
+    interactions: Query<(&Interaction, &InspectorTabButton), Changed<Interaction>>,
+) {
+    for (interaction, button) in &interactions {
+        if *interaction == Interaction::Pressed {
+            tab_state.active = button.index;
+        }
+    }
+}
+
+#[derive(SystemParam)]
+pub(crate) struct InspectorPanelWidgets<'w, 's> {
+    texts: InspectorTextQuery<'w, 's>,
+    tab_bar:
+        Query<'w, 's, &'static mut Node, (With<InspectorTabBarRoot>, Without<InspectorTabButton>)>,
+    tab_buttons: InspectorTabButtonQuery<'w, 's>,
+    tab_labels: InspectorTabLabelQuery<'w, 's>,
+}
+
 pub(crate) fn update_info_panel(
     simulation: Res<SimulationResource>,
-    mut query: Query<(&mut Text, &mut TextColor), With<InfoPanelText>>,
+    mut tab_state: ResMut<InspectorTabState>,
+    mut widgets: InspectorPanelWidgets,
 ) {
-    let Ok((mut text, mut color)) = query.single_mut() else {
-        return;
-    };
     let content = information_panel_content(simulation.simulation());
-    let next_text = content.render();
-    if text.0 != next_text {
-        text.0 = next_text;
+    tab_state.sync(&content.sections);
+    let active = tab_state.active;
+
+    for (role, mut text, mut color) in &mut widgets.texts {
+        let next_text = match role {
+            InspectorTextRole::Title => format!("{}\n{}", content.badge, content.title),
+            InspectorTextRole::Body => content
+                .sections
+                .get(active)
+                .map(|section| section.body.clone())
+                .unwrap_or_default(),
+            InspectorTextRole::Footer => match &content.footer {
+                Some(footer) => format!("{footer}\n\n{}", content.hint),
+                None => content.hint.clone(),
+            },
+        };
+        if text.0 != next_text {
+            text.0 = next_text;
+        }
+        if *role == InspectorTextRole::Title {
+            let next_color = knowledge_color(content.level);
+            if color.0 != next_color {
+                color.0 = next_color;
+            }
+        }
     }
-    let next_color = knowledge_color(content.level);
-    if color.0 != next_color {
-        color.0 = next_color;
+
+    let show_tabs = content.sections.len() > 1;
+    for mut node in &mut widgets.tab_bar {
+        let next_display = if show_tabs {
+            Display::Flex
+        } else {
+            Display::None
+        };
+        if node.display != next_display {
+            node.display = next_display;
+        }
+    }
+
+    for (button, interaction, mut background, mut outline, mut node, children) in
+        &mut widgets.tab_buttons
+    {
+        let available = show_tabs && button.index < content.sections.len();
+        let is_active = button.index == active;
+        let next_display = if available {
+            Display::Flex
+        } else {
+            Display::None
+        };
+        if node.display != next_display {
+            node.display = next_display;
+        }
+        let next_background = action_button_color(available, is_active, interaction);
+        if background.0 != next_background {
+            background.0 = next_background;
+        }
+        let next_outline = action_button_outline(available, is_active, interaction);
+        if outline.color != next_outline {
+            outline.color = next_outline;
+        }
+        if let Some(section) = content.sections.get(button.index) {
+            for child in children {
+                if let Ok(mut text) = widgets.tab_labels.get_mut(*child)
+                    && text.0 != section.title
+                {
+                    text.0 = section.title.clone();
+                }
+            }
+        }
     }
 }
 
@@ -1411,7 +1496,7 @@ mod tests {
         assert!(rendered.contains(&planet_name));
         assert!(rendered.contains(&format!("Habitabilité exacte : {habitability}%")));
         assert!(rendered.contains("Rapport établi au tick"));
-        assert!(rendered.contains("POTENTIEL EXACT"));
+        assert!(rendered.contains("Potentiel"));
         assert!(rendered.contains("COLONISABILITÉ — BLOQUÉE"));
         assert!(rendered.contains("SITE D'EXTRACTION"));
         assert!(rendered.contains("Prospection autonome requise"));
@@ -1528,8 +1613,8 @@ mod tests {
 
         assert_eq!(panel.level, Some(KnowledgeLevel::Colonized));
         assert!(rendered.contains("Port-Sillage"));
-        assert!(rendered.contains("ÉCONOMIE — RÉSUMÉ"));
+        assert!(rendered.contains("Économie"));
         assert!(rendered.contains("Gestion complète : touche C"));
-        assert!(rendered.contains("INFRASTRUCTURE"));
+        assert!(rendered.contains("Infrastructure"));
     }
 }

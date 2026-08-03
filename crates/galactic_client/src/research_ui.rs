@@ -8,9 +8,10 @@ use galactic_sim::{
 };
 
 use super::{
-    OpenPanel, PresentationUpdateSet, SimulationResource, UiPointerBlocker, action_button_color,
-    action_button_outline, apply_simulation_command, collect_presentation_events,
-    format_strategic_duration, panel_background, panel_outline, ui_text_font,
+    OpenPanel, PresentationUpdateSet, SimulationResource, UiPointerBlocker, accent_research_violet,
+    action_button_color, action_button_outline, apply_simulation_command,
+    collect_presentation_events, format_strategic_duration, panel_background, panel_outline,
+    ui_text_font,
 };
 
 const RESEARCH_Z_INDEX: i32 = 110;
@@ -124,11 +125,7 @@ pub(crate) fn spawn_research_toggle(parent: &mut ChildSpawnerCommands) {
                 ..default()
             },
             BackgroundColor(Color::srgba(0.11, 0.13, 0.24, 0.96)),
-            Outline::new(
-                Val::Px(1.0),
-                Val::ZERO,
-                Color::srgba(0.54, 0.58, 0.96, 0.58),
-            ),
+            Outline::new(Val::Px(1.0), Val::ZERO, accent_research_violet()),
             ResearchButtonAction::Toggle,
             UiPointerBlocker,
         ))

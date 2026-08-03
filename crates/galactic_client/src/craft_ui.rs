@@ -7,9 +7,10 @@ use galactic_sim::{
 };
 
 use super::{
-    OpenPanel, PresentationUpdateSet, SimulationResource, UiPointerBlocker, action_button_color,
-    action_button_outline, apply_simulation_command, collect_presentation_events,
-    format_strategic_duration, panel_background, panel_outline, ui_text_font,
+    OpenPanel, PresentationUpdateSet, SimulationResource, UiPointerBlocker, accent_craft_amber,
+    action_button_color, action_button_outline, apply_simulation_command,
+    collect_presentation_events, format_strategic_duration, panel_background, panel_outline,
+    ui_text_font,
 };
 
 const CRAFT_Z_INDEX: i32 = 120;
@@ -125,11 +126,7 @@ pub(crate) fn spawn_craft_toggle(parent: &mut ChildSpawnerCommands) {
                 ..default()
             },
             BackgroundColor(Color::srgba(0.17, 0.11, 0.05, 0.96)),
-            Outline::new(
-                Val::Px(1.0),
-                Val::ZERO,
-                Color::srgba(0.94, 0.60, 0.24, 0.60),
-            ),
+            Outline::new(Val::Px(1.0), Val::ZERO, accent_craft_amber()),
             CraftButtonAction::Toggle,
             UiPointerBlocker,
         ))

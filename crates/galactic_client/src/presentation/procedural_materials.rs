@@ -32,6 +32,28 @@ pub(crate) fn star_halo_material(class: StarClass) -> StandardMaterial {
     }
 }
 
+pub(crate) fn territory_tint_material(
+    tint: crate::presentation::territory::TerritoryTint,
+) -> StandardMaterial {
+    use crate::presentation::territory::TerritoryTint;
+    let color = match tint {
+        TerritoryTint::SelfOwned => Color::srgba(0.32, 0.94, 0.48, 0.42),
+        TerritoryTint::Allied => Color::srgba(0.36, 0.62, 0.98, 0.42),
+        TerritoryTint::Hostile => Color::srgba(0.98, 0.30, 0.30, 0.42),
+        TerritoryTint::Neutral => Color::srgba(0.58, 0.60, 0.64, 0.32),
+        TerritoryTint::UnidentifiedPresence => Color::srgba(0.62, 0.40, 0.82, 0.42),
+    };
+    StandardMaterial {
+        base_color: color,
+        emissive: LinearRgba::from(color) * 0.9,
+        unlit: true,
+        alpha_mode: AlphaMode::Add,
+        double_sided: true,
+        cull_mode: None,
+        ..default()
+    }
+}
+
 pub(crate) fn planet_material(kind: PlanetKind, texture: Handle<Image>) -> StandardMaterial {
     StandardMaterial {
         base_color: Color::WHITE,
@@ -88,7 +110,9 @@ pub(crate) fn procedural_planet_texture(kind: PlanetKind) -> Image {
 }
 
 pub(crate) fn procedural_planet_pixel(kind: PlanetKind, x: u32, y: u32) -> [u8; 4] {
-    let noise = visual_hash(x, y, planet_kind_seed(kind));
+    let noise = layered_noise(x, y, planet_kind_seed(kind));
+    let width = PLANET_TEXTURE_WIDTH;
+    let height = PLANET_TEXTURE_HEIGHT;
     let color = match kind {
         PlanetKind::Rocky => {
             if noise > 205 {
@@ -100,7 +124,8 @@ pub(crate) fn procedural_planet_pixel(kind: PlanetKind, x: u32, y: u32) -> [u8; 
             }
         }
         PlanetKind::Ocean => {
-            let polar_cap = y < 2 || y + 2 >= PLANET_TEXTURE_HEIGHT;
+            let polar_band = (height / 16).max(1);
+            let polar_cap = y < polar_band || y + polar_band >= height;
             let land = noise > 208 && (x + y * 3).is_multiple_of(2);
             if polar_cap {
                 [220, 239, 246]
@@ -132,9 +157,15 @@ pub(crate) fn procedural_planet_pixel(kind: PlanetKind, x: u32, y: u32) -> [u8; 
             }
         }
         PlanetKind::GasGiant => {
-            let storm_x = x.abs_diff(46);
-            let storm_y = y.abs_diff(20);
-            if storm_x * storm_x + storm_y * storm_y < 18 {
+            // Storm position/size scaled from the texture dimensions instead of
+            // hardcoded pixel offsets, so it stays proportionally placed if the
+            // resolution changes again later.
+            let storm_center_x = width * 72 / 100;
+            let storm_center_y = height * 62 / 100;
+            let storm_radius = (width.min(height) * 7 / 100).max(2);
+            let storm_x = x.abs_diff(storm_center_x);
+            let storm_y = y.abs_diff(storm_center_y);
+            if storm_x * storm_x + storm_y * storm_y < storm_radius * storm_radius {
                 [184, 106, 76]
             } else {
                 match (y / 3 + u32::from(noise > 190)) % 4 {
@@ -156,7 +187,47 @@ pub(crate) fn procedural_planet_pixel(kind: PlanetKind, x: u32, y: u32) -> [u8; 
             }
         }
     };
-    [color[0], color[1], color[2], 255]
+    let lit = day_night_shading(x, width);
+    let shaded = [
+        ((color[0] as u32 * lit as u32) / 255) as u8,
+        ((color[1] as u32 * lit as u32) / 255) as u8,
+        ((color[2] as u32 * lit as u32) / 255) as u8,
+    ];
+    [shaded[0], shaded[1], shaded[2], 255]
+}
+
+/// Blends three octaves of `visual_hash` at different spatial frequencies
+/// (coarse/mid/fine, weighted toward the coarse octave) to approximate value
+/// noise with spatial continuity, instead of a single-frequency hash that
+/// produces uncorrelated per-pixel static. Stays fully deterministic: same
+/// `(x, y, seed)` always yields the same result, no external noise crate.
+pub(crate) fn layered_noise(x: u32, y: u32, seed: u32) -> u8 {
+    let coarse = visual_hash(x / 6, y / 6, seed) as u32;
+    let mid = visual_hash(x / 2, y / 2, seed.wrapping_add(11)) as u32;
+    let fine = visual_hash(x, y, seed.wrapping_add(29)) as u32;
+    ((coarse * 5 + mid * 3 + fine * 2) / 10) as u8
+}
+
+/// Soft brightness falloff across the texture's `x` axis, suggesting a lit
+/// hemisphere and a shadowed one rather than flat, uniformly-lit color bands.
+/// Cheap approximation (linear ramp within a fixed-width terminator band), not
+/// a physical lighting model.
+pub(crate) fn day_night_shading(x: u32, width: u32) -> u8 {
+    const NIGHT_FLOOR: u32 = 70;
+    let width = width.max(1);
+    let position = x * 255 / width;
+    let terminator = 150u32;
+    let band = 60u32;
+    let day_edge = terminator.saturating_sub(band);
+    let night_edge = terminator + band;
+    if position <= day_edge {
+        255
+    } else if position >= night_edge {
+        NIGHT_FLOOR as u8
+    } else {
+        let t = position - day_edge;
+        (255 - (t * (255 - NIGHT_FLOOR) / (band * 2))) as u8
+    }
 }
 
 pub(crate) fn visual_hash(x: u32, y: u32, seed: u32) -> u8 {

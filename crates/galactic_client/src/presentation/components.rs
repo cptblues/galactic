@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use bevy::prelude::{
-    BackgroundColor, Button, Changed, Color, Component, Interaction, Outline, Query, Resource,
-    Vec2, Vec3, With, Without,
+    BackgroundColor, Button, Changed, Children, Color, Component, Interaction, Node, Outline,
+    Query, Resource, Text, TextColor, Vec2, Vec3, With, Without,
 };
 use galactic_domain::{PlanetId, ResourceStock, SectorId, SystemId, WorldPosition};
 use galactic_sim::{KnowledgeLevel, SystemVisibility, TimeSpeed};
@@ -38,6 +38,9 @@ pub(crate) struct SystemVisual {
     pub(crate) tier: UniverseSystemTier,
     pub(crate) base_scale: Vec3,
 }
+
+#[derive(Component)]
+pub(crate) struct TabBarGalaxyButton;
 
 #[derive(Component)]
 pub(crate) struct SystemLabel {
@@ -93,11 +96,77 @@ pub(crate) struct KnownSectorLabel {
 #[derive(Component)]
 pub(crate) struct TopBarText;
 
+/// Marks UI nodes that are only meant for the developer's own testing (tick/debug telemetry,
+/// pause/speed controls, debug graph, forced rebuild) and are hidden by default in the shipped
+/// game. Visibility is toggled as a group via `DebugOverlayState`.
+#[derive(Component)]
+pub(crate) struct DebugOverlayRoot;
+
+#[derive(Resource, Default)]
+pub(crate) struct DebugOverlayState {
+    pub(crate) visible: bool,
+}
+
+#[derive(Component)]
+pub(crate) struct ResourceBarRoot;
+
+#[derive(Component)]
+pub(crate) struct ResourceBarCardText {
+    pub(crate) kind: ResourceHudKind,
+}
+
 #[derive(Component)]
 pub(crate) struct HelpText;
 
+/// Distinguishes the 3 fixed text blocks of the inspector panel within a single query, avoiding
+/// the unprovable-disjointness query conflicts that separate marker components would cause once
+/// several of them mutate `Text` in the same system.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InspectorTextRole {
+    /// Badge + title, always visible.
+    Title,
+    /// The scrollable body of whichever inspector tab is currently active.
+    Body,
+    /// The always-visible note (moons/selection consistency, then the knowledge-level hint)
+    /// shown under the tab content, outside the scroll area.
+    Footer,
+}
+
+/// Wraps the fixed pool of inspector tab buttons so the whole row can be hidden when the
+/// current selection only has a single section (no tabs needed).
 #[derive(Component)]
-pub(crate) struct InfoPanelText;
+pub(crate) struct InspectorTabBarRoot;
+
+#[derive(Component)]
+pub(crate) struct InspectorTabButton {
+    pub(crate) index: usize,
+}
+
+#[derive(Component)]
+pub(crate) struct InspectorTabButtonLabel;
+
+#[derive(Resource, Default)]
+pub(crate) struct InspectorTabState {
+    pub(crate) active: usize,
+    last_section_titles: Vec<String>,
+}
+
+impl InspectorTabState {
+    /// Resets to the first tab whenever the set of available sections changes (new selection,
+    /// new knowledge level) so a stale tab index from a previous target is never carried over.
+    pub(crate) fn sync(&mut self, sections: &[InspectorSection]) {
+        let titles: Vec<String> = sections
+            .iter()
+            .map(|section| section.title.clone())
+            .collect();
+        if titles != self.last_section_titles {
+            self.active = 0;
+            self.last_section_titles = titles;
+        } else if self.active >= sections.len() {
+            self.active = 0;
+        }
+    }
+}
 
 #[derive(Component)]
 pub(crate) struct SelectableVisual {
@@ -301,21 +370,42 @@ pub(crate) type ManagementTransportPresetStyleQuery<'w, 's> = Query<
 
 #[derive(Component)]
 pub(crate) struct ManagementQueueProgressFill;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InspectorSection {
+    pub(crate) title: String,
+    pub(crate) body: String,
+}
+
 // MVP-010: partial-information inspectors must never reveal hidden data.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InspectorContent {
     pub(crate) level: Option<KnowledgeLevel>,
     pub(crate) badge: String,
     pub(crate) title: String,
-    pub(crate) body: String,
+    /// Switchable tab content. A single section means no tabs are shown at all.
+    pub(crate) sections: Vec<InspectorSection>,
+    /// Short note always shown under the active section (e.g. moons/selection consistency),
+    /// outside the scroll area and common to every tab.
+    pub(crate) footer: Option<String>,
     pub(crate) hint: String,
 }
 
 impl InspectorContent {
+    /// Full concatenation of every section, used by tests that assert on the union of what a
+    /// given knowledge level ever reveals, regardless of which tab happens to be active on
+    /// screen.
+    #[cfg(test)]
     pub(crate) fn render(&self) -> String {
+        let sections = self
+            .sections
+            .iter()
+            .map(|section| format!("{}\n{}", section.title, section.body))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let footer = self.footer.as_deref().unwrap_or_default();
         format!(
-            "{}\n{}\n\n{}\n\n{}",
-            self.badge, self.title, self.body, self.hint,
+            "{}\n{}\n\n{}\n\n{}\n\n{}",
+            self.badge, self.title, sections, footer, self.hint,
         )
     }
 }
@@ -435,5 +525,73 @@ pub(crate) type ActionButtonStyleQuery<'w, 's> = Query<
         &'static Interaction,
         &'static mut BackgroundColor,
         &'static mut Outline,
+        &'static mut Node,
     ),
 >;
+
+pub(crate) type InspectorTextQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static InspectorTextRole,
+        &'static mut Text,
+        &'static mut TextColor,
+    ),
+    Without<InspectorTabButtonLabel>,
+>;
+pub(crate) type InspectorTabLabelQuery<'w, 's> =
+    Query<'w, 's, &'static mut Text, (With<InspectorTabButtonLabel>, Without<InspectorTextRole>)>;
+pub(crate) type InspectorTabButtonQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static InspectorTabButton,
+        &'static Interaction,
+        &'static mut BackgroundColor,
+        &'static mut Outline,
+        &'static mut Node,
+        &'static Children,
+    ),
+    Without<InspectorTabBarRoot>,
+>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn section(title: &str) -> InspectorSection {
+        InspectorSection {
+            title: title.to_string(),
+            body: String::new(),
+        }
+    }
+
+    #[test]
+    fn tab_state_resets_to_the_first_tab_when_the_section_set_changes() {
+        let mut state = InspectorTabState {
+            active: 2,
+            last_section_titles: vec!["A".to_string(), "B".to_string(), "C".to_string()],
+        };
+        let sections = [section("A"), section("B"), section("C")];
+        state.sync(&sections);
+        assert_eq!(state.active, 2, "same sections must keep the active tab");
+
+        let new_sections = [section("Aperçu")];
+        state.sync(&new_sections);
+        assert_eq!(
+            state.active, 0,
+            "a different section set must reset to the first tab"
+        );
+    }
+
+    #[test]
+    fn tab_state_clamps_a_stale_index_left_over_from_a_longer_section_set() {
+        let mut state = InspectorTabState {
+            active: 4,
+            last_section_titles: vec!["Aperçu".to_string()],
+        };
+        let sections = [section("Aperçu")];
+        state.sync(&sections);
+        assert_eq!(state.active, 0);
+    }
+}

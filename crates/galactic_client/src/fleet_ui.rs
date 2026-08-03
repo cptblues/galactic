@@ -12,10 +12,11 @@ use galactic_sim::{
 
 use super::{
     OpenPanel, PresentationUpdateSet, SelectedMission, SimulationResource, TransportCargoPreset,
-    UiPointerBlocker, action_button_color, action_button_outline, apply_simulation_command,
-    collect_presentation_events, format_strategic_duration, mission_error_text, mission_kind_label,
-    mission_next_deadline, mission_phase_label, mission_result_text, mission_target_label,
-    panel_background, panel_outline, provisional_planet_label, ui_text_font,
+    UiPointerBlocker, accent_fleet_blue, action_button_color, action_button_outline,
+    apply_simulation_command, collect_presentation_events, format_strategic_duration,
+    mission_error_text, mission_kind_label, mission_next_deadline, mission_phase_label,
+    mission_result_text, mission_target_label, panel_background, panel_outline,
+    provisional_planet_label, ui_text_font,
 };
 
 const FLEET_Z_INDEX: i32 = 130;
@@ -200,11 +201,7 @@ pub(crate) fn spawn_fleet_toggle(parent: &mut ChildSpawnerCommands) {
                 ..default()
             },
             BackgroundColor(Color::srgba(0.06, 0.10, 0.18, 0.96)),
-            Outline::new(
-                Val::Px(1.0),
-                Val::ZERO,
-                Color::srgba(0.42, 0.62, 0.94, 0.60),
-            ),
+            Outline::new(Val::Px(1.0), Val::ZERO, accent_fleet_blue()),
             FleetButtonAction::Toggle,
             UiPointerBlocker,
         ))

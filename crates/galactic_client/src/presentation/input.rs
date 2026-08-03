@@ -36,6 +36,32 @@ pub(crate) fn handle_simulation_input(
     }
 }
 
+pub(crate) fn toggle_debug_overlay(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut debug_overlay: ResMut<DebugOverlayState>,
+) {
+    if keyboard.just_pressed(KeyCode::Backquote) {
+        debug_overlay.visible = !debug_overlay.visible;
+    }
+}
+
+pub(crate) fn update_debug_overlay_visibility(
+    debug_overlay: Res<DebugOverlayState>,
+    mut roots: Query<&mut Visibility, With<DebugOverlayRoot>>,
+) {
+    if !debug_overlay.is_changed() {
+        return;
+    }
+    let visibility = if debug_overlay.visible {
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
+    };
+    for mut root_visibility in &mut roots {
+        *root_visibility = visibility;
+    }
+}
+
 #[derive(SystemParam)]
 pub(crate) struct ViewInputState<'w> {
     keyboard: Res<'w, ButtonInput<KeyCode>>,

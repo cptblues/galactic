@@ -14,17 +14,22 @@ use presentation::colony_management_ui::{
     update_colony_management_transport, update_colony_management_visibility,
 };
 use presentation::components::{
-    ColonyManagementState, InfoPanelText, InspectorContent, OpenPanel, PointerSelectionState,
+    ColonyManagementState, DebugOverlayState, InspectorContent, InspectorSection,
+    InspectorTabBarRoot, InspectorTabButton, InspectorTabButtonQuery, InspectorTabLabelQuery,
+    InspectorTabState, InspectorTextQuery, InspectorTextRole, OpenPanel, PointerSelectionState,
     SelectedMission, StrategicViewEntity, TopBarText, TransportCargoPreset, UiPointerBlocker,
 };
+use presentation::icons::IconAssets;
 use presentation::input::{
     handle_action_buttons, handle_pointer_selection, handle_simulation_input, handle_view_input,
-    provisional_planet_label, update_ambiguity_panel, update_pointer_candidates,
-    update_pointer_halos, update_pointer_tooltip,
+    provisional_planet_label, toggle_debug_overlay, update_ambiguity_panel,
+    update_debug_overlay_visibility, update_pointer_candidates, update_pointer_halos,
+    update_pointer_tooltip,
 };
 use presentation::inspector_panel::{
-    format_strategic_duration, mission_error_text, mission_kind_label, mission_next_deadline,
-    mission_phase_label, mission_result_text, mission_target_label, update_info_panel, update_ui,
+    format_strategic_duration, handle_inspector_tab_buttons, mission_error_text,
+    mission_kind_label, mission_next_deadline, mission_phase_label, mission_result_text,
+    mission_target_label, update_info_panel, update_ui,
 };
 use presentation::overlays::{
     compute_label_budget, draw_strategic_overlays, update_orbiting_visuals, update_planet_spins,
@@ -33,17 +38,23 @@ use presentation::overlays::{
 };
 use presentation::procedural_materials::{
     atmosphere_material, planet_material, procedural_planet_texture, star_halo_material,
-    star_material,
+    star_material, territory_tint_material,
 };
 use presentation::scene::{
-    action_button_color, action_button_outline, panel_background, panel_outline,
+    accent_craft_amber, accent_fleet_blue, accent_research_violet, action_button_color,
+    action_button_outline, handle_tab_bar_galaxy_button, panel_background, panel_outline,
     rebuild_strategic_view_if_requested, spawn_scene, spawn_strategic_view, spawn_ui, ui_text_font,
+    update_resource_bar,
 };
 use presentation::shortcuts::{apply_simulation_command, apply_ui_action};
 use presentation::strategic_camera::{tick_simulation, update_strategic_camera};
 use presentation::strategic_navigation::{
     BreadcrumbKind, NavigationHistory, StrategicNavigation, ViewRebuildRequest,
     breadcrumb_segments, navigate_to_galaxy, navigate_to_sector, navigate_to_selection,
+};
+use presentation::system_body_list::{
+    handle_system_body_colonize_buttons, spawn_system_body_list,
+    update_system_body_list_visibility, update_system_body_rows,
 };
 use presentation::universe_labels::LabelBudgetState;
 use research_ui::ResearchUiPlugin;
@@ -108,8 +119,8 @@ use std::time::Duration;
 
 pub(crate) const UNIVERSE_VERTICAL_EXAGGERATION: f32 = 3.4;
 const INITIAL_OBSERVATION_SYSTEM_LIMIT: usize = 14;
-const PLANET_TEXTURE_WIDTH: u32 = 64;
-const PLANET_TEXTURE_HEIGHT: u32 = 32;
+const PLANET_TEXTURE_WIDTH: u32 = 128;
+const PLANET_TEXTURE_HEIGHT: u32 = 64;
 
 pub fn run() {
     let scale_preset = match universe_scale_preset_from_args(std::env::args().skip(1)) {
@@ -170,6 +181,7 @@ impl Plugin for ClientPlugin {
         })
         .init_resource::<PresentationLog>()
         .init_resource::<VisualAssets>()
+        .init_resource::<IconAssets>()
         .insert_resource(navigation)
         .init_resource::<ViewRebuildRequest>()
         .init_resource::<NavigationHistory>()
@@ -179,6 +191,8 @@ impl Plugin for ClientPlugin {
         .init_resource::<ColonyManagementState>()
         .init_resource::<OpenPanel>()
         .init_resource::<MemoryDiagnostics>()
+        .init_resource::<DebugOverlayState>()
+        .init_resource::<InspectorTabState>()
         .add_plugins(SimulationBridgePlugin)
         .add_plugins(PresentationPlugin)
         .add_plugins(ResearchUiPlugin)
@@ -248,6 +262,7 @@ impl Plugin for PresentationPlugin {
                 spawn_scene,
                 spawn_strategic_view,
                 spawn_ui,
+                spawn_system_body_list,
             )
                 .chain(),
         )
@@ -286,7 +301,14 @@ impl Plugin for PresentationPlugin {
         )
         .add_systems(
             Update,
-            (handle_action_buttons, handle_colony_management_buttons)
+            (
+                handle_action_buttons,
+                handle_colony_management_buttons,
+                handle_tab_bar_galaxy_button,
+                handle_system_body_colonize_buttons,
+                handle_inspector_tab_buttons,
+                toggle_debug_overlay,
+            )
                 .chain()
                 .in_set(PresentationUpdateSet::Interaction),
         )
@@ -302,13 +324,20 @@ impl Plugin for PresentationPlugin {
                 update_colony_management_detail,
                 update_colony_management_queue,
                 update_colony_management_transport,
+                update_system_body_list_visibility,
+                update_system_body_rows,
             )
                 .chain()
                 .in_set(PresentationUpdateSet::Management),
         )
         .add_systems(
             Update,
-            (update_ui, update_info_panel)
+            (
+                update_resource_bar,
+                update_ui,
+                update_info_panel,
+                update_debug_overlay_visibility,
+            )
                 .chain()
                 .in_set(PresentationUpdateSet::Ui),
         );
@@ -400,6 +429,7 @@ pub(crate) struct VisualAssets {
     atmosphere_materials: HashMap<PlanetKind, Handle<StandardMaterial>>,
     ring_material: Handle<StandardMaterial>,
     hover_material: Handle<StandardMaterial>,
+    territory_materials: HashMap<presentation::territory::TerritoryTint, Handle<StandardMaterial>>,
 }
 
 impl FromWorld for VisualAssets {
@@ -474,6 +504,10 @@ impl FromWorld for VisualAssets {
             alpha_mode: AlphaMode::Blend,
             ..default()
         });
+        let territory_materials = presentation::territory::TerritoryTint::ALL
+            .into_iter()
+            .map(|tint| (tint, materials.add(territory_tint_material(tint))))
+            .collect();
 
         Self {
             system_mesh,
@@ -487,6 +521,7 @@ impl FromWorld for VisualAssets {
             atmosphere_materials,
             ring_material,
             hover_material,
+            territory_materials,
         }
     }
 }

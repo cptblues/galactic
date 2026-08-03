@@ -663,7 +663,7 @@ pub(crate) fn update_action_buttons(
     navigation: Res<StrategicNavigation>,
     mut buttons: ActionButtonStyleQuery,
 ) {
-    for (button, interaction, mut background, mut outline) in &mut buttons {
+    for (button, interaction, mut background, mut outline, mut node) in &mut buttons {
         let available = action_available(button.action, &simulation, &navigation);
         let active = action_active(button.action, &simulation, &navigation);
         let next_background = action_button_color(available, active, interaction);
@@ -673,6 +673,14 @@ pub(crate) fn update_action_buttons(
         let next_outline = action_button_outline(available, active, interaction);
         if outline.color != next_outline {
             outline.color = next_outline;
+        }
+        let next_display = if available {
+            Display::Flex
+        } else {
+            Display::None
+        };
+        if node.display != next_display {
+            node.display = next_display;
         }
     }
 }

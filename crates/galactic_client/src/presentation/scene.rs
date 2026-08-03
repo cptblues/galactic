@@ -1,8 +1,12 @@
+use bevy::camera::Hdr;
+use bevy::core_pipeline::tonemapping::Tonemapping;
+use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 use galactic_domain::{PlanetId, PlanetKind, StarClass, SystemId, WorldPosition};
 use galactic_sim::{KnowledgeLevel, MVP_HOME_SYSTEM_ID, Simulation, SystemVisibility, TimeSpeed};
 
 use crate::presentation::components::*;
+use crate::presentation::icons::{IconAssets, IconKind, spawn_icon};
 use crate::presentation::procedural_materials::star_color;
 use crate::presentation::resource_hud::*;
 use crate::presentation::strategic_navigation::*;
@@ -15,6 +19,10 @@ pub(crate) fn spawn_scene(mut commands: Commands) {
             clear_color: ClearColorConfig::Custom(Color::srgb(0.006, 0.008, 0.014)),
             ..default()
         },
+        Hdr,
+        // Bloom fixe pour l'instant ; MVP-034 (futur) pourra le brancher sur GraphicsPreset.
+        Bloom::default(),
+        Tonemapping::TonyMcMapface,
         Transform::from_xyz(0.0, 62.0, 88.0).looking_at(Vec3::ZERO, Vec3::Y),
         StrategicCamera,
     ));
@@ -151,6 +159,11 @@ pub(crate) fn spawn_universe_view(
                 position,
                 scale.x * 1.8,
             );
+            if let Some(tint) =
+                crate::presentation::territory::system_territory_tint(state, universe, system.id)
+            {
+                spawn_territory_ring(commands, assets, tint, position, scale.x * 2.4);
+            }
         }
 
         if let Some(visibility) = selectable_visibility {
@@ -347,6 +360,28 @@ pub(crate) fn spawn_star_halo(
             tier: UniverseSystemTier::Known,
             base_scale,
         },
+        StrategicViewEntity,
+    ));
+}
+
+pub(crate) fn spawn_territory_ring(
+    commands: &mut Commands,
+    assets: &VisualAssets,
+    tint: crate::presentation::territory::TerritoryTint,
+    position: Vec3,
+    scale: f32,
+) {
+    let material = assets
+        .territory_materials
+        .get(&tint)
+        .expect("territory material exists")
+        .clone();
+    commands.spawn((
+        Mesh3d(assets.ring_mesh.clone()),
+        MeshMaterial3d(material),
+        Transform::from_translation(position)
+            .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2))
+            .with_scale(Vec3::splat(scale)),
         StrategicViewEntity,
     ));
 }
@@ -629,7 +664,9 @@ pub(crate) fn planet_pick_priority(
     }
 }
 
-pub(crate) fn spawn_ui(mut commands: Commands) {
+pub(crate) fn spawn_ui(mut commands: Commands, icon_assets: Res<IconAssets>) {
+    spawn_resource_bar(&mut commands, &icon_assets);
+
     commands.spawn((
         Text::new(""),
         ui_text_font(14.0),
@@ -638,7 +675,7 @@ pub(crate) fn spawn_ui(mut commands: Commands) {
             position_type: PositionType::Absolute,
             left: Val::Px(12.0),
             right: Val::Px(12.0),
-            top: Val::Px(10.0),
+            top: Val::Px(64.0),
             padding: UiRect::all(Val::Px(10.0)),
             border: UiRect::all(Val::Px(1.0)),
             border_radius: BorderRadius::all(Val::Px(6.0)),
@@ -649,6 +686,8 @@ pub(crate) fn spawn_ui(mut commands: Commands) {
         Interaction::None,
         UiPointerBlocker,
         TopBarText,
+        DebugOverlayRoot,
+        Visibility::Hidden,
     ));
 
     commands
@@ -658,11 +697,13 @@ pub(crate) fn spawn_ui(mut commands: Commands) {
                 left: Val::Px(14.0),
                 top: Val::Px(72.0),
                 width: Val::Px(268.0),
+                max_height: Val::Px(340.0),
                 padding: UiRect::all(Val::Px(12.0)),
                 border: UiRect::all(Val::Px(1.0)),
                 border_radius: BorderRadius::all(Val::Px(6.0)),
                 flex_direction: FlexDirection::Column,
                 row_gap: Val::Px(8.0),
+                overflow: Overflow::scroll_y(),
                 ..default()
             },
             BackgroundColor(panel_background()),
@@ -671,11 +712,7 @@ pub(crate) fn spawn_ui(mut commands: Commands) {
             UiPointerBlocker,
         ))
         .with_children(|parent| {
-            spawn_panel_heading(parent, "COMMANDES");
-            spawn_action_button(parent, UiAction::TogglePause, "Pause", "Space");
-            spawn_action_button(parent, UiAction::SetSpeed(TimeSpeed::X1), "Vitesse x1", "1");
-            spawn_action_button(parent, UiAction::SetSpeed(TimeSpeed::X2), "Vitesse x2", "2");
-            spawn_action_button(parent, UiAction::SetSpeed(TimeSpeed::X4), "Vitesse x4", "3");
+            spawn_panel_heading(parent, "ACTIONS");
             spawn_action_button(parent, UiAction::CycleTarget, "Cible suivante", "Tab");
             spawn_action_button(parent, UiAction::FocusSelection, "Recentrer", "F");
             spawn_action_button(parent, UiAction::EnterSystem, "Entrer système", "Enter");
@@ -696,15 +733,40 @@ pub(crate) fn spawn_ui(mut commands: Commands) {
                 "Projection 3D / 2,5D",
                 "P",
             );
+        });
+
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(12.0),
+                top: Val::Px(130.0),
+                width: Val::Px(268.0),
+                padding: UiRect::all(Val::Px(12.0)),
+                border: UiRect::all(Val::Px(1.0)),
+                border_radius: BorderRadius::all(Val::Px(6.0)),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(8.0),
+                ..default()
+            },
+            BackgroundColor(panel_background()),
+            Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
+            Interaction::None,
+            UiPointerBlocker,
+            DebugOverlayRoot,
+            Visibility::Hidden,
+        ))
+        .with_children(|parent| {
+            spawn_panel_heading(parent, "DEBUG ( ` )");
+            spawn_action_button(parent, UiAction::TogglePause, "Pause", "Space");
+            spawn_action_button(parent, UiAction::SetSpeed(TimeSpeed::X1), "Vitesse x1", "1");
+            spawn_action_button(parent, UiAction::SetSpeed(TimeSpeed::X2), "Vitesse x2", "2");
+            spawn_action_button(parent, UiAction::SetSpeed(TimeSpeed::X4), "Vitesse x4", "3");
             spawn_action_button(parent, UiAction::ToggleDebugGraph, "Debug graphe", "G");
             spawn_action_button(parent, UiAction::RebuildView, "Reconstruire", "R");
-            spawn_colony_management_toggle(parent);
-            research_ui::spawn_research_toggle(parent);
-            craft_ui::spawn_craft_toggle(parent);
-            fleet_ui::spawn_fleet_toggle(parent);
-            navigation_ui::spawn_search_toggle(parent);
-            navigation_ui::spawn_filters_toggle(parent);
         });
+
+    spawn_tab_bar(&mut commands);
 
     commands
         .spawn((
@@ -717,6 +779,7 @@ pub(crate) fn spawn_ui(mut commands: Commands) {
                 border: UiRect::all(Val::Px(1.0)),
                 border_radius: BorderRadius::all(Val::Px(6.0)),
                 flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(8.0),
                 ..default()
             },
             BackgroundColor(panel_background()),
@@ -733,7 +796,56 @@ pub(crate) fn spawn_ui(mut commands: Commands) {
                     width: Val::Percent(100.0),
                     ..default()
                 },
-                InfoPanelText,
+                InspectorTextRole::Title,
+            ));
+
+            parent
+                .spawn((
+                    Node {
+                        width: Val::Percent(100.0),
+                        flex_direction: FlexDirection::Row,
+                        flex_wrap: FlexWrap::Wrap,
+                        column_gap: Val::Px(4.0),
+                        row_gap: Val::Px(4.0),
+                        ..default()
+                    },
+                    InspectorTabBarRoot,
+                ))
+                .with_children(|row| {
+                    for index in 0..INSPECTOR_TAB_COUNT {
+                        spawn_inspector_tab_button(row, index);
+                    }
+                });
+
+            parent
+                .spawn(Node {
+                    width: Val::Percent(100.0),
+                    max_height: Val::Px(300.0),
+                    overflow: Overflow::scroll_y(),
+                    ..default()
+                })
+                .with_children(|scroll| {
+                    scroll.spawn((
+                        Text::new(""),
+                        ui_text_font(12.0),
+                        TextColor(Color::srgb(0.82, 0.90, 0.98)),
+                        Node {
+                            width: Val::Percent(100.0),
+                            ..default()
+                        },
+                        InspectorTextRole::Body,
+                    ));
+                });
+
+            parent.spawn((
+                Text::new(""),
+                ui_text_font(12.0),
+                TextColor(Color::srgb(0.70, 0.78, 0.84)),
+                Node {
+                    width: Val::Percent(100.0),
+                    ..default()
+                },
+                InspectorTextRole::Footer,
             ));
         });
 
@@ -747,7 +859,7 @@ pub(crate) fn spawn_ui(mut commands: Commands) {
             position_type: PositionType::Absolute,
             left: Val::Px(14.0),
             right: Val::Px(14.0),
-            bottom: Val::Px(14.0),
+            bottom: Val::Px(68.0),
             padding: UiRect::axes(Val::Px(12.0), Val::Px(8.0)),
             border: UiRect::all(Val::Px(1.0)),
             border_radius: BorderRadius::all(Val::Px(6.0)),
@@ -812,6 +924,95 @@ pub(crate) fn spawn_ui(mut commands: Commands) {
     ));
 
     spawn_colony_management_screen(&mut commands);
+}
+
+fn spawn_tab_bar(commands: &mut Commands) {
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(14.0),
+                right: Val::Px(14.0),
+                bottom: Val::Px(14.0),
+                height: Val::Px(46.0),
+                padding: UiRect::axes(Val::Px(10.0), Val::Px(6.0)),
+                border: UiRect::all(Val::Px(1.0)),
+                border_radius: BorderRadius::all(Val::Px(8.0)),
+                flex_direction: FlexDirection::Row,
+                column_gap: Val::Px(8.0),
+                ..default()
+            },
+            BackgroundColor(panel_background()),
+            Outline::new(Val::Px(1.0), Val::ZERO, accent_cyan()),
+            Interaction::None,
+            UiPointerBlocker,
+        ))
+        .with_children(|row| {
+            spawn_tab_bar_slot(row, spawn_galaxy_tab_button);
+            spawn_tab_bar_slot(row, spawn_colony_management_toggle);
+            spawn_tab_bar_slot(row, research_ui::spawn_research_toggle);
+            spawn_tab_bar_slot(row, craft_ui::spawn_craft_toggle);
+            spawn_tab_bar_slot(row, fleet_ui::spawn_fleet_toggle);
+            spawn_tab_bar_slot(row, navigation_ui::spawn_search_toggle);
+            spawn_tab_bar_slot(row, navigation_ui::spawn_filters_toggle);
+        });
+}
+
+/// Wraps a toggle button (each written to fill 100% of its own parent, the
+/// stacked "COMMANDES" layout it originally shipped with) in a `flex_grow`
+/// slot so the bottom tab bar can lay the same, untouched buttons out
+/// horizontally with even spacing.
+fn spawn_tab_bar_slot(
+    row: &mut ChildSpawnerCommands,
+    build: impl FnOnce(&mut ChildSpawnerCommands),
+) {
+    row.spawn(Node {
+        flex_grow: 1.0,
+        ..default()
+    })
+    .with_children(build);
+}
+
+fn spawn_galaxy_tab_button(parent: &mut ChildSpawnerCommands) {
+    parent
+        .spawn((
+            Button,
+            Node {
+                width: Val::Percent(100.0),
+                min_height: Val::Px(36.0),
+                padding: UiRect::axes(Val::Px(10.0), Val::Px(7.0)),
+                border: UiRect::all(Val::Px(1.0)),
+                border_radius: BorderRadius::all(Val::Px(5.0)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.02, 0.05, 0.06, 0.96)),
+            Outline::new(Val::Px(1.0), Val::ZERO, accent_cyan()),
+            TabBarGalaxyButton,
+            UiPointerBlocker,
+        ))
+        .with_children(|button| {
+            button.spawn((
+                Text::new("Galaxie"),
+                ui_text_font(12.0),
+                TextColor(Color::srgb(0.85, 0.98, 1.0)),
+            ));
+        });
+}
+
+pub(crate) fn handle_tab_bar_galaxy_button(
+    mut simulation: ResMut<SimulationResource>,
+    mut navigation: ResMut<StrategicNavigation>,
+    mut history: ResMut<NavigationHistory>,
+    mut rebuild: ResMut<ViewRebuildRequest>,
+    mut open_panel: ResMut<OpenPanel>,
+    interactions: Query<&Interaction, (Changed<Interaction>, With<TabBarGalaxyButton>)>,
+) {
+    for interaction in &interactions {
+        if *interaction == Interaction::Pressed {
+            *open_panel = OpenPanel::None;
+            navigate_to_galaxy(&mut simulation, &mut navigation, &mut history, &mut rebuild);
+        }
+    }
 }
 
 pub(crate) fn spawn_colony_management_toggle(parent: &mut ChildSpawnerCommands) {
@@ -982,6 +1183,101 @@ pub(crate) fn spawn_management_small_button(
                 TextColor(Color::srgb(0.82, 0.90, 0.94)),
             ));
         });
+}
+
+/// Always-visible persistent resource bar (top of screen), condensed to icon + amount +
+/// rate, as opposed to the detailed gauge cards shown inside the full-screen Colony
+/// Management panel (`spawn_management_resource_card`). Reflects the active player colony
+/// only — there is no empire-wide aggregate in `galactic_sim`, and inventing one here would
+/// be simulation-adjacent logic outside the scope of a presentation-only overhaul.
+pub(crate) fn spawn_resource_bar(commands: &mut Commands, icon_assets: &IconAssets) {
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(12.0),
+                right: Val::Px(12.0),
+                top: Val::Px(10.0),
+                height: Val::Px(46.0),
+                padding: UiRect::horizontal(Val::Px(14.0)),
+                border: UiRect::all(Val::Px(1.0)),
+                border_radius: BorderRadius::all(Val::Px(8.0)),
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::SpaceBetween,
+                ..default()
+            },
+            BackgroundColor(panel_background()),
+            Outline::new(Val::Px(1.0), Val::ZERO, accent_cyan()),
+            Interaction::None,
+            UiPointerBlocker,
+            ResourceBarRoot,
+        ))
+        .with_children(|row| {
+            for kind in ResourceHudKind::ALL {
+                spawn_resource_bar_card(row, icon_assets, kind);
+            }
+        });
+}
+
+fn spawn_resource_bar_card(
+    parent: &mut ChildSpawnerCommands,
+    icon_assets: &IconAssets,
+    kind: ResourceHudKind,
+) {
+    parent
+        .spawn(Node {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            column_gap: Val::Px(6.0),
+            ..default()
+        })
+        .with_children(|card| {
+            spawn_icon(
+                card,
+                icon_assets,
+                resource_bar_icon_kind(kind),
+                20.0,
+                resource_kind_color(kind),
+            );
+            card.spawn((
+                Text::new("—"),
+                ui_text_font(12.0),
+                TextColor(resource_kind_color(kind)),
+                ResourceBarCardText { kind },
+            ));
+        });
+}
+
+fn resource_bar_icon_kind(kind: ResourceHudKind) -> IconKind {
+    match kind {
+        ResourceHudKind::Metal => IconKind::Metal,
+        ResourceHudKind::Crystal => IconKind::Crystal,
+        ResourceHudKind::Fuel => IconKind::Fuel,
+        ResourceHudKind::Energy => IconKind::Energy,
+    }
+}
+
+/// Mirrors `update_colony_management_resources` (`colony_management_ui.rs`) closely, but
+/// targets the always-visible bar's `ResourceBarCardText` and uses the compact
+/// `resource_bar_text` formatting instead of the detailed multi-line view.
+pub(crate) fn update_resource_bar(
+    simulation: Res<SimulationResource>,
+    mut texts: Query<(&ResourceBarCardText, &mut Text, &mut TextColor)>,
+) {
+    let Some(colony) = simulation.simulation().state().active_player_colony() else {
+        for (_, mut text, _) in &mut texts {
+            text.0 = "—".to_string();
+        }
+        return;
+    };
+    let production = galactic_sim::colony_production_snapshot(colony);
+
+    for (card, mut text, mut color) in &mut texts {
+        let view = resource_hud_view(card.kind, colony, production);
+        text.0 = resource_bar_text(card.kind, colony, production);
+        color.0 = status_text_color(card.kind, view.status);
+    }
 }
 
 pub(crate) fn spawn_management_resource_row(root: &mut ChildSpawnerCommands) {
@@ -1362,6 +1658,41 @@ pub(crate) fn spawn_management_transport_preset_button(
         });
 }
 
+/// Fixed pool of inspector tab buttons. Matches the largest section count any
+/// `InspectorContent` ever produces (a colonized planet: Aperçu, Renseignement, Économie,
+/// Potentiel, Infrastructure); extra slots are hidden via `Display::None`.
+pub(crate) const INSPECTOR_TAB_COUNT: usize = 5;
+
+fn spawn_inspector_tab_button(parent: &mut ChildSpawnerCommands<'_>, index: usize) {
+    parent
+        .spawn((
+            Button,
+            Node {
+                min_height: Val::Px(24.0),
+                padding: UiRect::axes(Val::Px(8.0), Val::Px(4.0)),
+                border: UiRect::all(Val::Px(1.0)),
+                border_radius: BorderRadius::all(Val::Px(4.0)),
+                ..default()
+            },
+            BackgroundColor(action_button_color(true, false, &Interaction::None)),
+            Outline::new(
+                Val::Px(1.0),
+                Val::ZERO,
+                action_button_outline(true, false, &Interaction::None),
+            ),
+            InspectorTabButton { index },
+            UiPointerBlocker,
+        ))
+        .with_children(|button| {
+            button.spawn((
+                Text::new(""),
+                ui_text_font(11.0),
+                TextColor(Color::srgb(0.88, 0.94, 0.98)),
+                InspectorTabButtonLabel,
+            ));
+        });
+}
+
 pub(crate) fn spawn_panel_heading(parent: &mut ChildSpawnerCommands<'_>, label: &str) {
     parent.spawn((
         Text::new(label),
@@ -1473,4 +1804,28 @@ pub(crate) fn action_button_outline(
         Interaction::Pressed | Interaction::Hovered => Color::srgba(0.72, 0.74, 0.52, 0.64),
         Interaction::None => Color::srgba(0.58, 0.72, 0.76, 0.30),
     }
+}
+
+pub(crate) fn accent_cyan() -> Color {
+    Color::srgba(0.38, 0.92, 0.98, 0.78)
+}
+
+// Palette d'accent par domaine (docs/mvp_architecture.md, refonte visuelle Étape 8).
+pub(crate) fn accent_fleet_blue() -> Color {
+    Color::srgba(0.42, 0.62, 0.94, 0.60)
+}
+
+pub(crate) fn accent_craft_amber() -> Color {
+    Color::srgba(0.94, 0.60, 0.24, 0.60)
+}
+
+pub(crate) fn accent_research_violet() -> Color {
+    Color::srgba(0.54, 0.58, 0.96, 0.58)
+}
+
+// Pas encore câblée : le panneau de gestion de colonie (presentation/colony_management_ui.rs)
+// est hors périmètre strict de l'Étape 8 (limitée aux 4 panneaux fleet/craft/research/navigation).
+#[allow(dead_code)]
+pub(crate) fn accent_colony_teal() -> Color {
+    Color::srgba(0.30, 0.72, 0.74, 0.68)
 }

@@ -53,6 +53,23 @@ Production +{:.2}/s  •  plein {}{}",
     }
 }
 
+/// A compact single-line rendering for the always-visible top resource bar, as opposed to
+/// `resource_hud_view`'s multi-line detail used by the full Colony Management panel.
+pub(crate) fn resource_bar_text(
+    kind: ResourceHudKind,
+    colony: &galactic_sim::ColonyState,
+    production: galactic_sim::ColonyProductionSnapshot,
+) -> String {
+    if kind == ResourceHudKind::Energy {
+        let produced = production.effective_energy_production;
+        let consumed = production.energy_consumption;
+        return format!("{consumed} / {produced}");
+    }
+    let stock = resource_value(kind, colony.resources.stock());
+    let rate = resource_rate_per_second(kind, production);
+    format!("{stock}  +{rate:.2}/s")
+}
+
 fn energy_hud_view(production: galactic_sim::ColonyProductionSnapshot) -> ResourceHudView {
     let produced = production.effective_energy_production;
     let consumed = production.energy_consumption;
@@ -537,6 +554,25 @@ mod tests {
         assert!(!text.contains("M0"));
         assert!(!text.contains("C0"));
         assert!(!text.contains("F0"));
+    }
+
+    #[test]
+    fn resource_bar_text_is_compact_and_single_line() {
+        let simulation = Simulation::new(UniverseConfig::mvp());
+        let colony = simulation
+            .state()
+            .player_home_colony()
+            .expect("home colony exists");
+        let production = galactic_sim::colony_production_snapshot(colony);
+
+        let metal = resource_bar_text(ResourceHudKind::Metal, colony, production);
+        assert!(!metal.contains('\n'));
+        assert!(metal.contains("+"));
+        assert!(metal.contains("/s"));
+
+        let energy = resource_bar_text(ResourceHudKind::Energy, colony, production);
+        assert!(!energy.contains('\n'));
+        assert!(energy.contains('/'));
     }
 
     #[test]
