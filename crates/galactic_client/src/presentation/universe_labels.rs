@@ -160,6 +160,7 @@ mod tests {
         simulation.apply_player_action(GameAction::QueueCraft {
             colony_id,
             craftable: galactic_sim::CraftableId::LIGHT_PROBE,
+            quantity: 1,
         });
         simulation.advance(Duration::from_secs(50));
         simulation.apply_player_action(GameAction::LaunchProbe {

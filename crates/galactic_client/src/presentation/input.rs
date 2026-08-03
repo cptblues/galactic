@@ -387,7 +387,7 @@ pub(crate) fn update_ambiguity_panel(
     ];
     for (index, target) in ambiguity.targets.iter().enumerate() {
         let marker = if index == ambiguity.active_index {
-            "▶"
+            ">"
         } else {
             " "
         };

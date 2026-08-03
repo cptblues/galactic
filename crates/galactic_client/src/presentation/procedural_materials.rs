@@ -338,6 +338,13 @@ pub(crate) fn event_label(event: GameEvent) -> String {
             "construction {:?} refusée : {:?}",
             rejected.kind, rejected.error,
         ),
+        GameEventKind::ConstructionCancelled(cancelled) => format!(
+            "construction {:?} annulée (remboursé {:?})",
+            cancelled.kind, cancelled.refunded,
+        ),
+        GameEventKind::ConstructionCancellationRejected(rejected) => {
+            format!("annulation de construction refusée : {:?}", rejected.error,)
+        }
         GameEventKind::ResearchQueued(queued) => format!(
             "recherche {:?} ajoutée ({})",
             queued.project.technology, queued.queue_length,
@@ -349,18 +356,35 @@ pub(crate) fn event_label(event: GameEvent) -> String {
             "recherche {:?} refusée : {:?}",
             rejected.technology, rejected.error,
         ),
+        GameEventKind::ResearchCancelled(cancelled) => format!(
+            "recherche {:?} annulée ({} points perdus)",
+            cancelled.technology, cancelled.accumulated_milli_points,
+        ),
+        GameEventKind::ResearchCancellationRejected(rejected) => {
+            format!("annulation de recherche refusée : {:?}", rejected.error,)
+        }
         GameEventKind::CraftQueued(queued) => format!(
-            "craft {:?} ajouté ({})",
-            queued.order.craftable, queued.queue_length,
+            "craft {:?} ajouté ({} unité(s), {})",
+            queued.craftable, queued.quantity_requested, queued.queue_length,
         ),
         GameEventKind::CraftCompleted(completed) => format!(
-            "craft {:?} terminé (stock {})",
-            completed.craftable, completed.inventory_quantity,
+            "craft {:?} terminé ({}/{}, stock {})",
+            completed.craftable,
+            completed.quantity_completed,
+            completed.quantity_completed + completed.quantity_remaining,
+            completed.inventory_quantity,
         ),
         GameEventKind::CraftRejected(rejected) => format!(
             "craft {:?} refusé : {:?}",
             rejected.craftable, rejected.error,
         ),
+        GameEventKind::CraftCancelled(cancelled) => format!(
+            "craft {:?} annulé ({} conservée(s), {} remboursée(s))",
+            cancelled.craftable, cancelled.quantity_completed, cancelled.quantity_refunded,
+        ),
+        GameEventKind::CraftCancellationRejected(rejected) => {
+            format!("annulation de craft refusée : {:?}", rejected.error,)
+        }
         GameEventKind::FleetCreated(created) => {
             format!("flotte {:?} formée", created.fleet_id)
         }

@@ -251,7 +251,7 @@ fn build_search_index(
                 continue;
             }
             let label = format!(
-                "#{} {} → {}",
+                "#{} {} -> {}",
                 mission.id.raw(),
                 mission_kind_label(mission.order.kind),
                 mission_target_label(simulation, mission.order.target),

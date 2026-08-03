@@ -63,10 +63,14 @@
             name: "Arche Pionnière",
             description: "Une implantation autonome réunie dans une coque lente et lourdement équipée.",
             category: Colony,
-            cost: (metal: 1200, crystal: 900, fuel: 700),
-            base_duration_seconds: 180,
+            cost: (metal: 2200, crystal: 1600, fuel: 1100),
+            base_duration_seconds: 420,
             result_quantity: 1,
-            building_prerequisites: [(id: "shipyard", level: 2)],
+            building_prerequisites: [
+                (id: "shipyard", level: 3),
+                (id: "warehouse", level: 3),
+                (id: "construction_center", level: 4),
+            ],
             technology_prerequisites: ["colonization"],
             capabilities: [(id: "colonization_capacity", value: 1)],
             ship: Some((

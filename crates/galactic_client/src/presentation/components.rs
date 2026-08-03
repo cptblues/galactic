@@ -284,6 +284,7 @@ pub(crate) enum ManagementButtonAction {
     LaunchTransport,
     SelectBuilding(galactic_sim::BuildingKind),
     UpgradeSelected,
+    CancelConstruction,
 }
 
 pub(crate) type ManagementButtonInteractionQuery<'w, 's> = Query<
@@ -370,6 +371,9 @@ pub(crate) type ManagementTransportPresetStyleQuery<'w, 's> = Query<
 
 #[derive(Component)]
 pub(crate) struct ManagementQueueProgressFill;
+
+#[derive(Component)]
+pub(crate) struct CancelConstructionButton;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InspectorSection {
     pub(crate) title: String,

@@ -219,6 +219,110 @@ pub(crate) fn management_building_button_outline(selected: bool) -> Color {
     }
 }
 
+/// A building's effect at a given set of levels, split so the caller can name production and
+/// energy separately and compute a numeric delta between two levels (MVP-030-A1: the previous
+/// single opaque string conflated both, in `/s`, with no comparison to the next level).
+struct BuildingLevelEffect {
+    /// Human-readable primary effect (production rate, capacity, bonus...).
+    label: String,
+    /// Primary effect as a plain number, when the effect reduces to one comparable value
+    /// (production rate in `/h`, energy production, construction-speed bonus, research/shipyard
+    /// points). `None` for `Storage`, whose three resource capacities don't reduce to one delta.
+    numeric: Option<f64>,
+    /// Net energy (produced minus consumed) at this level, always computable.
+    energy_net: i64,
+}
+
+fn building_level_effect(
+    colony: &galactic_sim::ColonyState,
+    kind: galactic_sim::BuildingKind,
+    levels: galactic_sim::BuildingLevels,
+) -> BuildingLevelEffect {
+    let mut preview = colony.clone();
+    preview.buildings = levels;
+    preview.energy = galactic_sim::default_building_catalog().energy_grid_for_levels(levels);
+    let production = galactic_sim::colony_production_snapshot(&preview);
+    let energy_net =
+        production.effective_energy_production as i64 - production.energy_consumption as i64;
+
+    let (label, numeric) = match galactic_sim::default_building_catalog()
+        .definition(kind)
+        .effect
+    {
+        galactic_sim::BuildingEffect::MetalProduction { .. } => {
+            let per_hour = (production.effective_rate.metal_per_second() * 3600.0).round();
+            (format!("+{per_hour:.0} métal/h"), Some(per_hour))
+        }
+        galactic_sim::BuildingEffect::CrystalProduction { .. } => {
+            let per_hour = (production.effective_rate.crystal_per_second() * 3600.0).round();
+            (format!("+{per_hour:.0} cristal/h"), Some(per_hour))
+        }
+        galactic_sim::BuildingEffect::FuelProduction { .. } => {
+            let per_hour = (production.effective_rate.fuel_per_second() * 3600.0).round();
+            (format!("+{per_hour:.0} carburant/h"), Some(per_hour))
+        }
+        galactic_sim::BuildingEffect::EnergyProduction { .. } => {
+            let value = production.effective_energy_production as f64;
+            (format!("{value:.0} énergie effective"), Some(value))
+        }
+        galactic_sim::BuildingEffect::Storage { .. } => (
+            format!(
+                "capacité {} métal, {} cristal, {} carburant",
+                production.capacity.metal, production.capacity.crystal, production.capacity.fuel,
+            ),
+            None,
+        ),
+        galactic_sim::BuildingEffect::ConstructionSpeed { permille_per_level } => {
+            let level = u64::from(levels.level(kind));
+            let bonus = permille_per_level.saturating_mul(level) / 10;
+            (
+                format!("vitesse de construction +{bonus}%"),
+                Some(bonus as f64),
+            )
+        }
+        galactic_sim::BuildingEffect::ResearchPoints { .. } => {
+            let (label, per_second) =
+                future_points_effect_label(kind, levels.level(kind), "recherche");
+            (label, Some(per_second))
+        }
+        galactic_sim::BuildingEffect::ShipyardPoints { .. } => {
+            let (label, per_second) =
+                future_points_effect_label(kind, levels.level(kind), "chantier");
+            (label, Some(per_second))
+        }
+    };
+
+    BuildingLevelEffect {
+        label,
+        numeric,
+        energy_net,
+    }
+}
+
+/// Renders a signed numeric delta between two levels' effect, e.g. `"  (+17)"` or `"  (-5)"` —
+/// empty when there is nothing comparable (`Storage`) or no real change.
+fn format_effect_delta(current: Option<f64>, next: Option<f64>) -> String {
+    match (current, next) {
+        (Some(current), Some(next)) => {
+            let delta = (next - current).round() as i64;
+            match delta.cmp(&0) {
+                std::cmp::Ordering::Greater => format!("  (+{delta})"),
+                std::cmp::Ordering::Less => format!("  ({delta})"),
+                std::cmp::Ordering::Equal => String::new(),
+            }
+        }
+        _ => String::new(),
+    }
+}
+
+fn signed_energy(net: i64) -> String {
+    if net > 0 {
+        format!("+{net}")
+    } else {
+        net.to_string()
+    }
+}
+
 pub(crate) fn building_management_detail_text(
     colony: &galactic_sim::ColonyState,
     kind: galactic_sim::BuildingKind,
@@ -229,23 +333,25 @@ pub(crate) fn building_management_detail_text(
     let actual_level = colony.buildings.level(kind);
     let projected_levels = galactic_sim::projected_building_levels(colony);
     let projected_level = projected_levels.level(kind);
-    let current_effect = building_effect_label(colony, kind, colony.buildings);
-    let projected_effect = building_effect_label(colony, kind, projected_levels);
+    let actual_effect = building_level_effect(colony, kind, colony.buildings);
 
     let mut lines = vec![
         definition.name.to_uppercase(),
         definition.description.to_string(),
-        format!(
-            "Niveau actif : {}  •  après la file : {}  •  maximum : {}",
-            actual_level, projected_level, definition.max_level,
-        ),
         String::new(),
-        "EFFET".to_string(),
-        format!("Actuel : {current_effect}"),
+        format!("Niveau actuel : {actual_level}"),
     ];
     if projected_level != actual_level {
-        lines.push(format!("Après la file : {projected_effect}",));
+        lines.push(format!("Niveau après la file actuelle : {projected_level}"));
     }
+    lines.push(format!("Niveau maximum : {}", definition.max_level));
+    lines.push(String::new());
+    lines.push("EFFET ACTUEL".to_string());
+    lines.push(format!("Production actuelle : {}", actual_effect.label));
+    lines.push(format!(
+        "Énergie actuelle : {}",
+        signed_energy(actual_effect.energy_net),
+    ));
 
     if projected_level >= definition.max_level {
         lines.push(String::new());
@@ -259,43 +365,76 @@ pub(crate) fn building_management_detail_text(
     let target_level = projected_level + 1;
     let mut next_levels = projected_levels;
     next_levels.set_level(kind, target_level);
-    let next_effect = building_effect_label(colony, kind, next_levels);
+    let reference_effect = building_level_effect(colony, kind, projected_levels);
     let cost = definition
         .cost_for_level(target_level)
         .expect("catalog target level is valid");
-    let duration = definition
+    let base_duration = definition
         .duration_for_level(target_level)
         .expect("catalog target level is valid");
 
-    lines.extend([
-        format!("Prochain niveau : {next_effect}"),
-        String::new(),
-        format!("AMÉLIORATION VERS LE NIVEAU {}", target_level,),
-        format!("Coût : {}", construction_cost_label(cost),),
-        format!(
-            "Durée catalogue : {}",
-            format_strategic_duration(galactic_sim::StrategicDuration::from_ticks(duration,),),
-        ),
-    ]);
+    lines.push(String::new());
+    lines.push(format!("PROCHAIN NIVEAU : {target_level}"));
 
     match quote {
         Ok(value) => {
+            // The quote's projected energy is authoritative (accounts for the
+            // `EnergyDeficit` check and real modifiers) — prefer it over our own preview
+            // when available, falling back to the local preview only when blocked below.
+            let next_effect = building_level_effect(colony, kind, next_levels);
+            let production_delta =
+                format_effect_delta(reference_effect.numeric, next_effect.numeric);
+            let projected_net = value.projected_energy_production as i64
+                - value.projected_energy_consumption as i64;
+            let energy_delta = format_effect_delta(
+                Some(reference_effect.energy_net as f64),
+                Some(projected_net as f64),
+            );
             lines.push(format!(
-                "Durée effective : {}",
-                format_strategic_duration(galactic_sim::StrategicDuration::from_ticks(
-                    value.duration_ticks,
-                ),),
+                "Production prévue : {}{production_delta}",
+                next_effect.label,
             ));
             lines.push(format!(
-                "Énergie projetée : {} produite / {} consommée",
-                value.projected_energy_production, value.projected_energy_consumption,
+                "Énergie prévue : {}{energy_delta}",
+                signed_energy(projected_net),
+            ));
+            lines.push(String::new());
+            lines.push(format!("Coût : {}", construction_cost_label(cost)));
+            lines.push(format!(
+                "Durée : {}",
+                format_strategic_duration(galactic_sim::StrategicDuration::from_ticks(
+                    value.duration_ticks,
+                )),
             ));
             lines.push(String::new());
             lines.push("Prêt à être ajouté à la file.".to_string());
         }
         Err(error) => {
+            let next_effect = building_level_effect(colony, kind, next_levels);
+            let production_delta =
+                format_effect_delta(reference_effect.numeric, next_effect.numeric);
+            let energy_delta = format_effect_delta(
+                Some(reference_effect.energy_net as f64),
+                Some(next_effect.energy_net as f64),
+            );
+            lines.push(format!(
+                "Production prévue : {}{production_delta}",
+                next_effect.label,
+            ));
+            lines.push(format!(
+                "Énergie prévue : {}{energy_delta}",
+                signed_energy(next_effect.energy_net),
+            ));
             lines.push(String::new());
-            lines.push(format!("BLOCAGE : {}", construction_error_text(error),));
+            lines.push(format!("Coût : {}", construction_cost_label(cost)));
+            lines.push(format!(
+                "Durée : {}",
+                format_strategic_duration(galactic_sim::StrategicDuration::from_ticks(
+                    base_duration,
+                )),
+            ));
+            lines.push(String::new());
+            lines.push(format!("BLOCAGE : {}", construction_error_text(error)));
         }
     }
 
@@ -305,65 +444,11 @@ pub(crate) fn building_management_detail_text(
     )
 }
 
-fn building_effect_label(
-    colony: &galactic_sim::ColonyState,
+fn future_points_effect_label(
     kind: galactic_sim::BuildingKind,
-    levels: galactic_sim::BuildingLevels,
-) -> String {
-    let mut preview = colony.clone();
-    preview.buildings = levels;
-    preview.energy = galactic_sim::default_building_catalog().energy_grid_for_levels(levels);
-    let production = galactic_sim::colony_production_snapshot(&preview);
-
-    match galactic_sim::default_building_catalog()
-        .definition(kind)
-        .effect
-    {
-        galactic_sim::BuildingEffect::MetalProduction { .. } => {
-            format!(
-                "+{:.2} métal/s",
-                production.effective_rate.metal_per_second(),
-            )
-        }
-        galactic_sim::BuildingEffect::CrystalProduction { .. } => {
-            format!(
-                "+{:.2} cristal/s",
-                production.effective_rate.crystal_per_second(),
-            )
-        }
-        galactic_sim::BuildingEffect::FuelProduction { .. } => {
-            format!(
-                "+{:.2} carburant/s",
-                production.effective_rate.fuel_per_second(),
-            )
-        }
-        galactic_sim::BuildingEffect::EnergyProduction { .. } => {
-            format!(
-                "{} énergie effective",
-                production.effective_energy_production,
-            )
-        }
-        galactic_sim::BuildingEffect::Storage { .. } => {
-            format!(
-                "capacité {}/{}/{}",
-                production.capacity.metal, production.capacity.crystal, production.capacity.fuel,
-            )
-        }
-        galactic_sim::BuildingEffect::ConstructionSpeed { permille_per_level } => {
-            let level = u64::from(levels.level(kind));
-            let bonus = permille_per_level.saturating_mul(level) / 10;
-            format!("vitesse de construction +{bonus}%")
-        }
-        galactic_sim::BuildingEffect::ResearchPoints { .. } => {
-            future_points_effect_label(kind, levels.level(kind), "recherche")
-        }
-        galactic_sim::BuildingEffect::ShipyardPoints { .. } => {
-            future_points_effect_label(kind, levels.level(kind), "chantier")
-        }
-    }
-}
-
-fn future_points_effect_label(kind: galactic_sim::BuildingKind, level: u8, label: &str) -> String {
+    level: u8,
+    label: &str,
+) -> (String, f64) {
     let definition = galactic_sim::default_building_catalog().definition(kind);
     let milli_per_tick = match definition.effect {
         galactic_sim::BuildingEffect::ResearchPoints {
@@ -378,7 +463,7 @@ fn future_points_effect_label(kind: galactic_sim::BuildingKind, level: u8, label
         * f64::from(level)
         * f64::from(galactic_sim::STRATEGIC_TICKS_PER_SECOND)
         / 1_000.0;
-    format!("{per_second:.2} points de {label}/s")
+    (format!("{per_second:.2} points de {label}/s"), per_second)
 }
 
 pub(crate) fn construction_queue_detail_label(colony: &galactic_sim::ColonyState) -> String {
@@ -476,6 +561,9 @@ pub(crate) fn construction_error_text(error: galactic_sim::ConstructionError) ->
         }
         galactic_sim::ConstructionError::Catalog(_) => "Règle catalogue invalide".to_string(),
         galactic_sim::ConstructionError::Reservation(_) => "Réservation impossible".to_string(),
+        galactic_sim::ConstructionError::NoActiveOrder => {
+            "Aucune construction en cours".to_string()
+        }
     }
 }
 
@@ -599,9 +687,43 @@ mod tests {
             building_management_detail_text(colony, galactic_sim::BuildingKind::METAL_MINE, quote);
 
         assert!(text.contains("FOSSE SIDÉRURGIQUE"));
-        assert!(text.contains("Niveau actif"));
+        assert!(text.contains("Niveau actuel"));
         assert!(text.contains("Coût"));
-        assert!(text.contains("Actuel"));
+        assert!(text.contains("Production actuelle"));
+        assert!(text.contains("Énergie actuelle"));
+        assert!(text.contains("Production prévue"));
+        assert!(text.contains("Énergie prévue"));
+        assert!(
+            !text.contains("métal/s"),
+            "rates must be named per hour, not per second"
+        );
+    }
+
+    #[test]
+    fn building_detail_shows_a_signed_delta_between_current_and_next_level() {
+        let simulation = Simulation::new(UniverseConfig::mvp());
+        let colony = simulation
+            .state()
+            .player_home_colony()
+            .expect("home colony exists");
+        let quote = galactic_sim::building_upgrade_quote(
+            simulation.state(),
+            simulation.state().player_faction,
+            colony.id,
+            galactic_sim::BuildingKind::METAL_MINE,
+        );
+
+        let text =
+            building_management_detail_text(colony, galactic_sim::BuildingKind::METAL_MINE, quote);
+
+        let production_line = text
+            .lines()
+            .find(|line| line.starts_with("Production prévue"))
+            .expect("a production line for the next level is present");
+        assert!(
+            production_line.contains('(') && production_line.contains(')'),
+            "a level-up must show a non-zero production delta: {production_line}",
+        );
     }
 
     #[test]

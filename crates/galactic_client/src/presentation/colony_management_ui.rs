@@ -61,8 +61,22 @@ pub(crate) fn handle_colony_management_buttons(
             ManagementButtonAction::UpgradeSelected => {
                 queue_selected_management_upgrade(&mut management, &mut simulation);
             }
+            ManagementButtonAction::CancelConstruction => {
+                cancel_active_construction(&mut management, &mut simulation);
+            }
         }
     }
+}
+
+pub(crate) fn cancel_active_construction(
+    management: &mut ColonyManagementState,
+    simulation: &mut SimulationResource,
+) {
+    let Some(colony_id) = simulation.simulation().state().active_colony_id else {
+        management.feedback = "Aucune colonie active.".to_string();
+        return;
+    };
+    apply_simulation_command(simulation, GameAction::CancelConstruction { colony_id });
 }
 
 pub(crate) fn capture_colony_management_feedback(
@@ -98,6 +112,23 @@ pub(crate) fn capture_colony_management_feedback(
             {
                 management.feedback = format!(
                     "Amélioration refusée : {}",
+                    construction_error_text(rejected.error),
+                );
+            }
+            GameEventKind::ConstructionCancelled(cancelled)
+                if Some(cancelled.colony_id) == active_colony_id =>
+            {
+                let name = &galactic_sim::default_building_catalog()
+                    .definition(cancelled.kind)
+                    .name;
+                management.feedback =
+                    format!("Amélioration de {name} annulée, ressources remboursées.",);
+            }
+            GameEventKind::ConstructionCancellationRejected(rejected)
+                if Some(rejected.colony_id) == active_colony_id =>
+            {
+                management.feedback = format!(
+                    "Annulation refusée : {}",
                     construction_error_text(rejected.error),
                 );
             }
@@ -270,7 +301,7 @@ pub(crate) fn update_colony_management_buildings(
         let active_level = colony.buildings.level(label.kind);
         let projected_level = projected.level(label.kind);
         let queue_suffix = if projected_level > active_level {
-            format!("  → {} en file", projected_level)
+            format!("  -> {} en file", projected_level)
         } else {
             String::new()
         };
@@ -343,6 +374,10 @@ pub(crate) fn update_colony_management_queue(
     open_panel: Res<OpenPanel>,
     mut texts: Query<(&ManagementTextRole, &mut Text)>,
     mut progress: Query<&mut Node, With<ManagementQueueProgressFill>>,
+    mut cancel_button: Query<
+        (&Interaction, &mut BackgroundColor, &mut Outline),
+        With<CancelConstructionButton>,
+    >,
 ) {
     if *open_panel != OpenPanel::Colony {
         return;
@@ -361,6 +396,12 @@ pub(crate) fn update_colony_management_queue(
     let ratio = construction_progress_ratio(colony);
     for mut node in &mut progress {
         node.width = Val::Percent((ratio * 100.0).clamp(0.0, 100.0));
+    }
+
+    let can_cancel = !colony.construction_queue.is_empty();
+    for (interaction, mut background, mut outline) in &mut cancel_button {
+        background.0 = action_button_color(can_cancel, false, interaction);
+        outline.color = action_button_outline(can_cancel, false, interaction);
     }
 }
 
@@ -485,11 +526,7 @@ pub(crate) fn colony_list_label(simulation: &Simulation) -> String {
         .into_iter()
         .filter_map(|colony_id| {
             state.colony(colony_id).map(|colony| {
-                let marker = if Some(colony_id) == active {
-                    "●"
-                } else {
-                    "○"
-                };
+                let marker = if Some(colony_id) == active { "*" } else { "-" };
                 format!("{marker} C{} {}", colony_id.raw(), colony.name)
             })
         })

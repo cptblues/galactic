@@ -933,7 +933,7 @@ VmSwap:\t      2048 kB
                 .active_player_colony()
                 .map(|colony| colony.id),
         );
-        assert!(colony_list_label(&simulation).contains("● C0 Port-Sillage"));
+        assert!(colony_list_label(&simulation).contains("* C0 Port-Sillage"));
     }
 
     #[test]
@@ -968,7 +968,7 @@ VmSwap:\t      2048 kB
             simulation.simulation().state().active_colony_id,
             Some(galactic_domain::ColonyId::new(1)),
         );
-        assert!(colony_list_label(simulation.simulation()).contains("● C1 Relais Boréal"));
+        assert!(colony_list_label(simulation.simulation()).contains("* C1 Relais Boréal"));
     }
 
     #[test]
@@ -1592,6 +1592,7 @@ VmSwap:\t      2048 kB
         simulation.apply_player_action(GameAction::QueueCraft {
             colony_id,
             craftable: galactic_sim::CraftableId::LIGHT_PROBE,
+            quantity: 1,
         });
         simulation.advance(Duration::from_secs(50));
         simulation.apply_player_action(GameAction::LaunchProbe {

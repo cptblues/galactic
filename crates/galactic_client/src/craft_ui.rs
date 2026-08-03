@@ -1,9 +1,10 @@
 // MVP-017: dedicated minimal shipyard screen.
 use bevy::prelude::*;
 use galactic_sim::{
-    CraftError, CraftQuote, CraftableId, GameAction, GameEventKind, StrategicDuration,
-    craft_progress_ratio, craft_quote, craftable_catalog, craftable_definition, max_craft_queue,
-    shipyard_output_milli_per_tick, shipyard_output_points_per_second, technology_definition,
+    CraftError, CraftQuote, CraftableId, GameAction, GameEventKind, MAX_CRAFT_BATCH_QUANTITY,
+    StrategicDuration, craft_progress_ratio, craft_quote, craftable_catalog, craftable_definition,
+    max_affordable_quantity, max_craft_queue, shipyard_output_milli_per_tick,
+    shipyard_output_points_per_second, technology_definition,
 };
 
 use super::{
@@ -51,6 +52,7 @@ impl Plugin for CraftUiPlugin {
 #[derive(Resource)]
 pub(crate) struct CraftUiState {
     selected: CraftableId,
+    quantity: u64,
     feedback: String,
 }
 
@@ -61,6 +63,7 @@ impl Default for CraftUiState {
                 .ids()
                 .next()
                 .expect("validated ruleset contains at least one craftable"),
+            quantity: 1,
             feedback: String::new(),
         }
     }
@@ -73,7 +76,10 @@ enum CraftButtonAction {
     PreviousColony,
     NextColony,
     Select(CraftableId),
+    AdjustQuantity(i64),
+    SetQuantityMax,
     QueueSelected,
+    CancelActive,
 }
 
 type CraftButtonInteractionQuery<'w, 's> = Query<
@@ -81,6 +87,17 @@ type CraftButtonInteractionQuery<'w, 's> = Query<
     's,
     (&'static Interaction, &'static CraftButtonAction),
     (Changed<Interaction>, With<Button>),
+>;
+
+type CraftCancelButtonStyleQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static Interaction,
+        &'static mut BackgroundColor,
+        &'static mut Outline,
+    ),
+    (With<CancelCraftButton>, Without<QueueCraftButton>),
 >;
 
 #[derive(Component)]
@@ -92,6 +109,7 @@ enum CraftTextRole {
     Title,
     Summary,
     Detail,
+    Quantity,
     Queue,
     QueueButton,
     Feedback,
@@ -109,6 +127,9 @@ struct CraftableButtonText {
 
 #[derive(Component)]
 struct QueueCraftButton;
+
+#[derive(Component)]
+struct CancelCraftButton;
 
 #[derive(Component)]
 struct CraftProgressFill;
@@ -147,7 +168,7 @@ fn spawn_craft_screen(mut commands: Commands) {
                 position_type: PositionType::Absolute,
                 left: Val::Px(14.0),
                 right: Val::Px(14.0),
-                top: Val::Px(72.0),
+                top: Val::Px(112.0),
                 bottom: Val::Px(14.0),
                 padding: UiRect::all(Val::Px(12.0)),
                 border: UiRect::all(Val::Px(1.0)),
@@ -214,8 +235,13 @@ fn spawn_craft_header(root: &mut ChildSpawnerCommands) {
                 },
                 CraftTextRole::Title,
             ));
-            spawn_craft_small_button(header, "◀", CraftButtonAction::PreviousColony, 36.0);
-            spawn_craft_small_button(header, "▶", CraftButtonAction::NextColony, 36.0);
+            spawn_craft_small_button(
+                header,
+                "< Précédente",
+                CraftButtonAction::PreviousColony,
+                92.0,
+            );
+            spawn_craft_small_button(header, "Suivante >", CraftButtonAction::NextColony, 92.0);
             spawn_craft_small_button(
                 header,
                 "Fermer  [Y / Échap]",
@@ -363,6 +389,32 @@ fn spawn_craftable_detail(row: &mut ChildSpawnerCommands) {
             CraftTextRole::Detail,
         ));
         detail
+            .spawn(Node {
+                width: Val::Percent(100.0),
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                column_gap: Val::Px(6.0),
+                ..default()
+            })
+            .with_children(|row| {
+                spawn_quantity_button(row, "-10", CraftButtonAction::AdjustQuantity(-10));
+                spawn_quantity_button(row, "-1", CraftButtonAction::AdjustQuantity(-1));
+                row.spawn((
+                    Text::new("1"),
+                    ui_text_font(13.0),
+                    TextColor(Color::srgb(1.0, 0.92, 0.80)),
+                    Node {
+                        width: Val::Px(64.0),
+                        justify_content: JustifyContent::Center,
+                        ..default()
+                    },
+                    CraftTextRole::Quantity,
+                ));
+                spawn_quantity_button(row, "+1", CraftButtonAction::AdjustQuantity(1));
+                spawn_quantity_button(row, "+10", CraftButtonAction::AdjustQuantity(10));
+                spawn_quantity_button(row, "MAX", CraftButtonAction::SetQuantityMax);
+            });
+        detail
             .spawn((
                 Button,
                 Node {
@@ -390,6 +442,42 @@ fn spawn_craftable_detail(row: &mut ChildSpawnerCommands) {
                 ));
             });
     });
+}
+
+fn spawn_quantity_button(
+    parent: &mut ChildSpawnerCommands,
+    label: &str,
+    action: CraftButtonAction,
+) {
+    parent
+        .spawn((
+            Button,
+            Node {
+                min_width: Val::Px(42.0),
+                min_height: Val::Px(30.0),
+                padding: UiRect::axes(Val::Px(8.0), Val::Px(5.0)),
+                border: UiRect::all(Val::Px(1.0)),
+                border_radius: BorderRadius::all(Val::Px(5.0)),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.15, 0.09, 0.04, 0.98)),
+            Outline::new(
+                Val::Px(1.0),
+                Val::ZERO,
+                Color::srgba(0.94, 0.54, 0.20, 0.60),
+            ),
+            action,
+            UiPointerBlocker,
+        ))
+        .with_children(|button| {
+            button.spawn((
+                Text::new(label),
+                ui_text_font(11.0),
+                TextColor(Color::srgb(0.94, 0.84, 0.72)),
+            ));
+        });
 }
 
 fn spawn_craft_queue(row: &mut ChildSpawnerCommands) {
@@ -440,6 +528,36 @@ fn spawn_craft_queue(row: &mut ChildSpawnerCommands) {
             TextColor(Color::srgb(0.92, 0.84, 0.74)),
             CraftTextRole::Queue,
         ));
+        queue
+            .spawn((
+                Button,
+                Node {
+                    width: Val::Percent(100.0),
+                    min_height: Val::Px(32.0),
+                    padding: UiRect::axes(Val::Px(10.0), Val::Px(6.0)),
+                    border: UiRect::all(Val::Px(1.0)),
+                    border_radius: BorderRadius::all(Val::Px(5.0)),
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.34, 0.08, 0.06, 0.94)),
+                Outline::new(
+                    Val::Px(1.0),
+                    Val::ZERO,
+                    Color::srgba(0.86, 0.36, 0.28, 0.60),
+                ),
+                CraftButtonAction::CancelActive,
+                CancelCraftButton,
+                UiPointerBlocker,
+            ))
+            .with_children(|button| {
+                button.spawn((
+                    Text::new("Annuler la fabrication en cours"),
+                    ui_text_font(11.0),
+                    TextColor(Color::srgb(1.0, 0.82, 0.78)),
+                ));
+            });
     });
 }
 
@@ -504,9 +622,17 @@ fn handle_craft_buttons(
             }
             CraftButtonAction::Select(craftable) => {
                 ui.selected = craftable;
+                ui.quantity = 1;
                 ui.feedback.clear();
             }
+            CraftButtonAction::AdjustQuantity(delta) => {
+                adjust_craft_quantity(&mut ui, &simulation, delta);
+            }
+            CraftButtonAction::SetQuantityMax => {
+                set_craft_quantity_max(&mut ui, &simulation);
+            }
             CraftButtonAction::QueueSelected => queue_selected_craft(&mut simulation, &mut ui),
+            CraftButtonAction::CancelActive => cancel_active_craft(&mut simulation, &mut ui),
         }
     }
 }
@@ -516,22 +642,49 @@ fn capture_craft_feedback(simulation: Res<SimulationResource>, mut ui: ResMut<Cr
     for event in &simulation.pending_events {
         match event.kind {
             GameEventKind::CraftQueued(queued) if Some(queued.colony_id) == active_colony_id => {
-                let definition = craftable_definition(queued.order.craftable);
-                ui.feedback = format!("{} ajouté à la file.", definition.name);
+                let definition = craftable_definition(queued.craftable);
+                ui.feedback = format!(
+                    "{} × {} ajouté à la file.",
+                    queued.quantity_requested, definition.name,
+                );
             }
             GameEventKind::CraftCompleted(completed)
                 if Some(completed.colony_id) == active_colony_id =>
             {
                 let definition = craftable_definition(completed.craftable);
-                ui.feedback = format!(
-                    "{} terminé — {} unité(s) disponible(s).",
-                    definition.name, completed.inventory_quantity,
-                );
+                ui.feedback = if completed.quantity_remaining > 0 {
+                    format!(
+                        "{} : {}/{} unité(s) — {} disponible(s).",
+                        definition.name,
+                        completed.quantity_completed,
+                        completed.quantity_completed + completed.quantity_remaining,
+                        completed.inventory_quantity,
+                    )
+                } else {
+                    format!(
+                        "{} terminé — {} unité(s) disponible(s).",
+                        definition.name, completed.inventory_quantity,
+                    )
+                };
             }
             GameEventKind::CraftRejected(rejected)
                 if Some(rejected.colony_id) == active_colony_id =>
             {
                 ui.feedback = format!("Fabrication refusée : {}", craft_error_text(rejected.error));
+            }
+            GameEventKind::CraftCancelled(cancelled)
+                if Some(cancelled.colony_id) == active_colony_id =>
+            {
+                let definition = craftable_definition(cancelled.craftable);
+                ui.feedback = format!(
+                    "{} annulé — {} unité(s) conservée(s), {} remboursée(s).",
+                    definition.name, cancelled.quantity_completed, cancelled.quantity_refunded,
+                );
+            }
+            GameEventKind::CraftCancellationRejected(rejected)
+                if Some(rejected.colony_id) == active_colony_id =>
+            {
+                ui.feedback = format!("Annulation refusée : {}", craft_error_text(rejected.error));
             }
             _ => {}
         }
@@ -592,7 +745,7 @@ fn update_craft_summary(
                     || "Aucune colonie contrôlée.".to_string(),
                     |colony| {
                         format!(
-                            "Cadence : {:.2} point(s)/s  •  file : {}/{}  •  ressources disponibles : {} / {} / {}",
+                            "Cadence : {:.2} point(s)/s  •  file : {}/{}  •  ressources disponibles : {} métal, {} cristal, {} carburant",
                             shipyard_output_points_per_second(colony),
                             colony.craft_queue.len(),
                             max_craft_queue(),
@@ -655,6 +808,7 @@ fn update_craft_detail(
     open_panel: Res<OpenPanel>,
     mut texts: Query<(&CraftTextRole, &mut Text, &mut TextColor)>,
     mut button: Query<(&Interaction, &mut BackgroundColor, &mut Outline), With<QueueCraftButton>>,
+    mut cancel_button: CraftCancelButtonStyleQuery,
 ) {
     if *open_panel != OpenPanel::Craft {
         return;
@@ -662,20 +816,35 @@ fn update_craft_detail(
     let state = simulation.simulation().state();
     let quote = state
         .active_colony_id
-        .map(|colony_id| craft_quote(state, state.player_faction, colony_id, ui.selected))
+        .map(|colony_id| {
+            craft_quote(
+                state,
+                state.player_faction,
+                colony_id,
+                ui.selected,
+                ui.quantity,
+            )
+        })
         .unwrap_or(Err(CraftError::NoShipyardCapacity));
     let available = quote.is_ok();
-    let detail = craft_detail_text(ui.selected, quote);
+    let detail = craft_detail_text(ui.selected, ui.quantity, quote);
     let button_label = match quote {
         Ok(_) => "AJOUTER À LA FILE".to_string(),
         Err(error) => craft_error_text(error),
     };
+    let can_cancel = state
+        .active_colony_id
+        .and_then(|id| state.colony(id))
+        .is_some_and(|colony| !colony.craft_queue.is_empty());
 
     for (role, mut text, mut color) in &mut texts {
         match role {
             CraftTextRole::Detail => {
                 text.0 = detail.clone();
                 color.0 = Color::srgb(0.94, 0.88, 0.80);
+            }
+            CraftTextRole::Quantity => {
+                text.0 = ui.quantity.to_string();
             }
             CraftTextRole::QueueButton => {
                 text.0 = button_label.clone();
@@ -692,6 +861,11 @@ fn update_craft_detail(
     for (interaction, mut background, mut outline) in &mut button {
         background.0 = action_button_color(available, false, interaction);
         outline.color = action_button_outline(available, false, interaction);
+    }
+
+    for (interaction, mut background, mut outline) in &mut cancel_button {
+        background.0 = action_button_color(can_cancel, false, interaction);
+        outline.color = action_button_outline(can_cancel, false, interaction);
     }
 }
 
@@ -715,7 +889,6 @@ fn update_craft_queue(
 
     let ratio = colony
         .and_then(|colony| colony.craft_queue.active())
-        .copied()
         .map(craft_progress_ratio)
         .unwrap_or(0.0);
     for mut node in &mut progress {
@@ -729,19 +902,66 @@ fn queue_selected_craft(simulation: &mut SimulationResource, ui: &mut CraftUiSta
         return;
     };
     let state = simulation.simulation().state();
-    match craft_quote(state, state.player_faction, colony_id, ui.selected) {
-        Ok(_) => apply_simulation_command(
-            simulation,
-            GameAction::QueueCraft {
-                colony_id,
-                craftable: ui.selected,
-            },
-        ),
+    match craft_quote(
+        state,
+        state.player_faction,
+        colony_id,
+        ui.selected,
+        ui.quantity,
+    ) {
+        Ok(_) => {
+            apply_simulation_command(
+                simulation,
+                GameAction::QueueCraft {
+                    colony_id,
+                    craftable: ui.selected,
+                    quantity: ui.quantity,
+                },
+            );
+            ui.quantity = 1;
+        }
         Err(error) => ui.feedback = craft_error_text(error),
     }
 }
 
-fn craft_detail_text(craftable: CraftableId, quote: Result<CraftQuote, CraftError>) -> String {
+/// The largest batch the active colony can currently afford for `craftable` — used to clamp
+/// both the stepper buttons and the MAX control (MVP-030-A3).
+fn max_affordable_craft_quantity(simulation: &SimulationResource, craftable: CraftableId) -> u64 {
+    let state = simulation.simulation().state();
+    let Some(colony) = state.active_colony_id.and_then(|id| state.colony(id)) else {
+        return 1;
+    };
+    max_affordable_quantity(
+        colony.resources.available(),
+        craftable_definition(craftable).cost,
+    )
+    .max(1)
+}
+
+fn adjust_craft_quantity(ui: &mut CraftUiState, simulation: &SimulationResource, delta: i64) {
+    let max = max_affordable_craft_quantity(simulation, ui.selected).min(MAX_CRAFT_BATCH_QUANTITY);
+    let next = (ui.quantity as i64).saturating_add(delta).max(1) as u64;
+    ui.quantity = next.min(max);
+}
+
+fn set_craft_quantity_max(ui: &mut CraftUiState, simulation: &SimulationResource) {
+    ui.quantity =
+        max_affordable_craft_quantity(simulation, ui.selected).min(MAX_CRAFT_BATCH_QUANTITY);
+}
+
+fn cancel_active_craft(simulation: &mut SimulationResource, ui: &mut CraftUiState) {
+    let Some(colony_id) = simulation.simulation().state().active_colony_id else {
+        ui.feedback = "Aucune colonie contrôlée.".to_string();
+        return;
+    };
+    apply_simulation_command(simulation, GameAction::CancelCraft { colony_id });
+}
+
+fn craft_detail_text(
+    craftable: CraftableId,
+    quantity: u64,
+    quote: Result<CraftQuote, CraftError>,
+) -> String {
     let definition = craftable_definition(craftable);
     let buildings = definition
         .building_prerequisites
@@ -776,11 +996,11 @@ fn craft_detail_text(craftable: CraftableId, quote: Result<CraftQuote, CraftErro
         definition.description.to_string(),
         String::new(),
         format!(
-            "Coût : {} métal • {} cristal • {} carburant",
+            "Coût unitaire : {} métal • {} cristal • {} carburant",
             definition.cost.metal, definition.cost.crystal, definition.cost.fuel,
         ),
         format!(
-            "Durée de base : {}",
+            "Durée unitaire : {}",
             format_strategic_duration(StrategicDuration::from_ticks(
                 definition.base_duration_ticks,
             )),
@@ -788,10 +1008,30 @@ fn craft_detail_text(craftable: CraftableId, quote: Result<CraftQuote, CraftErro
         format!("Bâtiments requis : {buildings}"),
         format!("Technologies requises : {technologies}"),
         format!("Capacités : {capabilities}"),
+        String::new(),
+        format!("Quantité demandée : {quantity}"),
+        format!(
+            "Coût total : {} métal • {} cristal • {} carburant",
+            definition.cost.metal * quantity,
+            definition.cost.crystal * quantity,
+            definition.cost.fuel * quantity,
+        ),
     ];
 
     match quote {
         Ok(value) => lines.extend([
+            format!(
+                "Durée totale estimée : {}",
+                format_strategic_duration(StrategicDuration::from_ticks(
+                    value
+                        .total_required_work_milli
+                        .div_ceil(value.output_milli_per_tick.max(1)),
+                )),
+            ),
+            format!(
+                "Quantité finançable actuellement : {}",
+                value.max_affordable_quantity
+            ),
             String::new(),
             format!(
                 "Cadence actuelle : {:.2} point(s)/s",
@@ -800,10 +1040,9 @@ fn craft_detail_text(craftable: CraftableId, quote: Result<CraftQuote, CraftErro
                     / 1_000.0,
             ),
             format!(
-                "Durée estimée : {}",
-                format_strategic_duration(StrategicDuration::from_ticks(value.estimated_ticks)),
+                "Résultat : {} unité(s) par exemplaire construit",
+                value.result_quantity_per_unit
             ),
-            format!("Résultat : {} unité(s)", value.result_quantity),
         ]),
         Err(error) => lines.extend([
             String::new(),
@@ -840,14 +1079,21 @@ fn craft_queue_text(colony: &galactic_sim::ColonyState) -> String {
                     ))
                 };
                 lines.push(format!(
-                    "EN COURS\n{}. {}\n{:.1} %\n{} restante(s)",
+                    "EN COURS\n{}. {} : {}/{} unité(s)\n{:.1} % de l'unité en cours\n{} restante(s)",
                     index + 1,
                     definition.name,
-                    craft_progress_ratio(*order) * 100.0,
+                    order.quantity_completed,
+                    order.quantity_requested,
+                    craft_progress_ratio(order) * 100.0,
                     remaining,
                 ));
             } else {
-                lines.push(format!("\nEN ATTENTE\n{}. {}", index + 1, definition.name));
+                lines.push(format!(
+                    "\nEN ATTENTE\n{}. {} : {} unité(s)",
+                    index + 1,
+                    definition.name,
+                    order.quantity_requested,
+                ));
             }
         }
         lines.push(format!(
@@ -897,11 +1143,15 @@ fn craft_error_text(error: CraftError) -> String {
         }
         CraftError::NoShipyardCapacity => "Chantier orbital requis".to_string(),
         CraftError::InsufficientResources { available, cost } => format!(
-            "Ressources insuffisantes — dispo {}/{}/{} • coût {}/{}/{}",
+            "Ressources insuffisantes — dispo {} métal, {} cristal, {} carburant • coût {} métal, {} cristal, {} carburant",
             available.metal, available.crystal, available.fuel, cost.metal, cost.crystal, cost.fuel,
         ),
         CraftError::InventoryOverflow(_) => "Capacité d'inventaire dépassée".to_string(),
         CraftError::Reservation(_) => "Réservation des ressources impossible".to_string(),
+        CraftError::InvalidQuantity { requested, maximum } => {
+            format!("Quantité invalide ({requested}, maximum {maximum})")
+        }
+        CraftError::NoActiveOrder => "Aucune fabrication en cours".to_string(),
     }
 }
 
@@ -996,7 +1246,7 @@ mod tests {
         let craftable = first_craftable();
         let quote = Err(CraftError::NoShipyardCapacity);
 
-        let text = craft_detail_text(craftable, quote);
+        let text = craft_detail_text(craftable, 1, quote);
 
         assert!(text.contains("BLOCAGE"));
         assert!(text.contains("Chantier orbital requis"));
@@ -1047,12 +1297,43 @@ mod tests {
             simulation.state().player_faction,
             colony_id,
             craftable,
+            1,
         );
 
-        let text = craft_detail_text(craftable, quote);
+        let text = craft_detail_text(craftable, 1, quote);
 
-        assert!(text.contains("Durée estimée"));
+        assert!(text.contains("Durée totale estimée"));
         assert!(text.contains("Résultat"));
+    }
+
+    #[test]
+    fn craft_detail_text_shows_the_total_cost_of_a_batch() {
+        let simulation = simulation_with_shipyard();
+        let colony_id = simulation
+            .state()
+            .active_player_colony()
+            .expect("home colony exists")
+            .id;
+        let craftable = CraftableId::LIGHT_PROBE;
+        let unit_cost = craftable_definition(craftable).cost;
+        let quantity = 4;
+        let quote = craft_quote(
+            simulation.state(),
+            simulation.state().player_faction,
+            colony_id,
+            craftable,
+            quantity,
+        );
+
+        let text = craft_detail_text(craftable, quantity, quote);
+
+        assert!(text.contains(&format!("Quantité demandée : {quantity}")));
+        assert!(text.contains(&format!(
+            "Coût total : {} métal • {} cristal • {} carburant",
+            unit_cost.metal * quantity,
+            unit_cost.crystal * quantity,
+            unit_cost.fuel * quantity,
+        )));
     }
 
     #[test]
@@ -1081,6 +1362,7 @@ mod tests {
         simulation.apply_player_action(GameAction::QueueCraft {
             colony_id,
             craftable,
+            quantity: 1,
         });
         let colony = simulation
             .state()

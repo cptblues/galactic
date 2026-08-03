@@ -7,10 +7,10 @@ use crate::{
     ColonySelectionRejected, CommandRejection, GameAction, GameCommand, GameEvent, GameEventKind,
     GameState, MissionEngineEvent, SelectionTarget, StartingScenario, StrategicDuration,
     UniverseRepository, advance_colony_construction, advance_colony_craft, advance_missions,
-    advance_research, analyze_planet, cancel_mission, enqueue_building_upgrade, enqueue_craft,
-    enqueue_research, form_fleet, launch_attack_mission, launch_colonization_mission,
-    launch_harvest_mission, launch_mission, launch_probe_mission, launch_transport_mission,
-    queue_colony_production,
+    advance_research, analyze_planet, cancel_construction, cancel_craft, cancel_mission,
+    cancel_research, enqueue_building_upgrade, enqueue_craft, enqueue_research, form_fleet,
+    launch_attack_mission, launch_colonization_mission, launch_harvest_mission, launch_mission,
+    launch_probe_mission, launch_transport_mission, queue_colony_production,
 };
 
 mod build_error;
@@ -137,13 +137,36 @@ impl Simulation {
             GameAction::QueueCraft {
                 colony_id,
                 craftable,
-            } => match enqueue_craft(&mut self.state, issuer, colony_id, craftable) {
+                quantity,
+            } => match enqueue_craft(&mut self.state, issuer, colony_id, craftable, quantity) {
                 Ok(queued) => vec![GameEventKind::CraftQueued(queued)],
                 Err(error) => vec![GameEventKind::CraftRejected(crate::CraftRejected {
                     colony_id,
                     craftable,
                     error,
                 })],
+            },
+            GameAction::CancelCraft { colony_id } => {
+                match cancel_craft(&mut self.state, issuer, colony_id) {
+                    Ok(cancelled) => vec![GameEventKind::CraftCancelled(cancelled)],
+                    Err(error) => vec![GameEventKind::CraftCancellationRejected(
+                        crate::CraftCancellationRejected { colony_id, error },
+                    )],
+                }
+            }
+            GameAction::CancelConstruction { colony_id } => {
+                match cancel_construction(&mut self.state, issuer, colony_id) {
+                    Ok(cancelled) => vec![GameEventKind::ConstructionCancelled(cancelled)],
+                    Err(error) => vec![GameEventKind::ConstructionCancellationRejected(
+                        crate::ConstructionCancellationRejected { colony_id, error },
+                    )],
+                }
+            }
+            GameAction::CancelResearch => match cancel_research(&mut self.state, issuer) {
+                Ok(cancelled) => vec![GameEventKind::ResearchCancelled(cancelled)],
+                Err(error) => vec![GameEventKind::ResearchCancellationRejected(
+                    crate::ResearchCancellationRejected { error },
+                )],
             },
             GameAction::FormFleet {
                 colony_id,
@@ -648,11 +671,15 @@ mod tests {
                     .state_mut()
                     .colony_mut(colony_id)
                     .expect("home colony exists");
-                colony.buildings.set_level(BuildingKind::RESEARCH_LAB, 1);
+                colony.buildings.set_level(BuildingKind::RESEARCH_LAB, 4);
+                colony
+                    .buildings
+                    .set_level(BuildingKind::CONSTRUCTION_CENTER, 3);
+                colony.buildings.set_level(BuildingKind::POWER_PLANT, 4);
                 colony.energy = default_building_catalog().energy_grid_for_levels(colony.buildings);
                 colony
                     .resources
-                    .credit(ResourceStock::new(1_000, 1_000, 500))
+                    .credit(ResourceStock::new(3_000, 2_500, 1_000))
                     .expect("test funding fits capacity");
             }
 

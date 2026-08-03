@@ -66,13 +66,7 @@ fn home_inspector_content(simulation: &Simulation) -> InspectorContent {
             },
             InspectorSection {
                 title: "Potentiel".to_string(),
-                body: format!(
-                    "Métal : {}\nCristal : {}\nCarburant : {}\nÉnergie : {}",
-                    colony.resource_profile.metal,
-                    colony.resource_profile.crystal,
-                    colony.resource_profile.fuel,
-                    colony.resource_profile.energy,
-                ),
+                body: potential_section_body(colony.resource_profile),
             },
             InspectorSection {
                 title: "Infrastructure".to_string(),
@@ -105,23 +99,86 @@ fn colony_economy_text(colony: &galactic_sim::ColonyState) -> String {
         })
         .unwrap_or_else(|| "aucune".to_string());
 
-    format!(
-        "Disponible : {} métal, {} cristal, {} carburant
-Production : +{:.2} / +{:.2} / +{:.2} par seconde
-Énergie : {} produite, {} consommée
-Construction : {}
+    let effective = per_hour_triplet(production.effective_rate);
+    let nominal = per_hour_triplet(production.nominal_rate);
 
-Gestion complète : touche C",
-        available.metal,
-        available.crystal,
-        available.fuel,
-        production.effective_rate.metal_per_second(),
-        production.effective_rate.crystal_per_second(),
-        production.effective_rate.fuel_per_second(),
-        production.effective_energy_production,
-        production.energy_consumption,
-        construction,
+    let mut lines = vec![
+        format!(
+            "Disponible : {} métal, {} cristal, {} carburant",
+            available.metal, available.crystal, available.fuel,
+        ),
+        format!(
+            "Production réelle : {} métal/h, {} cristal/h, {} carburant/h",
+            effective.0, effective.1, effective.2,
+        ),
+    ];
+    if nominal != effective {
+        // The colony's energy efficiency is below 100% (deficit or partial coverage): show the
+        // potential production without that penalty so the player understands *why* the real
+        // output is lower, per MVP-030-A2 ("formaliser la production réelle = bâtiment ×
+        // potentiel planétaire × efficacité énergétique").
+        lines.push(format!(
+            "Production théorique (potentiel, hors déficit énergétique) : {} métal/h, {} cristal/h, {} carburant/h",
+            nominal.0, nominal.1, nominal.2,
+        ));
+    }
+    lines.push(format!(
+        "Énergie : {} produite, {} consommée",
+        production.effective_energy_production, production.energy_consumption,
+    ));
+    lines.push(format!("Construction : {construction}"));
+    lines.push(String::new());
+    lines.push("Gestion complète : touche C".to_string());
+
+    lines.join("\n")
+}
+
+/// Rounded metal/crystal/fuel rates in units per hour, easier to read than raw `/s` floats.
+fn per_hour_triplet(rate: galactic_sim::ProductionRate) -> (i64, i64, i64) {
+    (
+        (rate.metal_per_second() * 3600.0).round() as i64,
+        (rate.crystal_per_second() * 3600.0).round() as i64,
+        (rate.fuel_per_second() * 3600.0).round() as i64,
     )
+}
+
+/// Formats a planet's resource potential (percentages, 100 = balanced baseline) with a
+/// synthesized specialization label, so the player understands *why* a planet favors a given
+/// resource instead of just seeing 4 bare numbers (MVP-030-A2).
+fn potential_section_body(profile: galactic_sim::PlanetResourceProfile) -> String {
+    format!(
+        "{}\nMétal : {}%\nCristal : {}%\nCarburant : {}%\nÉnergie : {}%",
+        planet_specialization_label(profile),
+        profile.metal,
+        profile.crystal,
+        profile.fuel,
+        profile.energy,
+    )
+}
+
+/// A planet is "specialized" when its strongest resource clearly outpaces the runner-up,
+/// otherwise it reads as balanced. Threshold picked empirically against the 6 base planet-kind
+/// profiles in `planetary_analysis.ron`: at 10 points, Rocky/Ice/GasGiant/Volcanic each resolve
+/// to a specific specialization while Ocean and Desert (whose top two resources sit within 5
+/// points of each other) correctly stay "équilibré".
+fn planet_specialization_label(profile: galactic_sim::PlanetResourceProfile) -> &'static str {
+    const SPECIALIZATION_MARGIN: u16 = 10;
+
+    let mut values = [
+        ("Monde métallurgique", profile.metal),
+        ("Monde cristallin", profile.crystal),
+        ("Monde carburant", profile.fuel),
+        ("Monde énergétique", profile.energy),
+    ];
+    values.sort_by_key(|(_, value)| std::cmp::Reverse(*value));
+    let (top_label, top_value) = values[0];
+    let (_, runner_up_value) = values[1];
+
+    if top_value.saturating_sub(runner_up_value) >= SPECIALIZATION_MARGIN {
+        top_label
+    } else {
+        "Monde équilibré"
+    }
 }
 
 fn colony_buildings_text(colony: &galactic_sim::ColonyState) -> String {
@@ -345,13 +402,7 @@ fn planet_inspector_content(
         });
         sections.push(InspectorSection {
             title: "Potentiel".to_string(),
-            body: format!(
-                "Métal : {}\nCristal : {}\nCarburant : {}\nÉnergie : {}",
-                colony.resource_profile.metal,
-                colony.resource_profile.crystal,
-                colony.resource_profile.fuel,
-                colony.resource_profile.energy,
-            ),
+            body: potential_section_body(colony.resource_profile),
         });
         sections.push(InspectorSection {
             title: "Infrastructure".to_string(),
@@ -413,13 +464,7 @@ fn analyzed_planet_sections(
         },
         InspectorSection {
             title: "Potentiel".to_string(),
-            body: format!(
-                "Métal : {}\nCristal : {}\nCarburant : {}\nÉnergie : {}",
-                report.resource_profile.metal,
-                report.resource_profile.crystal,
-                report.resource_profile.fuel,
-                report.resource_profile.energy,
-            ),
+            body: potential_section_body(report.resource_profile),
         },
         InspectorSection {
             title: "Renseignement".to_string(),
@@ -1376,6 +1421,42 @@ mod tests {
     use crate::*;
 
     #[test]
+    fn planet_specialization_matches_the_dominant_resource() {
+        use galactic_sim::PlanetResourceProfile;
+
+        // Rocky: metal: 135, crystal: 95, fuel: 70, energy: 105 (planetary_analysis.ron).
+        assert_eq!(
+            planet_specialization_label(PlanetResourceProfile::new(135, 95, 70, 105)),
+            "Monde métallurgique",
+        );
+        // GasGiant: metal: 35, crystal: 85, fuel: 165, energy: 120.
+        assert_eq!(
+            planet_specialization_label(PlanetResourceProfile::new(35, 85, 165, 120)),
+            "Monde carburant",
+        );
+        // Ice: metal: 90, crystal: 135, fuel: 125, energy: 70.
+        assert_eq!(
+            planet_specialization_label(PlanetResourceProfile::new(90, 135, 125, 70)),
+            "Monde cristallin",
+        );
+    }
+
+    #[test]
+    fn planet_specialization_is_balanced_when_the_top_two_resources_are_close() {
+        use galactic_sim::PlanetResourceProfile;
+
+        assert_eq!(
+            planet_specialization_label(PlanetResourceProfile::BALANCED),
+            "Monde équilibré",
+        );
+        // Ocean: metal: 80, crystal: 115, fuel: 105, energy: 115 — crystal and energy tie.
+        assert_eq!(
+            planet_specialization_label(PlanetResourceProfile::new(80, 115, 105, 115)),
+            "Monde équilibré",
+        );
+    }
+
+    #[test]
     fn detected_system_inspector_masks_secret_values() {
         let simulation = Simulation::new(UniverseConfig::mvp());
         let state = simulation.state();
@@ -1616,5 +1697,52 @@ mod tests {
         assert!(rendered.contains("Économie"));
         assert!(rendered.contains("Gestion complète : touche C"));
         assert!(rendered.contains("Infrastructure"));
+        assert!(rendered.contains("Production réelle"));
+        assert!(
+            rendered.contains("Monde"),
+            "the Potentiel tab must name a specialization"
+        );
+        assert!(
+            rendered.contains("Métal : 100%"),
+            "potential values must be labeled as a percentage"
+        );
+    }
+
+    #[test]
+    fn theoretical_production_is_shown_only_when_it_differs_from_the_real_output() {
+        let simulation = Simulation::new(UniverseConfig::mvp());
+        let colony = simulation
+            .state()
+            .player_home_colony()
+            .expect("home colony exists");
+
+        // The starting colony has no energy deficit: nominal and effective rates match, so the
+        // theoretical line must not appear (it would be pure noise).
+        assert_eq!(
+            galactic_sim::colony_production_snapshot(colony).nominal_rate,
+            galactic_sim::colony_production_snapshot(colony).effective_rate,
+        );
+        let text = colony_economy_text(colony);
+        assert!(!text.contains("Production théorique"));
+
+        let mut deficit_colony = colony.clone();
+        deficit_colony
+            .buildings
+            .set_level(galactic_sim::BuildingKind::METAL_MINE, 10);
+        deficit_colony
+            .buildings
+            .set_level(galactic_sim::BuildingKind::CRYSTAL_EXTRACTOR, 10);
+        deficit_colony.energy = galactic_sim::default_building_catalog()
+            .energy_grid_for_levels(deficit_colony.buildings);
+        let snapshot = galactic_sim::colony_production_snapshot(&deficit_colony);
+        assert!(
+            snapshot.energy_consumption > snapshot.effective_energy_production,
+            "test setup must actually create an energy deficit",
+        );
+        let text = colony_economy_text(&deficit_colony);
+        assert!(
+            text.contains("Production théorique"),
+            "an energy deficit must reveal the theoretical (undamped) production",
+        );
     }
 }

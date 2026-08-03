@@ -2,12 +2,13 @@ use galactic_domain::{ColonyId, FactionId, PlanetId, SystemId};
 
 use crate::{
     ColonyEstablished, ColonyFoundation, ColonyProductionReport, ColonySelectionRejected,
-    CommandRejection, ConstructionCompleted, ConstructionQueued, ConstructionRejected,
-    CraftCompleted, CraftQueued, CraftRejected, FleetCreated, FleetCreationRejected,
-    KnowledgeChange, MissionCancellationRejected, MissionLaunchRejected, MissionLaunched,
-    MissionReport, MissionResolution, MissionTransition, PlanetAnalysisRejected,
-    PlanetAnalysisReport, ResearchCompleted, ResearchQueued, ResearchRejected, StrategicDuration,
-    StrategicTick, TimeSpeed,
+    CommandRejection, ConstructionCancellationRejected, ConstructionCancelled,
+    ConstructionCompleted, ConstructionQueued, ConstructionRejected, CraftCancellationRejected,
+    CraftCancelled, CraftCompleted, CraftQueued, CraftRejected, FleetCreated,
+    FleetCreationRejected, KnowledgeChange, MissionCancellationRejected, MissionLaunchRejected,
+    MissionLaunched, MissionReport, MissionResolution, MissionTransition, PlanetAnalysisRejected,
+    PlanetAnalysisReport, ResearchCancellationRejected, ResearchCancelled, ResearchCompleted,
+    ResearchQueued, ResearchRejected, StrategicDuration, StrategicTick, TimeSpeed,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -61,12 +62,18 @@ pub enum GameEventKind {
     ConstructionQueued(ConstructionQueued),
     ConstructionCompleted(ConstructionCompleted),
     ConstructionRejected(ConstructionRejected),
+    ConstructionCancelled(ConstructionCancelled),
+    ConstructionCancellationRejected(ConstructionCancellationRejected),
     ResearchQueued(ResearchQueued),
     ResearchCompleted(ResearchCompleted),
     ResearchRejected(ResearchRejected),
+    ResearchCancelled(ResearchCancelled),
+    ResearchCancellationRejected(ResearchCancellationRejected),
     CraftQueued(CraftQueued),
     CraftCompleted(CraftCompleted),
     CraftRejected(CraftRejected),
+    CraftCancelled(CraftCancelled),
+    CraftCancellationRejected(CraftCancellationRejected),
     FleetCreated(FleetCreated),
     FleetCreationRejected(FleetCreationRejected),
     MissionLaunched(MissionLaunched),

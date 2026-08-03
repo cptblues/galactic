@@ -73,6 +73,7 @@ enum ResearchButtonAction {
     Close,
     Select(TechnologyId),
     QueueSelected,
+    CancelActive,
 }
 
 type ResearchButtonInteractionQuery<'w, 's> = Query<
@@ -108,6 +109,9 @@ struct TechnologyButtonText {
 
 #[derive(Component)]
 struct QueueResearchButton;
+
+#[derive(Component)]
+struct CancelResearchButton;
 
 #[derive(Component)]
 struct ResearchProgressFill;
@@ -146,7 +150,7 @@ fn spawn_research_screen(mut commands: Commands) {
                 position_type: PositionType::Absolute,
                 left: Val::Px(14.0),
                 right: Val::Px(14.0),
-                top: Val::Px(72.0),
+                top: Val::Px(112.0),
                 bottom: Val::Px(14.0),
                 padding: UiRect::all(Val::Px(12.0)),
                 border: UiRect::all(Val::Px(1.0)),
@@ -437,6 +441,36 @@ fn spawn_research_queue(row: &mut ChildSpawnerCommands) {
             TextColor(Color::srgb(0.78, 0.82, 0.92)),
             ResearchTextRole::Queue,
         ));
+        queue
+            .spawn((
+                Button,
+                Node {
+                    width: Val::Percent(100.0),
+                    min_height: Val::Px(32.0),
+                    padding: UiRect::axes(Val::Px(10.0), Val::Px(6.0)),
+                    border: UiRect::all(Val::Px(1.0)),
+                    border_radius: BorderRadius::all(Val::Px(5.0)),
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.30, 0.09, 0.14, 0.94)),
+                Outline::new(
+                    Val::Px(1.0),
+                    Val::ZERO,
+                    Color::srgba(0.86, 0.36, 0.42, 0.60),
+                ),
+                ResearchButtonAction::CancelActive,
+                CancelResearchButton,
+                UiPointerBlocker,
+            ))
+            .with_children(|button| {
+                button.spawn((
+                    Text::new("Annuler la recherche en cours"),
+                    ui_text_font(11.0),
+                    TextColor(Color::srgb(1.0, 0.80, 0.82)),
+                ));
+            });
     });
 }
 
@@ -502,6 +536,9 @@ fn handle_research_buttons(
             ResearchButtonAction::QueueSelected => {
                 queue_selected_research(&mut simulation, &mut ui);
             }
+            ResearchButtonAction::CancelActive => {
+                apply_simulation_command(&mut simulation, GameAction::CancelResearch);
+            }
         }
     }
 }
@@ -523,6 +560,20 @@ fn capture_research_feedback(simulation: Res<SimulationResource>, mut ui: ResMut
             GameEventKind::ResearchRejected(rejected) => {
                 ui.feedback = format!(
                     "Recherche refusée : {}",
+                    research_error_text(rejected.error),
+                );
+            }
+            GameEventKind::ResearchCancelled(cancelled) => {
+                let definition = technology_definition(cancelled.technology);
+                ui.feedback = format!(
+                    "{} annulée ({:.1} points perdus).",
+                    definition.name,
+                    cancelled.accumulated_milli_points as f64 / 1_000.0,
+                );
+            }
+            GameEventKind::ResearchCancellationRejected(rejected) => {
+                ui.feedback = format!(
+                    "Annulation refusée : {}",
                     research_error_text(rejected.error),
                 );
             }
@@ -689,6 +740,10 @@ fn update_research_queue(
     open_panel: Res<OpenPanel>,
     mut texts: Query<(&ResearchTextRole, &mut Text)>,
     mut progress: Query<&mut Node, With<ResearchProgressFill>>,
+    mut cancel_button: Query<
+        (&Interaction, &mut BackgroundColor, &mut Outline),
+        With<CancelResearchButton>,
+    >,
 ) {
     if *open_panel != OpenPanel::Research {
         return;
@@ -702,14 +757,19 @@ fn update_research_queue(
         }
     }
 
-    let ratio = state
-        .research
-        .active()
+    let active_project = state.research.active();
+    let ratio = active_project
         .copied()
         .map(research_progress_ratio)
         .unwrap_or(0.0);
     for mut node in &mut progress {
         node.width = Val::Percent((ratio * 100.0).clamp(0.0, 100.0));
+    }
+
+    let can_cancel = active_project.is_some();
+    for (interaction, mut background, mut outline) in &mut cancel_button {
+        background.0 = action_button_color(can_cancel, false, interaction);
+        outline.color = action_button_outline(can_cancel, false, interaction);
     }
 }
 
@@ -772,9 +832,27 @@ fn research_detail_text(
         definition.description.to_string(),
         String::new(),
         format!("Prérequis : {prerequisites}"),
+    ];
+    if !definition.building_prerequisites.is_empty() {
+        let catalog = galactic_sim::default_building_catalog();
+        let buildings = definition
+            .building_prerequisites
+            .iter()
+            .map(|prerequisite| {
+                format!(
+                    "{} niveau {}",
+                    catalog.definition(prerequisite.kind).name,
+                    prerequisite.level,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        lines.push(format!("Bâtiments requis : {buildings}"));
+    }
+    lines.extend([
         format!("Coût scientifique : {cost_points:.1} points"),
         format!("Déblocage : {}", definition.unlock_label,),
-    ];
+    ]);
 
     if state.research.has_completed(technology) {
         lines.push(String::new());
@@ -903,6 +981,17 @@ fn research_error_text(error: ResearchError) -> String {
         ResearchError::MissingPrerequisite { prerequisite, .. } => {
             format!("Requiert {}", technology_definition(prerequisite).name,)
         }
+        ResearchError::MissingBuildingPrerequisite {
+            building,
+            required,
+            found,
+        } => {
+            let name = galactic_sim::default_building_catalog()
+                .definition(building)
+                .name;
+            format!("Requiert {name} niveau {required} (actuel : {found})")
+        }
+        ResearchError::NoActiveProject => "Aucune recherche en cours".to_string(),
     }
 }
 

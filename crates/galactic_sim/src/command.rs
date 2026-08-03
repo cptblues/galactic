@@ -35,7 +35,15 @@ pub enum GameAction {
     QueueCraft {
         colony_id: ColonyId,
         craftable: CraftableId,
+        quantity: u64,
     },
+    CancelCraft {
+        colony_id: ColonyId,
+    },
+    CancelConstruction {
+        colony_id: ColonyId,
+    },
+    CancelResearch,
     FormFleet {
         colony_id: ColonyId,
         composition: FleetComposition,

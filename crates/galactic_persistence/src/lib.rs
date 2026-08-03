@@ -91,6 +91,7 @@ mod tests {
             simulation.apply_player_action(GameAction::QueueCraft {
                 colony_id,
                 craftable: CraftableId::FRIGATE_BULWARK,
+                quantity: 1,
             });
         }
         simulation.advance(Duration::from_secs(200));
@@ -168,25 +169,26 @@ mod tests {
             let colony = &mut simulation.state_mut().colonies[0];
             colony
                 .buildings
-                .set_level(BuildingKind::CONSTRUCTION_CENTER, 2);
+                .set_level(BuildingKind::CONSTRUCTION_CENTER, 4);
             colony.buildings.set_level(BuildingKind::METAL_MINE, 2);
             colony
                 .buildings
                 .set_level(BuildingKind::CRYSTAL_EXTRACTOR, 2);
-            colony.buildings.set_level(BuildingKind::WAREHOUSE, 1);
-            colony.buildings.set_level(BuildingKind::POWER_PLANT, 2);
-            colony.buildings.set_level(BuildingKind::SHIPYARD, 2);
+            colony.buildings.set_level(BuildingKind::WAREHOUSE, 3);
+            colony.buildings.set_level(BuildingKind::POWER_PLANT, 3);
+            colony.buildings.set_level(BuildingKind::SHIPYARD, 3);
             colony.energy = default_building_catalog().energy_grid_for_levels(colony.buildings);
             colony
                 .resources
-                .credit(ResourceStock::new(2_000, 2_000, 2_000))
+                .credit(ResourceStock::new(3_000, 2_200, 1_500))
                 .expect("test funding fits the configured storage");
         }
         simulation.apply_player_action(GameAction::QueueCraft {
             colony_id,
             craftable: CraftableId::COLONY_SHIP,
+            quantity: 1,
         });
-        simulation.advance(Duration::from_secs(240));
+        simulation.advance(Duration::from_secs(800));
         assert_eq!(
             simulation.state().colonies[0]
                 .inventory
@@ -218,6 +220,7 @@ mod tests {
         simulation.apply_player_action(GameAction::QueueCraft {
             colony_id: origin_colony_id,
             craftable: CraftableId::LIGHT_CARGO,
+            quantity: 1,
         });
         simulation.advance(Duration::from_secs(80));
         assert_eq!(
@@ -298,6 +301,7 @@ mod tests {
         simulation.apply_player_action(GameAction::QueueCraft {
             colony_id,
             craftable: CraftableId::LIGHT_CARGO,
+            quantity: 1,
         });
         simulation.advance(Duration::from_secs(80));
         assert_eq!(
@@ -749,6 +753,7 @@ mod tests {
         simulation.apply_player_action(GameAction::QueueCraft {
             colony_id,
             craftable: CraftableId::LIGHT_PROBE,
+            quantity: 1,
         });
         simulation.advance(Duration::from_secs(12));
 
@@ -809,6 +814,7 @@ mod tests {
             let events = simulation.apply_player_action(GameAction::QueueCraft {
                 colony_id,
                 craftable: CraftableId::LIGHT_CARGO,
+                quantity: 1,
             });
             assert!(matches!(
                 events.as_slice(),
@@ -888,6 +894,7 @@ mod tests {
         simulation.apply_player_action(GameAction::QueueCraft {
             colony_id,
             craftable: CraftableId::LIGHT_PROBE,
+            quantity: 1,
         });
         simulation.advance(Duration::from_secs(50));
         let composition =

@@ -564,6 +564,30 @@ pub(crate) fn spawn_system_view(
             }
         }
 
+        // MVP-030-A1: a colonized planet must be identifiable without being selected — the
+        // territory-tint ring already used for systems in the Universe view is reused here so
+        // the marker orbits with the planet instead of a separate hardcoded position/color.
+        if colony.is_some() {
+            let ring_orbit = OrbitingVisual {
+                vertical_offset: -0.03,
+                ..orbit
+            };
+            let material = assets
+                .territory_materials
+                .get(&crate::presentation::territory::TerritoryTint::SelfOwned)
+                .expect("territory material exists")
+                .clone();
+            commands.spawn((
+                Mesh3d(assets.ring_mesh.clone()),
+                MeshMaterial3d(material),
+                Transform::from_translation(ring_orbit.translation_at(0.0))
+                    .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2))
+                    .with_scale(Vec3::splat(scale * 1.5)),
+                ring_orbit,
+                StrategicViewEntity,
+            ));
+        }
+
         commands.spawn((
             Text2d::new(label),
             ui_text_font(11.0),
@@ -1053,7 +1077,7 @@ pub(crate) fn spawn_colony_management_screen(commands: &mut Commands) {
                 position_type: PositionType::Absolute,
                 left: Val::Px(14.0),
                 right: Val::Px(14.0),
-                top: Val::Px(72.0),
+                top: Val::Px(112.0),
                 bottom: Val::Px(14.0),
                 padding: UiRect::all(Val::Px(12.0)),
                 border: UiRect::all(Val::Px(1.0)),
@@ -1124,9 +1148,9 @@ pub(crate) fn spawn_management_header(root: &mut ChildSpawnerCommands) {
 
             spawn_management_small_button(
                 header,
-                "◀",
+                "< Précédente",
                 ManagementButtonAction::PreviousColony,
-                36.0,
+                92.0,
             );
             header.spawn((
                 Text::new("Colonie"),
@@ -1138,7 +1162,12 @@ pub(crate) fn spawn_management_header(root: &mut ChildSpawnerCommands) {
                 },
                 ManagementTextRole::Colony,
             ));
-            spawn_management_small_button(header, "▶", ManagementButtonAction::NextColony, 36.0);
+            spawn_management_small_button(
+                header,
+                "Suivante >",
+                ManagementButtonAction::NextColony,
+                92.0,
+            );
             spawn_management_small_button(
                 header,
                 "Fermer  [C / Échap]",
@@ -1530,6 +1559,36 @@ pub(crate) fn spawn_management_queue(row: &mut ChildSpawnerCommands) {
             TextColor(Color::srgb(0.78, 0.84, 0.88)),
             ManagementTextRole::Queue,
         ));
+        queue
+            .spawn((
+                Button,
+                Node {
+                    width: Val::Percent(100.0),
+                    min_height: Val::Px(30.0),
+                    padding: UiRect::axes(Val::Px(10.0), Val::Px(6.0)),
+                    border: UiRect::all(Val::Px(1.0)),
+                    border_radius: BorderRadius::all(Val::Px(5.0)),
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.30, 0.09, 0.09, 0.94)),
+                Outline::new(
+                    Val::Px(1.0),
+                    Val::ZERO,
+                    Color::srgba(0.86, 0.40, 0.36, 0.60),
+                ),
+                ManagementButtonAction::CancelConstruction,
+                CancelConstructionButton,
+                UiPointerBlocker,
+            ))
+            .with_children(|button| {
+                button.spawn((
+                    Text::new("Annuler la construction en cours"),
+                    ui_text_font(11.0),
+                    TextColor(Color::srgb(1.0, 0.80, 0.78)),
+                ));
+            });
         queue.spawn((
             Text::new("LOGISTIQUE INTERCOLONIALE"),
             ui_text_font(12.0),
@@ -1551,7 +1610,7 @@ pub(crate) fn spawn_management_queue(row: &mut ChildSpawnerCommands) {
             .with_children(|row| {
                 spawn_management_small_button(
                     row,
-                    "◀",
+                    "<",
                     ManagementButtonAction::PreviousTransportDestination,
                     34.0,
                 );
@@ -1567,7 +1626,7 @@ pub(crate) fn spawn_management_queue(row: &mut ChildSpawnerCommands) {
                 ));
                 spawn_management_small_button(
                     row,
-                    "▶",
+                    ">",
                     ManagementButtonAction::NextTransportDestination,
                     34.0,
                 );

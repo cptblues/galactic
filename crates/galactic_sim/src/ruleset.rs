@@ -77,7 +77,7 @@ impl Ruleset {
             BuildingCatalog::from_config(building_config, economy_config.base_storage.into_stock())
                 .map_err(RulesetLoadError::Buildings)?;
         let technology_config: TechnologyCatalogConfig = read_ron(directory, "technologies.ron")?;
-        let technologies = TechnologyCatalog::from_config(technology_config)
+        let technologies = TechnologyCatalog::from_config(technology_config, &buildings)
             .map_err(RulesetLoadError::Technologies)?;
         let craftable_config: CraftableCatalogConfig = read_ron(directory, "craftables.ron")?;
         let craftables = CraftableCatalog::from_config(craftable_config, &buildings, &technologies)

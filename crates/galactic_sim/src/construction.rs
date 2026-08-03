@@ -93,6 +93,20 @@ pub struct ConstructionRejected {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConstructionCancelled {
+    pub colony_id: ColonyId,
+    pub kind: BuildingKind,
+    pub target_level: u8,
+    pub refunded: ResourceCost,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConstructionCancellationRejected {
+    pub colony_id: ColonyId,
+    pub error: ConstructionError,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConstructionError {
     UnknownColony(ColonyId),
     Access(AuthorizationError),
@@ -113,6 +127,7 @@ pub enum ConstructionError {
         consumption: u64,
     },
     Reservation(ResourceLedgerError),
+    NoActiveOrder,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -257,6 +272,38 @@ pub fn enqueue_building_upgrade(
         colony_id,
         order,
         queue_length: colony.construction_queue.len(),
+    })
+}
+
+pub fn cancel_construction(
+    state: &mut GameState,
+    actor: FactionId,
+    colony_id: ColonyId,
+) -> Result<ConstructionCancelled, ConstructionError> {
+    let colony = state
+        .colony(colony_id)
+        .ok_or(ConstructionError::UnknownColony(colony_id))?;
+    state
+        .authorize_management(actor, colony.owner)
+        .map_err(ConstructionError::Access)?;
+    if colony.construction_queue.active().is_none() {
+        return Err(ConstructionError::NoActiveOrder);
+    }
+
+    let colony = state
+        .colony_mut(colony_id)
+        .ok_or(ConstructionError::UnknownColony(colony_id))?;
+    let order = colony.construction_queue.pop_front();
+    let refunded = colony
+        .resources
+        .release(order.reservation_id)
+        .map_err(ConstructionError::Reservation)?;
+
+    Ok(ConstructionCancelled {
+        colony_id,
+        kind: order.kind,
+        target_level: order.target_level,
+        refunded,
     })
 }
 
@@ -630,5 +677,61 @@ mod tests {
                 AuthorizationError::NotOwner { actor, owner },
             )) if actor == player && owner == FactionId::new(2)
         ));
+    }
+
+    #[test]
+    fn cancelling_an_active_order_refunds_the_reservation_and_loses_progress() {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+        let colony_id = simulation
+            .state()
+            .player_home_colony()
+            .expect("home colony exists")
+            .id;
+        let actor = simulation.state().player_faction;
+        let before = simulation
+            .state()
+            .colony(colony_id)
+            .expect("colony exists")
+            .resources
+            .available();
+        let queued = enqueue_building_upgrade(
+            simulation.state_mut(),
+            actor,
+            colony_id,
+            BuildingKind::METAL_MINE,
+        )
+        .expect("upgrade is affordable");
+
+        // Make some partial progress before cancelling, to confirm it is discarded rather than
+        // partially refunded.
+        simulation.advance(Duration::from_secs(1));
+
+        let cancelled = cancel_construction(simulation.state_mut(), actor, colony_id)
+            .expect("an active order can be cancelled");
+        assert_eq!(cancelled.kind, BuildingKind::METAL_MINE);
+        assert_eq!(cancelled.target_level, queued.order.target_level);
+        assert_eq!(cancelled.refunded, queued.order.cost);
+
+        let colony = simulation.state().colony(colony_id).expect("colony exists");
+        assert!(colony.construction_queue.is_empty());
+        assert!(colony.resources.reservations().is_empty());
+        assert_eq!(colony.resources.available(), before);
+        assert_eq!(colony.buildings.level(BuildingKind::METAL_MINE), 1);
+    }
+
+    #[test]
+    fn cancelling_without_an_active_order_is_an_explicit_error() {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+        let colony_id = simulation
+            .state()
+            .player_home_colony()
+            .expect("home colony exists")
+            .id;
+        let actor = simulation.state().player_faction;
+
+        assert_eq!(
+            cancel_construction(simulation.state_mut(), actor, colony_id),
+            Err(ConstructionError::NoActiveOrder),
+        );
     }
 }

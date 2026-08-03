@@ -6,8 +6,8 @@ use galactic_domain::{FactionId, Owner};
 use serde::Deserialize;
 
 use crate::{
-    AuthorizationError, BuildingEffect, GameState, STRATEGIC_TICKS_PER_SECOND, StrategicDuration,
-    default_building_catalog, default_ruleset,
+    AuthorizationError, BuildingCatalog, BuildingEffect, BuildingKind, GameState,
+    STRATEGIC_TICKS_PER_SECOND, StrategicDuration, default_building_catalog, default_ruleset,
 };
 
 pub const MAX_RULESET_TECHNOLOGIES: usize = 128;
@@ -75,6 +75,12 @@ impl TechnologyUnlock {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TechnologyBuildingPrerequisite {
+    pub kind: BuildingKind,
+    pub level: u8,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TechnologyDefinition {
     pub id: TechnologyId,
@@ -82,6 +88,7 @@ pub struct TechnologyDefinition {
     pub description: &'static str,
     pub required_milli_points: u64,
     pub prerequisites: Vec<TechnologyId>,
+    pub building_prerequisites: Vec<TechnologyBuildingPrerequisite>,
     pub unlock: TechnologyUnlock,
     pub unlock_label: &'static str,
 }
@@ -96,6 +103,7 @@ pub struct TechnologyCatalog {
 impl TechnologyCatalog {
     pub(crate) fn from_config(
         config: TechnologyCatalogConfig,
+        buildings: &BuildingCatalog,
     ) -> Result<Self, TechnologyCatalogError> {
         if config.version != 1 {
             return Err(TechnologyCatalogError::UnsupportedVersion(config.version));
@@ -133,6 +141,24 @@ impl TechnologyCatalog {
                     Ok(prerequisite_id)
                 })
                 .collect::<Result<Vec<_>, TechnologyCatalogError>>()?;
+            let building_prerequisites = technology
+                .building_prerequisites
+                .into_iter()
+                .map(|prerequisite| {
+                    let Some(kind) = buildings.kind_by_key(&prerequisite.id) else {
+                        return Err(TechnologyCatalogError::MissingBuildingPrerequisite {
+                            technology: id,
+                            building: BuildingKind::from_static(Box::leak(
+                                prerequisite.id.into_boxed_str(),
+                            )),
+                        });
+                    };
+                    Ok(TechnologyBuildingPrerequisite {
+                        kind,
+                        level: prerequisite.level,
+                    })
+                })
+                .collect::<Result<Vec<_>, TechnologyCatalogError>>()?;
             definitions.insert(
                 id,
                 TechnologyDefinition {
@@ -144,6 +170,7 @@ impl TechnologyCatalog {
                     )?,
                     required_milli_points: technology.required_milli_points,
                     prerequisites,
+                    building_prerequisites,
                     unlock: technology.unlock,
                     unlock_label: leak_non_empty(
                         technology.unlock_label,
@@ -324,6 +351,10 @@ impl ResearchState {
     pub fn is_queue_empty(&self) -> bool {
         self.queue.is_empty()
     }
+
+    fn cancel_active(&mut self) -> Option<ResearchProject> {
+        self.queue.pop_front()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -353,6 +384,17 @@ pub struct ResearchRejected {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResearchCancelled {
+    pub technology: TechnologyId,
+    pub accumulated_milli_points: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResearchCancellationRejected {
+    pub error: ResearchError,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResearchError {
     Access(AuthorizationError),
     NoResearchCapacity,
@@ -365,6 +407,12 @@ pub enum ResearchError {
         technology: TechnologyId,
         prerequisite: TechnologyId,
     },
+    MissingBuildingPrerequisite {
+        building: BuildingKind,
+        required: u8,
+        found: u8,
+    },
+    NoActiveProject,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -431,6 +479,16 @@ pub fn research_quote(
             });
         }
     }
+    for prerequisite in &definition.building_prerequisites {
+        let found = best_building_level(state, actor, prerequisite.kind);
+        if found < prerequisite.level {
+            return Err(ResearchError::MissingBuildingPrerequisite {
+                building: prerequisite.kind,
+                required: prerequisite.level,
+                found,
+            });
+        }
+    }
 
     Ok(ResearchQuote {
         technology,
@@ -456,6 +514,24 @@ pub fn enqueue_research(
     Ok(ResearchQueued {
         project,
         queue_length: state.research.queue_len(),
+    })
+}
+
+pub fn cancel_research(
+    state: &mut GameState,
+    actor: FactionId,
+) -> Result<ResearchCancelled, ResearchError> {
+    state
+        .authorize_management(actor, Owner::Faction(state.player_faction))
+        .map_err(ResearchError::Access)?;
+    let project = state
+        .research
+        .cancel_active()
+        .ok_or(ResearchError::NoActiveProject)?;
+
+    Ok(ResearchCancelled {
+        technology: project.technology,
+        accumulated_milli_points: project.accumulated_milli_points,
     })
 }
 
@@ -498,6 +574,19 @@ pub fn advance_research(
     }
 
     completed
+}
+
+/// The best level of a given building among the actor's colonies. A technology's building
+/// prerequisite is satisfied as soon as one colony reaches it — research is a global, not a
+/// per-colony, capability, so there is no single "the" colony to check against.
+fn best_building_level(state: &GameState, actor: FactionId, kind: BuildingKind) -> u8 {
+    state
+        .colonies
+        .iter()
+        .filter(|colony| state.can_manage(actor, colony.owner))
+        .map(|colony| colony.buildings.level(kind))
+        .max()
+        .unwrap_or(0)
 }
 
 pub fn research_output_milli_points_per_tick(state: &GameState, actor: FactionId) -> u64 {
@@ -655,6 +744,10 @@ pub enum TechnologyCatalogError {
         technology: TechnologyId,
         prerequisite: TechnologyId,
     },
+    MissingBuildingPrerequisite {
+        technology: TechnologyId,
+        building: BuildingKind,
+    },
     PrerequisiteCycle(TechnologyId),
 }
 
@@ -671,8 +764,15 @@ struct TechnologyDefinitionConfig {
     description: String,
     required_milli_points: u64,
     prerequisites: Vec<String>,
+    building_prerequisites: Vec<TechnologyBuildingPrerequisiteConfig>,
     unlock: TechnologyUnlock,
     unlock_label: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct TechnologyBuildingPrerequisiteConfig {
+    id: String,
+    level: u8,
 }
 
 fn validate_identifier(value: &str) -> Result<(), ()> {
@@ -746,6 +846,18 @@ mod tests {
     fn configured_tree_can_be_queued_in_order() {
         let mut simulation = simulation_with_lab();
         let actor = simulation.state().player_faction;
+        {
+            let colony = simulation
+                .state_mut()
+                .colonies
+                .first_mut()
+                .expect("home colony exists");
+            colony.buildings.set_level(BuildingKind::RESEARCH_LAB, 4);
+            colony
+                .buildings
+                .set_level(BuildingKind::CONSTRUCTION_CENTER, 3);
+            colony.energy = default_building_catalog().energy_grid_for_levels(colony.buildings);
+        }
         for technology in technology_catalog().ids() {
             enqueue_research(simulation.state_mut(), actor, technology)
                 .expect("ordered tree is valid");
@@ -754,6 +866,75 @@ mod tests {
             simulation.state().research.queue_len(),
             technology_catalog().ids().count(),
         );
+    }
+
+    #[test]
+    fn a_missing_building_prerequisite_blocks_research_even_with_science_and_tech_ready() {
+        let mut simulation = simulation_with_lab();
+        let actor = simulation.state().player_faction;
+        enqueue_research(
+            simulation.state_mut(),
+            actor,
+            TechnologyId::SPATIAL_DETECTION,
+        )
+        .expect("spatial detection has no prerequisite");
+        enqueue_research(simulation.state_mut(), actor, TechnologyId::PROPULSION)
+            .expect("propulsion has no unmet prerequisite");
+        enqueue_research(simulation.state_mut(), actor, TechnologyId::CARGO_CAPACITY)
+            .expect("cargo capacity has no unmet prerequisite");
+        enqueue_research(
+            simulation.state_mut(),
+            actor,
+            TechnologyId::PLANETARY_ANALYSIS,
+        )
+        .expect("planetary analysis has no unmet prerequisite");
+
+        // Tech-to-tech prerequisites are satisfied (both are queued), but the home colony's
+        // Institut d'analyse (research_lab) is still level 1, below colonization's building
+        // requirement of level 4.
+        assert_eq!(
+            research_quote(simulation.state(), actor, TechnologyId::COLONIZATION),
+            Err(ResearchError::MissingBuildingPrerequisite {
+                building: BuildingKind::RESEARCH_LAB,
+                required: 4,
+                found: 1,
+            }),
+        );
+    }
+
+    #[test]
+    fn a_building_prerequisite_is_satisfied_by_any_single_colony_reaching_the_level() {
+        let mut simulation = simulation_with_lab();
+        let actor = simulation.state().player_faction;
+        enqueue_research(
+            simulation.state_mut(),
+            actor,
+            TechnologyId::SPATIAL_DETECTION,
+        )
+        .expect("spatial detection has no prerequisite");
+        enqueue_research(simulation.state_mut(), actor, TechnologyId::PROPULSION)
+            .expect("propulsion has no unmet prerequisite");
+        enqueue_research(simulation.state_mut(), actor, TechnologyId::CARGO_CAPACITY)
+            .expect("cargo capacity has no unmet prerequisite");
+        enqueue_research(
+            simulation.state_mut(),
+            actor,
+            TechnologyId::PLANETARY_ANALYSIS,
+        )
+        .expect("planetary analysis has no unmet prerequisite");
+
+        let colony = simulation
+            .state_mut()
+            .colonies
+            .first_mut()
+            .expect("home colony exists");
+        colony.buildings.set_level(BuildingKind::RESEARCH_LAB, 4);
+        colony
+            .buildings
+            .set_level(BuildingKind::CONSTRUCTION_CENTER, 3);
+        colony.energy = default_building_catalog().energy_grid_for_levels(colony.buildings);
+
+        assert!(research_quote(simulation.state(), actor, TechnologyId::COLONIZATION).is_ok());
     }
 
     #[test]
@@ -794,14 +975,87 @@ mod tests {
                 description: "Améliore officiellement tous les rapports.",
                 required_milli_points: 1000,
                 prerequisites: [],
+                building_prerequisites: [],
                 unlock: AnalyzePlanets,
                 unlock_label: "Rapports certifiés",
             )],
         )"#;
         let config = ron::de::from_str(source).expect("test technology RON is valid");
-        let catalog =
-            TechnologyCatalog::from_config(config).expect("known unlocks accept new identifiers");
+        let catalog = TechnologyCatalog::from_config(config, default_building_catalog())
+            .expect("known unlocks accept new identifiers");
 
         assert!(catalog.id_by_key("approved_truth").is_some());
+    }
+
+    #[test]
+    fn a_technology_referencing_an_unknown_building_is_rejected_at_load_time() {
+        let source = r#"(
+            version: 1,
+            technologies: [(
+                id: "approved_truth",
+                name: "Vérité homologuée",
+                description: "Améliore officiellement tous les rapports.",
+                required_milli_points: 1000,
+                prerequisites: [],
+                building_prerequisites: [(id: "nonexistent_building", level: 1)],
+                unlock: AnalyzePlanets,
+                unlock_label: "Rapports certifiés",
+            )],
+        )"#;
+        let config = ron::de::from_str(source).expect("test technology RON is valid");
+
+        let error = TechnologyCatalog::from_config(config, default_building_catalog())
+            .expect_err("an unknown building key must be rejected");
+
+        assert!(matches!(
+            error,
+            TechnologyCatalogError::MissingBuildingPrerequisite { .. }
+        ));
+    }
+
+    #[test]
+    fn cancelling_an_active_project_loses_its_progress() {
+        let mut simulation = simulation_with_lab();
+        let actor = simulation.state().player_faction;
+        enqueue_research(
+            simulation.state_mut(),
+            actor,
+            TechnologyId::SPATIAL_DETECTION,
+        )
+        .expect("spatial detection has no prerequisite");
+        simulation.advance(std::time::Duration::from_secs(1));
+        assert!(
+            simulation
+                .state()
+                .research
+                .active()
+                .expect("a project is active")
+                .accumulated_milli_points
+                > 0,
+            "the test must make some real progress before cancelling",
+        );
+
+        let cancelled = cancel_research(simulation.state_mut(), actor)
+            .expect("an active project can be cancelled");
+        assert_eq!(cancelled.technology, TechnologyId::SPATIAL_DETECTION);
+        assert!(cancelled.accumulated_milli_points > 0);
+        assert!(simulation.state().research.is_queue_empty());
+        assert!(
+            !simulation
+                .state()
+                .research
+                .has_completed(TechnologyId::SPATIAL_DETECTION)
+        );
+    }
+
+    #[test]
+    fn cancelling_without_an_active_project_is_an_explicit_error() {
+        let mut simulation = simulation_with_lab();
+        let actor = simulation.state().player_faction;
+
+        assert_eq!(
+            cancel_research(simulation.state_mut(), actor),
+            Err(ResearchError::NoActiveProject),
+        );
     }
 }

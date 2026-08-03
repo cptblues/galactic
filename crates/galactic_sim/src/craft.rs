@@ -477,20 +477,37 @@ pub fn max_craft_queue() -> usize {
     default_ruleset().economy().craft_queue_limit
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Upper bound on how many units a single batch can request — protects the numeric arithmetic
+/// (cost/duration totals) and the UI's "MAX" button from unbounded values, per MVP-030-A3.
+pub const MAX_CRAFT_BATCH_QUANTITY: u64 = 999;
+
+/// A queued batch of one or more identical craftables (MVP-030-A3). Units are built one at a
+/// time — `accumulated_work_milli` only ever tracks the *current* unit's progress — and each
+/// not-yet-completed unit holds its own reservation so completed units can be credited (and
+/// their reservation committed) independently of the rest of the batch, and a cancellation can
+/// refund exactly the untouched units without disturbing already-produced ones.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CraftOrder {
     pub craftable: CraftableId,
-    pub cost: ResourceCost,
-    pub reservation_id: ReservationId,
-    pub required_work_milli: u64,
+    pub unit_cost: ResourceCost,
+    pub result_quantity_per_unit: u64,
+    pub required_work_milli_per_unit: u64,
     pub accumulated_work_milli: u64,
-    pub result_quantity: u64,
+    pub quantity_requested: u64,
+    pub quantity_completed: u64,
+    /// One reservation per not-yet-completed unit; the front is the unit currently in progress.
+    pub reservations: VecDeque<ReservationId>,
 }
 
 impl CraftOrder {
-    pub const fn remaining_work_milli(self) -> u64 {
-        self.required_work_milli
+    pub fn remaining_work_milli(&self) -> u64 {
+        self.required_work_milli_per_unit
             .saturating_sub(self.accumulated_work_milli)
+    }
+
+    pub fn quantity_remaining(&self) -> u64 {
+        self.quantity_requested
+            .saturating_sub(self.quantity_completed)
     }
 }
 
@@ -569,17 +586,24 @@ impl CraftInventory {
 pub struct CraftQuote {
     pub colony_id: ColonyId,
     pub craftable: CraftableId,
-    pub cost: ResourceCost,
-    pub required_work_milli: u64,
+    pub quantity: u64,
+    pub unit_cost: ResourceCost,
+    pub total_cost: ResourceCost,
+    pub unit_required_work_milli: u64,
+    pub total_required_work_milli: u64,
     pub output_milli_per_tick: u64,
     pub estimated_ticks: u64,
-    pub result_quantity: u64,
+    pub result_quantity_per_unit: u64,
+    /// How many units the colony could afford right now (used by the UI's "MAX" control and by
+    /// the displayed "quantité finançable" — independent of the `quantity` actually requested).
+    pub max_affordable_quantity: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CraftQueued {
     pub colony_id: ColonyId,
-    pub order: CraftOrder,
+    pub craftable: CraftableId,
+    pub quantity_requested: u64,
     pub queue_length: usize,
 }
 
@@ -587,14 +611,29 @@ pub struct CraftQueued {
 pub struct CraftCompleted {
     pub colony_id: ColonyId,
     pub craftable: CraftableId,
-    pub quantity: u64,
+    pub quantity_completed: u64,
+    pub quantity_remaining: u64,
     pub inventory_quantity: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CraftCancelled {
+    pub colony_id: ColonyId,
+    pub craftable: CraftableId,
+    pub quantity_completed: u64,
+    pub quantity_refunded: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CraftRejected {
     pub colony_id: ColonyId,
     pub craftable: CraftableId,
+    pub error: CraftError,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CraftCancellationRejected {
+    pub colony_id: ColonyId,
     pub error: CraftError,
 }
 
@@ -606,6 +645,11 @@ pub enum CraftError {
     QueueFull {
         maximum: usize,
     },
+    InvalidQuantity {
+        requested: u64,
+        maximum: u64,
+    },
+    NoActiveOrder,
     MissingBuilding {
         building: BuildingKind,
         required: u8,
@@ -667,7 +711,44 @@ pub enum CraftStateError {
         expected: ResourceCost,
         found: ResourceCost,
     },
+    InvalidQuantity {
+        craftable: CraftableId,
+        quantity_completed: u64,
+        quantity_requested: u64,
+    },
+    ReservationCountMismatch {
+        craftable: CraftableId,
+        expected: u64,
+        found: usize,
+    },
     InventoryOverflow(CraftableId),
+}
+
+/// The largest whole number of units `unit_cost` each that `available` can cover — used both to
+/// clamp/validate a requested batch quantity and to drive the UI's "MAX" control.
+pub fn max_affordable_quantity(available: ResourceStock, unit_cost: ResourceCost) -> u64 {
+    if unit_cost.is_zero() {
+        return MAX_CRAFT_BATCH_QUANTITY;
+    }
+    let mut affordable = MAX_CRAFT_BATCH_QUANTITY;
+    if let Some(metal_quantity) = available.metal.checked_div(unit_cost.metal) {
+        affordable = affordable.min(metal_quantity);
+    }
+    if let Some(crystal_quantity) = available.crystal.checked_div(unit_cost.crystal) {
+        affordable = affordable.min(crystal_quantity);
+    }
+    if let Some(fuel_quantity) = available.fuel.checked_div(unit_cost.fuel) {
+        affordable = affordable.min(fuel_quantity);
+    }
+    affordable
+}
+
+fn scaled_cost(unit_cost: ResourceCost, quantity: u64) -> Option<ResourceCost> {
+    Some(ResourceCost::new(
+        unit_cost.metal.checked_mul(quantity)?,
+        unit_cost.crystal.checked_mul(quantity)?,
+        unit_cost.fuel.checked_mul(quantity)?,
+    ))
 }
 
 pub fn craft_quote(
@@ -675,6 +756,7 @@ pub fn craft_quote(
     actor: FactionId,
     colony_id: ColonyId,
     craftable: CraftableId,
+    quantity: u64,
 ) -> Result<CraftQuote, CraftError> {
     let colony = state
         .colony(colony_id)
@@ -685,6 +767,12 @@ pub fn craft_quote(
     let maximum = max_craft_queue();
     if colony.craft_queue.len() >= maximum {
         return Err(CraftError::QueueFull { maximum });
+    }
+    if quantity == 0 || quantity > MAX_CRAFT_BATCH_QUANTITY {
+        return Err(CraftError::InvalidQuantity {
+            requested: quantity,
+            maximum: MAX_CRAFT_BATCH_QUANTITY,
+        });
     }
 
     let Some(definition) = craftable_catalog().get(craftable) else {
@@ -711,32 +799,63 @@ pub fn craft_quote(
         return Err(CraftError::NoShipyardCapacity);
     }
     let available = colony.resources.available();
-    if !available.can_cover(definition.cost) {
-        return Err(CraftError::InsufficientResources {
+    let max_affordable_quantity = max_affordable_quantity(available, definition.cost);
+    let total_cost =
+        scaled_cost(definition.cost, quantity).ok_or(CraftError::InsufficientResources {
             available,
             cost: definition.cost,
+        })?;
+    if !available.can_cover(total_cost) {
+        return Err(CraftError::InsufficientResources {
+            available,
+            cost: total_cost,
         });
     }
-    let projected_quantity = colony
+
+    let pending_from_existing_orders = colony
         .craft_queue
         .orders()
         .filter(|order| order.craftable == craftable)
-        .try_fold(colony.inventory.quantity(craftable), |quantity, order| {
-            quantity.checked_add(order.result_quantity)
+        .try_fold(0_u64, |total, order| {
+            order
+                .result_quantity_per_unit
+                .checked_mul(order.quantity_remaining())
+                .and_then(|pending| total.checked_add(pending))
+        });
+    let projected_quantity = pending_from_existing_orders
+        .and_then(|pending| {
+            definition
+                .result_quantity
+                .checked_mul(quantity)?
+                .checked_add(pending)
         })
-        .and_then(|quantity| quantity.checked_add(definition.result_quantity));
+        .and_then(|total_pending| {
+            colony
+                .inventory
+                .quantity(craftable)
+                .checked_add(total_pending)
+        });
     if projected_quantity.is_none() {
         return Err(CraftError::InventoryOverflow(craftable));
     }
 
+    let total_required_work_milli = definition
+        .required_work_milli
+        .checked_mul(quantity)
+        .ok_or(CraftError::InventoryOverflow(craftable))?;
+
     Ok(CraftQuote {
         colony_id,
         craftable,
-        cost: definition.cost,
-        required_work_milli: definition.required_work_milli,
+        quantity,
+        unit_cost: definition.cost,
+        total_cost,
+        unit_required_work_milli: definition.required_work_milli,
+        total_required_work_milli,
         output_milli_per_tick: output,
-        estimated_ticks: definition.required_work_milli.div_ceil(output),
-        result_quantity: definition.result_quantity,
+        estimated_ticks: total_required_work_milli.div_ceil(output),
+        result_quantity_per_unit: definition.result_quantity,
+        max_affordable_quantity,
     })
 }
 
@@ -745,29 +864,83 @@ pub fn enqueue_craft(
     actor: FactionId,
     colony_id: ColonyId,
     craftable: CraftableId,
+    quantity: u64,
 ) -> Result<CraftQueued, CraftError> {
-    let quote = craft_quote(state, actor, colony_id, craftable)?;
+    let quote = craft_quote(state, actor, colony_id, craftable, quantity)?;
     let colony = state
         .colony_mut(colony_id)
         .ok_or(CraftError::UnknownColony(colony_id))?;
-    let reservation_id = colony
-        .resources
-        .reserve(quote.cost)
-        .map_err(CraftError::Reservation)?;
+
+    let mut reservations = VecDeque::with_capacity(quantity as usize);
+    for _ in 0..quantity {
+        match colony.resources.reserve(quote.unit_cost) {
+            Ok(reservation_id) => reservations.push_back(reservation_id),
+            Err(error) => {
+                for reservation_id in reservations {
+                    colony
+                        .resources
+                        .release(reservation_id)
+                        .expect("a reservation just created by this call still exists");
+                }
+                return Err(CraftError::Reservation(error));
+            }
+        }
+    }
+
     let order = CraftOrder {
         craftable,
-        cost: quote.cost,
-        reservation_id,
-        required_work_milli: quote.required_work_milli,
+        unit_cost: quote.unit_cost,
+        result_quantity_per_unit: quote.result_quantity_per_unit,
+        required_work_milli_per_unit: quote.unit_required_work_milli,
         accumulated_work_milli: 0,
-        result_quantity: quote.result_quantity,
+        quantity_requested: quantity,
+        quantity_completed: 0,
+        reservations,
     };
     colony.craft_queue.push(order);
 
     Ok(CraftQueued {
         colony_id,
-        order,
+        craftable,
+        quantity_requested: quantity,
         queue_length: colony.craft_queue.len(),
+    })
+}
+
+pub fn cancel_craft(
+    state: &mut GameState,
+    actor: FactionId,
+    colony_id: ColonyId,
+) -> Result<CraftCancelled, CraftError> {
+    let colony = state
+        .colony(colony_id)
+        .ok_or(CraftError::UnknownColony(colony_id))?;
+    state
+        .authorize_management(actor, colony.owner)
+        .map_err(CraftError::Access)?;
+    if colony.craft_queue.active().is_none() {
+        return Err(CraftError::NoActiveOrder);
+    }
+
+    let colony = state
+        .colony_mut(colony_id)
+        .ok_or(CraftError::UnknownColony(colony_id))?;
+    let order = colony.craft_queue.pop_front();
+    let craftable = order.craftable;
+    let quantity_completed = order.quantity_completed;
+    let quantity_refunded = order.quantity_remaining();
+    for reservation_id in order.reservations {
+        colony
+            .resources
+            .release(reservation_id)
+            .map_err(CraftError::Reservation)?;
+    }
+
+    Ok(CraftCancelled {
+        colony_id,
+        craftable,
+        quantity_completed,
+        quantity_refunded,
     })
 }
 
@@ -783,28 +956,62 @@ pub fn advance_colony_craft(
 
     let mut completed = Vec::new();
     while budget > 0 {
-        let finished = {
+        let unit_finished = {
             let Some(active) = colony.craft_queue.orders.front_mut() else {
                 break;
             };
             let spent = active.remaining_work_milli().min(budget);
             active.accumulated_work_milli = active.accumulated_work_milli.saturating_add(spent);
             budget -= spent;
-            (active.accumulated_work_milli >= active.required_work_milli).then_some(*active)
+            active.accumulated_work_milli >= active.required_work_milli_per_unit
         };
 
-        let Some(order) = finished else {
+        if !unit_finished {
             continue;
+        }
+
+        let (
+            craftable,
+            result_quantity_per_unit,
+            reservation_id,
+            quantity_completed,
+            quantity_remaining,
+            batch_finished,
+        ) = {
+            let active = colony
+                .craft_queue
+                .orders
+                .front_mut()
+                .expect("the order just progressed above still exists");
+            let reservation_id = active
+                .reservations
+                .pop_front()
+                .expect("a completed unit always has a matching reservation");
+            active.quantity_completed = active.quantity_completed.saturating_add(1);
+            active.accumulated_work_milli = 0;
+            (
+                active.craftable,
+                active.result_quantity_per_unit,
+                reservation_id,
+                active.quantity_completed,
+                active.quantity_remaining(),
+                active.reservations.is_empty(),
+            )
         };
-        colony.craft_queue.pop_front();
-        colony.resources.commit(order.reservation_id)?;
-        colony.inventory.add(order.craftable, order.result_quantity);
+
+        colony.resources.commit(reservation_id)?;
+        colony.inventory.add(craftable, result_quantity_per_unit);
         completed.push(CraftCompleted {
             colony_id: colony.id,
-            craftable: order.craftable,
-            quantity: order.result_quantity,
-            inventory_quantity: colony.inventory.quantity(order.craftable),
+            craftable,
+            quantity_completed,
+            quantity_remaining,
+            inventory_quantity: colony.inventory.quantity(craftable),
         });
+
+        if batch_finished {
+            colony.craft_queue.pop_front();
+        }
     }
 
     Ok(completed)
@@ -830,11 +1037,12 @@ pub fn shipyard_output_points_per_second(colony: &ColonyState) -> f64 {
     shipyard_output_milli_per_tick(colony) as f64 * f64::from(STRATEGIC_TICKS_PER_SECOND) / 1_000.0
 }
 
-pub fn craft_progress_ratio(order: CraftOrder) -> f32 {
-    if order.required_work_milli == 0 {
+pub fn craft_progress_ratio(order: &CraftOrder) -> f32 {
+    if order.required_work_milli_per_unit == 0 {
         return 1.0;
     }
-    (order.accumulated_work_milli as f64 / order.required_work_milli as f64).clamp(0.0, 1.0) as f32
+    (order.accumulated_work_milli as f64 / order.required_work_milli_per_unit as f64)
+        .clamp(0.0, 1.0) as f32
 }
 
 pub fn validate_craft_state(
@@ -865,34 +1073,48 @@ pub fn validate_craft_state(
         let Some(definition) = catalog.get(order.craftable) else {
             return Err(CraftStateError::UnknownQueuedCraftable(order.craftable));
         };
-        if order.cost != definition.cost {
+        if order.unit_cost != definition.cost {
             return Err(CraftStateError::InvalidCost {
                 craftable: order.craftable,
                 expected: definition.cost,
-                found: order.cost,
+                found: order.unit_cost,
             });
         }
-        if order.required_work_milli != definition.required_work_milli {
+        if order.required_work_milli_per_unit != definition.required_work_milli {
             return Err(CraftStateError::InvalidRequiredWork {
                 craftable: order.craftable,
                 expected: definition.required_work_milli,
-                found: order.required_work_milli,
+                found: order.required_work_milli_per_unit,
             });
         }
-        if order.required_work_milli == 0
-            || order.accumulated_work_milli >= order.required_work_milli
+        if order.required_work_milli_per_unit == 0
+            || order.accumulated_work_milli >= order.required_work_milli_per_unit
         {
             return Err(CraftStateError::InvalidProgress {
                 craftable: order.craftable,
                 accumulated: order.accumulated_work_milli,
-                required: order.required_work_milli,
+                required: order.required_work_milli_per_unit,
             });
         }
-        if order.result_quantity != definition.result_quantity {
+        if order.result_quantity_per_unit != definition.result_quantity {
             return Err(CraftStateError::InvalidResultQuantity {
                 craftable: order.craftable,
                 expected: definition.result_quantity,
-                found: order.result_quantity,
+                found: order.result_quantity_per_unit,
+            });
+        }
+        if order.quantity_completed > order.quantity_requested {
+            return Err(CraftStateError::InvalidQuantity {
+                craftable: order.craftable,
+                quantity_completed: order.quantity_completed,
+                quantity_requested: order.quantity_requested,
+            });
+        }
+        if order.reservations.len() as u64 != order.quantity_remaining() {
+            return Err(CraftStateError::ReservationCountMismatch {
+                craftable: order.craftable,
+                expected: order.quantity_remaining(),
+                found: order.reservations.len(),
             });
         }
         for prerequisite in &definition.building_prerequisites {
@@ -914,25 +1136,32 @@ pub fn validate_craft_state(
                 });
             }
         }
-        if !reservations.insert(order.reservation_id) {
-            return Err(CraftStateError::DuplicateReservation(order.reservation_id));
+        for reservation_id in &order.reservations {
+            if !reservations.insert(*reservation_id) {
+                return Err(CraftStateError::DuplicateReservation(*reservation_id));
+            }
+            let reservation = colony
+                .resources
+                .reservations()
+                .iter()
+                .find(|reservation| reservation.id == *reservation_id)
+                .ok_or(CraftStateError::MissingReservation(*reservation_id))?;
+            if reservation.cost != order.unit_cost {
+                return Err(CraftStateError::ReservationCostMismatch {
+                    reservation_id: *reservation_id,
+                    expected: order.unit_cost,
+                    found: reservation.cost,
+                });
+            }
         }
-        let reservation = colony
-            .resources
-            .reservations()
-            .iter()
-            .find(|reservation| reservation.id == order.reservation_id)
-            .ok_or(CraftStateError::MissingReservation(order.reservation_id))?;
-        if reservation.cost != order.cost {
-            return Err(CraftStateError::ReservationCostMismatch {
-                reservation_id: order.reservation_id,
-                expected: order.cost,
-                found: reservation.cost,
-            });
-        }
-        let Some(total) = projected_inventory
-            .quantity(order.craftable)
-            .checked_add(order.result_quantity)
+        let Some(total) = order
+            .result_quantity_per_unit
+            .checked_mul(order.quantity_remaining())
+            .and_then(|pending| {
+                projected_inventory
+                    .quantity(order.craftable)
+                    .checked_add(pending)
+            })
         else {
             return Err(CraftStateError::InventoryOverflow(order.craftable));
         };
@@ -1154,6 +1383,7 @@ mod tests {
             actor,
             colony_id,
             CraftableId::LIGHT_PROBE,
+            1,
         )
         .expect("probe prerequisites are met");
 
@@ -1177,6 +1407,7 @@ mod tests {
             actor,
             colony_id,
             CraftableId::LIGHT_PROBE,
+            1,
         )
         .expect("probe can be queued");
         let mut split = whole.clone();
@@ -1224,10 +1455,216 @@ mod tests {
                 simulation.state().player_faction,
                 colony_id,
                 CraftableId::LIGHT_PROBE,
+                1,
             ),
             Err(CraftError::MissingTechnology(
                 TechnologyId::SPATIAL_DETECTION,
             )),
+        );
+    }
+
+    #[test]
+    fn a_batch_reserves_the_total_cost_and_a_second_batch_fails_atomically_when_unaffordable() {
+        let mut simulation = ready_simulation();
+        let colony_id = simulation.state().colonies[0].id;
+        let actor = simulation.state().player_faction;
+        let unit_cost = craftable_definition(CraftableId::LIGHT_PROBE).cost;
+        let available_before = simulation
+            .state()
+            .colony(colony_id)
+            .expect("colony exists")
+            .resources
+            .available();
+        let max_quantity = max_affordable_quantity(available_before, unit_cost);
+        assert!(
+            max_quantity >= 1,
+            "the test colony's credited stock must afford at least one probe",
+        );
+
+        enqueue_craft(
+            simulation.state_mut(),
+            actor,
+            colony_id,
+            CraftableId::LIGHT_PROBE,
+            max_quantity,
+        )
+        .expect("the maximum affordable quantity must always be queueable");
+
+        let colony = simulation.state().colony(colony_id).expect("colony exists");
+        assert_eq!(
+            colony.craft_queue.len(),
+            1,
+            "a batch occupies a single queue slot"
+        );
+        assert_eq!(
+            colony
+                .craft_queue
+                .active()
+                .expect("batch queued")
+                .reservations
+                .len(),
+            max_quantity as usize,
+            "one reservation per not-yet-completed unit",
+        );
+
+        // One unit beyond what's affordable must be rejected without reserving anything, and
+        // the batch's own reservations must be untouched.
+        let error = craft_quote(
+            simulation.state(),
+            actor,
+            colony_id,
+            CraftableId::LIGHT_PROBE,
+            max_quantity + 1,
+        );
+        assert!(matches!(
+            error,
+            Err(CraftError::InsufficientResources { .. })
+        ));
+        assert_eq!(
+            simulation
+                .state()
+                .colony(colony_id)
+                .expect("colony exists")
+                .resources
+                .reservations()
+                .len(),
+            max_quantity as usize,
+            "a failed quote must not create any reservation",
+        );
+    }
+
+    #[test]
+    fn batch_units_complete_one_at_a_time_and_credit_inventory_incrementally() {
+        let mut simulation = ready_simulation();
+        let colony_id = simulation.state().colonies[0].id;
+        let actor = simulation.state().player_faction;
+        enqueue_craft(
+            simulation.state_mut(),
+            actor,
+            colony_id,
+            CraftableId::LIGHT_PROBE,
+            3,
+        )
+        .expect("3 probes fit the credited stock");
+
+        // Advance far enough for exactly one unit (the same per-unit duration the single-unit
+        // test already relies on), then check the batch reflects one completed / two remaining
+        // instead of jumping straight to fully done.
+        let completed = advance_colony_craft(
+            simulation
+                .state_mut()
+                .colony_mut(colony_id)
+                .expect("colony exists"),
+            StrategicDuration::from_ticks(450),
+        )
+        .expect("reservation commits");
+
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].quantity_completed, 1);
+        assert_eq!(completed[0].quantity_remaining, 2);
+        assert_eq!(completed[0].inventory_quantity, 1);
+        let colony = simulation.state().colony(colony_id).expect("colony exists");
+        assert_eq!(
+            colony.craft_queue.len(),
+            1,
+            "the batch stays queued until fully built"
+        );
+        assert_eq!(
+            colony
+                .craft_queue
+                .active()
+                .expect("batch queued")
+                .reservations
+                .len(),
+            2,
+        );
+        assert_eq!(colony.inventory.quantity(CraftableId::LIGHT_PROBE), 1);
+
+        // Finish the remaining two units.
+        let completed = advance_colony_craft(
+            simulation
+                .state_mut()
+                .colony_mut(colony_id)
+                .expect("colony exists"),
+            StrategicDuration::from_ticks(900),
+        )
+        .expect("reservation commits");
+        assert_eq!(completed.len(), 2);
+        let colony = simulation.state().colony(colony_id).expect("colony exists");
+        assert!(
+            colony.craft_queue.is_empty(),
+            "a fully built batch leaves the queue"
+        );
+        assert_eq!(colony.inventory.quantity(CraftableId::LIGHT_PROBE), 3);
+    }
+
+    #[test]
+    fn cancelling_a_partially_completed_batch_keeps_produced_units_and_refunds_the_rest() {
+        let mut simulation = ready_simulation();
+        let colony_id = simulation.state().colonies[0].id;
+        let actor = simulation.state().player_faction;
+        enqueue_craft(
+            simulation.state_mut(),
+            actor,
+            colony_id,
+            CraftableId::LIGHT_PROBE,
+            3,
+        )
+        .expect("3 probes fit the credited stock");
+        let available_after_queueing = simulation
+            .state()
+            .colony(colony_id)
+            .expect("colony exists")
+            .resources
+            .available();
+
+        advance_colony_craft(
+            simulation
+                .state_mut()
+                .colony_mut(colony_id)
+                .expect("colony exists"),
+            StrategicDuration::from_ticks(450),
+        )
+        .expect("one unit completes");
+
+        let cancelled = cancel_craft(simulation.state_mut(), actor, colony_id)
+            .expect("an active batch can be cancelled");
+        assert_eq!(cancelled.craftable, CraftableId::LIGHT_PROBE);
+        assert_eq!(cancelled.quantity_completed, 1);
+        assert_eq!(cancelled.quantity_refunded, 2);
+
+        let colony = simulation.state().colony(colony_id).expect("colony exists");
+        assert!(colony.craft_queue.is_empty());
+        assert_eq!(
+            colony.inventory.quantity(CraftableId::LIGHT_PROBE),
+            1,
+            "the already-produced unit is kept",
+        );
+        // The unit that had already committed its reservation is gone for good, but the 2
+        // remaining units' reservations must be fully returned to availability.
+        let unit_cost = craftable_definition(CraftableId::LIGHT_PROBE).cost;
+        let refund = ResourceStock::new(
+            unit_cost.metal * 2,
+            unit_cost.crystal * 2,
+            unit_cost.fuel * 2,
+        );
+        assert_eq!(
+            colony.resources.available(),
+            available_after_queueing
+                .checked_add(refund)
+                .expect("refund must not overflow in this test"),
+        );
+    }
+
+    #[test]
+    fn cancelling_without_an_active_batch_is_an_explicit_error() {
+        let mut simulation = ready_simulation();
+        let colony_id = simulation.state().colonies[0].id;
+        let actor = simulation.state().player_faction;
+
+        assert_eq!(
+            cancel_craft(simulation.state_mut(), actor, colony_id),
+            Err(CraftError::NoActiveOrder),
         );
     }
 }

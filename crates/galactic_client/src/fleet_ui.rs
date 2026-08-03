@@ -222,7 +222,7 @@ fn spawn_fleet_screen(mut commands: Commands) {
                 position_type: PositionType::Absolute,
                 left: Val::Px(14.0),
                 right: Val::Px(14.0),
-                top: Val::Px(72.0),
+                top: Val::Px(112.0),
                 bottom: Val::Px(14.0),
                 padding: UiRect::all(Val::Px(12.0)),
                 border: UiRect::all(Val::Px(1.0)),
