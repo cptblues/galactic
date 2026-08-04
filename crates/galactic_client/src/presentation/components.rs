@@ -23,6 +23,7 @@ pub(crate) enum OpenPanel {
     Craft,
     Research,
     Navigation,
+    Objectives,
     Colony,
 }
 

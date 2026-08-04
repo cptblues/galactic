@@ -1656,6 +1656,37 @@ Versions après ce checkpoint :
 - `RULESET_SCHEMA_VERSION` reste 12 ;
 - `content_version` du ruleset `default` = 16.
 
+## MVP-032-A — Objectifs scénarisés du Consortium
+
+Le client ajoute un panneau `Objectifs du Consortium`, accessible par `O` et
+par la barre basse. Il sert de fil directeur immersif : la campagne principale
+guide Port-Sillage depuis la production initiale jusqu'à la fondation d'une
+deuxième colonie, avec des objectifs facultatifs pour l'exploration lointaine,
+les planètes occupées, les récoltes importantes, les flottes mixtes et les
+colonies à risque.
+
+L'état d'objectifs est volontairement une ressource client locale à la session :
+`ObjectiveProgressState` conserve les objectifs terminés, les dotations déjà
+réclamées, l'objectif sélectionné et le feedback ; `ObjectiveUiState` conserve
+l'affichage des conseils. Aucun `GameAction`, aucun champ de `GameState` et
+aucune donnée de sauvegarde ne sont ajoutés dans cette passe, car MVP-031 est
+reporté pour privilégier la validation du gameplay.
+
+Les objectifs se valident uniquement depuis l'état réel de simulation :
+niveaux de bâtiments, recherches, inventaires, flottes, connaissances,
+rapports de mission, rapports d'analyse, rapports de combat et colonies du
+joueur. Les dotations sont de petites ressources créditées une seule fois par
+session sur la colonie active ou la colonie mère, avec `credit_capped` pour
+respecter les capacités de stockage.
+
+Versions après ce checkpoint :
+
+- `GAME_STATE_VERSION` reste 28 ;
+- `SAVE_VERSION` reste 29 ;
+- `GENERATION_VERSION` reste 5 ;
+- `RULESET_SCHEMA_VERSION` reste 12 ;
+- `content_version` du ruleset `default` reste 16.
+
 ## Refactor technique — Modularisation interne
 
 Passe technique pure, sans changement de comportement ni de gameplay, menée

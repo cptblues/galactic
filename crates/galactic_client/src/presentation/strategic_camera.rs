@@ -34,7 +34,11 @@ pub(crate) fn update_strategic_camera(
     // pass moves the open-state mechanism, it does not change camera behavior.
     if matches!(
         *input.open_panel,
-        OpenPanel::Colony | OpenPanel::Research | OpenPanel::Craft | OpenPanel::Navigation
+        OpenPanel::Colony
+            | OpenPanel::Research
+            | OpenPanel::Craft
+            | OpenPanel::Navigation
+            | OpenPanel::Objectives
     ) {
         return;
     }

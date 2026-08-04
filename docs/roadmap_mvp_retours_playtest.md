@@ -17,8 +17,8 @@
 | MVP-030-A5 | Transformer l’analyse planétaire en mission satellite | P1 | 8 pts | Implémenté |
 | MVP-030-A6 | Diversifier les vaisseaux et les rôles de combat | P1 | 13 pts | Implémenté |
 | MVP-030-A7 | Polir l’UX flotte, ressources et cadrage narratif | P1 | 5 pts | Implémenté |
-| MVP-031 | Finaliser sauvegarde, chargement et migrations V1 | P0 | 8 pts | À faire |
-| MVP-032 | Ajouter onboarding et objectifs contextuels | P1 | 5 pts | À faire |
+| MVP-031 | Finaliser sauvegarde, chargement et migrations V1 | P0 | 8 pts | Reporté après MVP-033 |
+| MVP-032 | Ajouter onboarding et objectifs contextuels | P1 | 5 pts | MVP-032-A implémenté |
 | MVP-033 | Implémenter la condition de réussite du MVP | P1 | 3 pts | À faire |
 | MVP-034 | Ajouter les presets graphiques | P2 | 5 pts | À faire |
 | MVP-035 | Intégrer diagnostics et benchmark reproductible | P2 | 5 pts | À faire |
@@ -768,8 +768,8 @@ Permettre au joueur de sauvegarder une partie sur disque, la recharger et contin
 |---|---|
 | Priorité | P1 |
 | Estimation | 5 points |
-| Statut | À faire |
-| Dépendances | MVP-030-A1 à MVP-031 |
+| Statut | MVP-032-A implémenté |
+| Dépendances | MVP-030-A1 à MVP-030-A7 ; MVP-031 reporté |
 
 ### Objectif
 
@@ -813,7 +813,7 @@ objectif ne doit pas devenir le meilleur moyen d'optimiser l'économie.
 - Possibilité de masquer les conseils.
 - Possibilité de les réactiver.
 - Validation depuis l’état réel de simulation.
-- Sauvegarde de la progression.
+- Progression sauvegardée plus tard avec MVP-031.
 - Objectifs facultatifs avec récompenses modestes.
 - Ton narratif cohérent avec le Consortium.
 
@@ -821,11 +821,29 @@ objectif ne doit pas devenir le meilleur moyen d'optimiser l'économie.
 
 - [ ] Un nouveau joueur atteint sa première sonde sans aide orale.
 - [ ] Un objectif ne se valide pas depuis un simple clic d’interface.
-- [ ] Les conseils ne bloquent pas la navigation.
+- [x] Les conseils ne bloquent pas la navigation.
 - [ ] La progression est sauvegardée.
-- [ ] Les objectifs utilisent les systèmes réels du jeu.
-- [ ] Les objectifs facultatifs incitent à explorer plus loin sans bloquer la partie.
-- [ ] Les récompenses ne dominent pas la production normale.
+- [x] Les objectifs utilisent les systèmes réels du jeu.
+- [x] Les objectifs facultatifs incitent à explorer plus loin sans bloquer la partie.
+- [x] Les récompenses ne dominent pas la production normale.
+
+### MVP-032-A implémenté
+
+Le client ajoute un panneau `Objectifs du Consortium` accessible par `O` et
+par la barre basse. La progression est volontairement locale à la session pour
+ne pas rouvrir MVP-031 : aucun champ n'est ajouté à `GameState` et aucune
+version de sauvegarde n'est modifiée.
+
+Les objectifs principaux guident jusqu'à une deuxième colonie. Les objectifs
+facultatifs encouragent les systèmes lointains, les planètes occupées, les
+récoltes substantielles, les flottes mixtes et les colonies risquées. Toutes
+les validations lisent l'état réel de simulation : bâtiments, recherches,
+inventaires, flottes, niveaux de connaissance, rapports de mission, rapports
+d'analyse et colonies du joueur.
+
+Les récompenses sont des petites dotations de ressources créditées une seule
+fois par session, plafonnées par la capacité de stockage de la colonie active
+ou de Port-Sillage.
 
 ---
 

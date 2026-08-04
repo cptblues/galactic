@@ -1076,6 +1076,7 @@ fn spawn_tab_bar(commands: &mut Commands) {
             spawn_tab_bar_slot(row, research_ui::spawn_research_toggle);
             spawn_tab_bar_slot(row, craft_ui::spawn_craft_toggle);
             spawn_tab_bar_slot(row, fleet_ui::spawn_fleet_toggle);
+            spawn_tab_bar_slot(row, objectives_ui::spawn_objectives_toggle);
             spawn_tab_bar_slot(row, navigation_ui::spawn_search_toggle);
             spawn_tab_bar_slot(row, navigation_ui::spawn_filters_toggle);
             row.spawn(Node {
@@ -1272,7 +1273,7 @@ pub(crate) fn help_panel_text() -> &'static str {
     "BRIEFING DU CONSORTIUM\n\
 Mission : assurer la survie de notre peuple, sécuriser les ressources nécessaires \
 et étendre notre présence aussi loin que nécessaire.\n\
-Boucle conseillée : produire -> rechercher -> sonder -> analyser -> exploiter -> coloniser.\n\
+Boucle conseillée : ouvrir Objectifs [O], produire -> rechercher -> sonder -> analyser -> exploiter -> coloniser.\n\
 \n\
 Commandes : clic sélectionner | double-clic ouvrir/recentrer | ? masquer/rouvrir | \
 K sonder | L analyser | M attaquer | H récolter | N coloniser | P projection | \

@@ -271,14 +271,14 @@ Le MVP est validé lorsqu’un joueur extérieur peut : comprendre sa planète, 
 
 | N° | Issue | Priorité | Estimation |
 |---:|---|---:|---:|
-| 031 | MVP-031 — Implémenter sauvegarde, chargement et migration V1 | P1 | 8 |
+| 031 | MVP-031 — Implémenter sauvegarde, chargement et migration V1 | P2 | 8 |
 
 ### Expérience
 
 | N° | Issue | Priorité | Estimation |
 |---:|---|---:|---:|
-| 032 | MVP-032 — Ajouter onboarding et objectifs contextuels | P2 | 5 |
-| 033 | MVP-033 — Définir et implémenter la condition de réussite du MVP | P2 | 3 |
+| 032 | MVP-032 — Ajouter onboarding et objectifs contextuels | P1 | 5 |
+| 033 | MVP-033 — Définir et implémenter la condition de réussite du MVP | P1 | 3 |
 
 ### Performance
 

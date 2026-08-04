@@ -69,6 +69,7 @@ Référence éditoriale : `docs/universe_bible.md`.
 | Recherche techno | `T` |
 | Chantier flotte | `Y` |
 | Flottes & missions | `V` |
+| Objectifs du Consortium | `O` |
 | Sonder le système ou la planète sélectionnés | `K` |
 | Analyser la planète sondée sélectionnée | `L` |
 | Basculer projection 3D / 2,5D | `P` |

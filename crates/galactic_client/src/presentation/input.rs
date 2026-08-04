@@ -101,7 +101,11 @@ pub(crate) fn handle_view_input(
 
     if matches!(
         *open_panel,
-        OpenPanel::Research | OpenPanel::Craft | OpenPanel::Fleet | OpenPanel::Navigation
+        OpenPanel::Research
+            | OpenPanel::Craft
+            | OpenPanel::Fleet
+            | OpenPanel::Navigation
+            | OpenPanel::Objectives
     ) {
         return;
     }

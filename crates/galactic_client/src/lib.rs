@@ -2,6 +2,7 @@ mod craft_ui;
 mod fleet_ui;
 mod mission_wizard;
 mod navigation_ui;
+mod objectives_ui;
 mod presentation;
 mod research_ui;
 
@@ -9,6 +10,7 @@ use craft_ui::CraftUiPlugin;
 use fleet_ui::FleetUiPlugin;
 use mission_wizard::MissionWizardPlugin;
 use navigation_ui::NavigationUiPlugin;
+use objectives_ui::ObjectivesUiPlugin;
 use presentation::colony_management_ui::{
     capture_colony_management_feedback, cycle_management_colony, handle_colony_management_buttons,
     update_action_buttons, update_colony_management_buildings, update_colony_management_detail,
@@ -205,6 +207,7 @@ impl Plugin for ClientPlugin {
         .add_plugins(FleetUiPlugin)
         .add_plugins(MissionWizardPlugin)
         .add_plugins(NavigationUiPlugin)
+        .add_plugins(ObjectivesUiPlugin)
         .add_systems(Startup, log_startup)
         .add_systems(Update, log_memory_diagnostics);
     }
