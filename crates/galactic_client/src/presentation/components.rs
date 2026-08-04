@@ -107,6 +107,11 @@ pub(crate) struct DebugOverlayState {
     pub(crate) visible: bool,
 }
 
+#[derive(Resource, Default)]
+pub(crate) struct HelpUiState {
+    pub(crate) shortcuts_visible: bool,
+}
+
 #[derive(Component)]
 pub(crate) struct ResourceBarRoot;
 
@@ -117,6 +122,9 @@ pub(crate) struct ResourceBarCardText {
 
 #[derive(Component)]
 pub(crate) struct HelpText;
+
+#[derive(Component)]
+pub(crate) struct HelpToggleText;
 
 /// Distinguishes the 3 fixed text blocks of the inspector panel within a single query, avoiding
 /// the unprovable-disjointness query conflicts that separate marker components would cause once
@@ -425,7 +433,6 @@ pub(crate) enum UiAction {
     FocusSelection,
     EnterSystem,
     ExitSystem,
-    AnalyzePlanet,
     ToggleProjection,
     ToggleDebugGraph,
     RebuildView,

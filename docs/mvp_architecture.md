@@ -320,7 +320,7 @@ Matrice d'affichage :
 ```text
 Unknown    aucune donnée exploitable
 Detected   signal et placeholders
-Probed     identité et estimations
+Probed     identité minimale
 Analyzed   valeurs exactes disponibles
 Colonized  valeurs exactes et données économiques
 ```
@@ -332,8 +332,8 @@ Règles :
 - un système sondé révèle son identité et des estimations clairement étiquetées ;
 - un système analysé révèle les valeurs exactes disponibles ;
 - une planète détectée masque nom, type et habitabilité ;
-- une planète sondée révèle son identité et une fourchette qualitative
-  d'habitabilité ;
+- une planète sondée révèle son identité, son nom et son type général, sans
+  habitabilité ni potentiels ;
 - une planète analysée révèle son habitabilité exacte ;
 - les stocks, potentiels et bâtiments ne sont affichés que pour une colonie ;
 - chaque niveau indique explicitement l'action nécessaire pour progresser ;
@@ -1237,11 +1237,12 @@ La forme persistée des missions change :
 
 ## MVP-024 — Analyse planétaire et règles de colonisabilité
 
-`GameAction::AnalyzePlanet` accepte uniquement une planète au niveau `Probed`
-et exige le déblocage `AnalyzePlanets`. L'action est déterministe et immédiate :
-elle élève la connaissance à `Analyzed`, produit un `PlanetAnalysisReport`
-horodaté au tick stratégique courant et l'ajoute à
-`GameState::planet_analysis_reports`.
+Ce checkpoint introduit le modèle de rapport planétaire exact : une planète ne
+peut être analysée qu'après avoir atteint `Probed` et après le déblocage
+`AnalyzePlanets`. Depuis MVP-030-A5, le chemin joueur n'utilise plus d'action
+instantanée : `MissionKind::Analyze` produit le `PlanetAnalysisReport` au
+retour du Satellite Cartographe, puis élève la connaissance à `Analyzed` et
+l'ajoute à `GameState::planet_analysis_reports`.
 
 Le rapport est un instantané persistant distinct de la définition réelle de
 l'univers. Il contient l'environnement, l'habitabilité exacte, quatre
@@ -1473,28 +1474,28 @@ Versions après ce checkpoint :
 
 ## MVP-030 — HUD des flottes et missions
 
-Ce checkpoint reste entièrement dans `galactic_client`, dans un nouveau module
-`fleet_ui`. Il ne modifie ni `GameState`, ni le moteur de missions, ni les
-versions de génération, de sauvegarde ou de ruleset : l'écran s'appuie
-uniquement sur les commandes et le modèle déjà exposés par `galactic_sim`
-(`FormFleet`, `LaunchProbe`, `LaunchAttack`, `LaunchHarvest`, `LaunchColonization`,
-`LaunchTransport`, `CancelMission`).
+Le module `fleet_ui` est le point d'entrée joueur pour la gestion des groupes de
+vaisseaux et les missions. Il s'appuie sur les commandes exposées par
+`galactic_sim` (`FormFleet`, `RenameFleet`, `DisbandFleet`, `LaunchMission`,
+`CancelMission`) et conserve les noms de flotte dans l'état sauvegardé.
 
 L'écran s'ouvre avec `V` et se ferme avec `V` ou `Échap`, selon le même
 mécanisme d'exclusion mutuelle que la gestion planétaire, la recherche et le
 chantier orbital. Il comporte quatre onglets. « Flottes » liste les flottes
-contrôlées par le joueur (composition, localisation, cargaison, affectation) et
-propose un compositeur : chaque type de vaisseau du catalogue s'incrémente
-depuis le stock au dock jusqu'à une nouvelle `FleetComposition`, formée par
-`FormFleet`. « Lancer une mission » choisit un type de mission puis une cible
-parmi une liste calculée dynamiquement selon les règles déjà appliquées
-ailleurs dans le jeu : systèmes ou planètes détectés pour une reconnaissance,
-planètes analysées et occupées par une faction étrangère pour une attaque,
-planètes colonisables pour une colonisation, sites d'extraction analysés et
-libres pour une récolte, colonies possédées pour un transport (avec les mêmes
-préréglages de cargaison que l'écran de gestion planétaire). Le lancement
-réutilise la colonie active comme origine, exactement comme les raccourcis
-`K`/`M`/`H`/`N` existants.
+contrôlées par le joueur (nom, composition, localisation, cargaison,
+affectation), permet de sélectionner un groupement, de le renommer et de
+dissoudre une flotte uniquement si elle est inactive, amarrée et sans cargaison.
+Le compositeur incrémente chaque type de vaisseau du catalogue depuis le stock
+au dock jusqu'à une nouvelle `FleetComposition`, formée par `FormFleet`.
+
+« Lancer une mission » suit l'ordre flotte -> type de mission -> destination ->
+paramètres -> validation. Le choix de type est filtré par la composition de la
+flotte sélectionnée : une Sonde Luciole lance `Probe`, un Satellite Cartographe
+lance `Analyze`, les cargos vides lancent `Transport` ou `Harvest`, une Arche
+Pionnière lance `Colonize` et les flottes militaires compatibles lancent
+`Attack`. Les destinations sont ensuite calculées dynamiquement selon les règles
+déjà appliquées par le moteur, puis revalidées par `plan_mission` pour afficher
+route, durée, coût carburant et erreurs avant validation.
 
 « Missions actives » affiche jusqu'à seize missions non terminées avec leur
 cible, leur phase et le temps restant avant leur prochaine étape, calculé avec
@@ -1537,9 +1538,9 @@ La recherche s'ouvre avec `/` et reconstruit son index à la volée à chaque
 frame où le panneau est ouvert, en filtrant systématiquement par le niveau de
 connaissance avant tout autre critère : un système non sondé ou une planète
 dont l'identité n'est pas révélée n'apparaissent jamais, quelle que soit la
-requête. Les flottes et missions du joueur sont indexées avec un libellé
-synthétique (type, cible, identifiant), faute de nom persistant dans
-`galactic_sim`. Les filtres (`B`) composent avec cette même porte de
+requête. Les flottes du joueur utilisent leur nom persistant dans les libellés
+de navigation, tandis que les missions restent indexées avec leur type, leur
+cible et leur identifiant. Les filtres (`B`) composent avec cette même porte de
 connaissance : ils ne peuvent que restreindre les résultats, jamais révéler un
 objet inconnu.
 
@@ -1558,6 +1559,63 @@ Univers et de la vue Système : la route complète de la mission est tracée en
 surbrillance et ses points d'origine et de destination reçoivent un marqueur
 distinct, dérivés chaque frame de l'état de simulation sans aucune géométrie
 mise en cache.
+
+## MVP-030-A5 — Analyse planétaire par satellite
+
+`MissionKind::Analyze` remplace le bouton d'analyse instantané. Une mission
+d'analyse exige une cible planétaire au niveau exact `Probed`, le déblocage
+`AnalyzePlanets`, une flotte joueur inactive et amarrée composée d'un Satellite
+Cartographe, ainsi qu'une route valide depuis la colonie active. Le ruleset
+ajoute `cartographer_satellite` dans `craftables.ron` et
+`analysis_duration_seconds` dans `planetary_analysis.ron`.
+
+La mission suit la machine commune `Preparation -> Outbound -> OnSite ->
+Returning -> Completed`. La phase `OnSite` correspond à l'analyse orbitale ; le
+rapport exact n'est pas créé à l'arrivée, mais seulement au retour en
+`Completed`. À ce moment, le moteur produit un `AnalyzeMissionResult`, ajoute le
+`PlanetAnalysisReport` persistant, élève la connaissance à `Analyzed` et
+rafraîchit le renseignement planétaire en précision `Surveyed`.
+
+L'interface masque désormais les informations exigeant une analyse : une planète
+`Probed` ne révèle que son existence, sa désignation, son nom, son type général
+et un contact potentiel. Habitabilité, environnement, ressources, site
+d'extraction, occupant, population, forces et défenses restent indisponibles
+jusqu'au rapport du Satellite Cartographe.
+
+Versions après ce checkpoint :
+
+- `GAME_STATE_VERSION = 27` ;
+- `SAVE_VERSION = 28` ;
+- `RULESET_SCHEMA_VERSION` reste 11 ;
+- `content_version` du ruleset `default` = 13.
+
+## MVP-030-A6 — Diversification des vaisseaux et du combat
+
+Le catalogue de craftables contient désormais trois transports progressifs
+(`light_cargo`, `meridian_carrier`, `atlas_cargo`) et trois coques militaires
+(`needle_interceptor`, `frigate_bulwark`, `bastion_cruiser`). Les statistiques
+de combat ne sont plus listées dans `combat.ron` : elles sont portées par le
+bloc `ship.combat` de chaque craftable militaire, avec attaque, défense,
+durabilité, classe de cible et bonus offensifs par classe.
+
+`combat.ron` version 2 ne garde que les paramètres globaux de résolution :
+rounds, échelle des dommages, poids défensif, variance déterministe et
+récupération. `CombatRules` dérive ses vaisseaux des craftables militaires et
+les snapshots d'attaque persistent classe et bonus au moment du lancement.
+Les forces de `planetary_presence.ron` possèdent aussi une classe de cible
+`Light`, `Medium` ou `Heavy`; l'offensive attaquante est pondérée par ces
+classes pendant `resolve_combat`.
+
+L'interface affiche les rôles et stats dans le chantier, ajoute une estimation
+d'attaque dans le planificateur de mission et sépare la liste des rapports de
+leur détail tactique pour éviter les superpositions.
+
+Versions après ce checkpoint :
+
+- `GAME_STATE_VERSION = 28` ;
+- `SAVE_VERSION = 29` ;
+- `RULESET_SCHEMA_VERSION = 12` ;
+- `content_version` du ruleset `default` = 14.
 
 ## Refactor technique — Modularisation interne
 

@@ -6,8 +6,8 @@ use galactic_domain::{FactionId, Owner, PlanetId};
 use serde::Deserialize;
 
 use crate::{
-    GameState, KnowledgeLevel, StartingFactionConfig, StrategicTick, UniverseRepository,
-    default_ruleset,
+    CombatTargetClass, GameState, KnowledgeLevel, StartingFactionConfig, StrategicTick,
+    UniverseRepository, default_ruleset,
 };
 
 pub const MAX_PLANETARY_FORCE_DEFINITIONS: usize = 64;
@@ -69,6 +69,7 @@ pub struct PlanetaryForceDefinition {
     pub offense: u32,
     pub defense: u32,
     pub durability: u32,
+    pub target_class: CombatTargetClass,
     pub estimate_step: u32,
 }
 
@@ -162,6 +163,7 @@ impl PlanetaryPresenceRules {
                     offense: configured.offense,
                     defense: configured.defense,
                     durability: configured.durability,
+                    target_class: configured.target_class,
                     estimate_step: configured.estimate_step,
                 },
             );
@@ -490,6 +492,8 @@ impl PlanetaryPresenceRules {
             output.push_str(definition.id.key());
             output.push(':');
             output.push_str(definition.domain.structural_key());
+            output.push(':');
+            output.push_str(definition.target_class.structural_key());
             output.push(';');
         }
         output.push_str("profiles:");
@@ -1156,6 +1160,7 @@ struct PlanetaryForceDefinitionConfig {
     offense: u32,
     defense: u32,
     durability: u32,
+    target_class: CombatTargetClass,
     estimate_step: u32,
 }
 

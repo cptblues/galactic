@@ -4,9 +4,10 @@
 use bevy::prelude::*;
 use galactic_domain::{ColonyId, ExtractionSiteId, FleetId, PlanetId, ResourceStock, SystemId};
 use galactic_sim::{
-    GameAction, KnowledgeLevel, MissionKind, MissionOrder, MissionTarget, PlanetaryOccupancyIntel,
-    Simulation, TechnologyUnlock, assess_planet_colonizability, eligible_fleets_for_mission,
-    extraction_rules, harvest_recoverable_quantity, plan_mission,
+    FleetLocation, GameAction, KnowledgeLevel, MissionKind, MissionOrder, MissionTarget,
+    PlanetaryOccupancyIntel, Simulation, StrategicDuration, TechnologyUnlock,
+    assess_planet_colonizability, combat_fleet_power, extraction_rules,
+    fleet_supports_mission_kind, harvest_recoverable_quantity, plan_mission,
 };
 
 use super::{
@@ -22,6 +23,14 @@ use crate::fleet_ui::{
 const MAX_TARGET_ROWS: usize = 16;
 const MAX_FLEET_ROWS: usize = 8;
 const CARGO_STEP: u64 = 50;
+const MISSION_KIND_OPTIONS: [MissionKind; 6] = [
+    MissionKind::Probe,
+    MissionKind::Analyze,
+    MissionKind::Attack,
+    MissionKind::Harvest,
+    MissionKind::Colonize,
+    MissionKind::Transport,
+];
 
 pub(crate) struct MissionWizardPlugin;
 
@@ -67,18 +76,25 @@ impl Plugin for MissionWizardPlugin {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WizardStep {
+    Fleet,
     Kind,
     Destination,
-    Fleet,
     Params,
     Preview,
 }
 
-const WIZARD_STEPS: [WizardStep; 5] = [
+const WIZARD_STEPS_WITH_PARAMS: [WizardStep; 5] = [
+    WizardStep::Fleet,
     WizardStep::Kind,
     WizardStep::Destination,
-    WizardStep::Fleet,
     WizardStep::Params,
+    WizardStep::Preview,
+];
+
+const WIZARD_STEPS_WITHOUT_PARAMS: [WizardStep; 4] = [
+    WizardStep::Fleet,
+    WizardStep::Kind,
+    WizardStep::Destination,
     WizardStep::Preview,
 ];
 
@@ -106,7 +122,7 @@ pub(crate) struct MissionWizardState {
 impl Default for MissionWizardState {
     fn default() -> Self {
         Self {
-            step: WizardStep::Kind,
+            step: WizardStep::Fleet,
             kind: MissionKind::Probe,
             target: None,
             fleet_id: None,
@@ -118,10 +134,10 @@ impl Default for MissionWizardState {
 
 impl MissionWizardState {
     fn step_index(&self) -> usize {
-        WIZARD_STEPS
+        wizard_steps_for_kind(self.kind)
             .iter()
             .position(|step| *step == self.step)
-            .unwrap_or(0)
+            .unwrap_or_else(|| wizard_steps_for_kind(self.kind).len().saturating_sub(1))
     }
 }
 
@@ -222,11 +238,23 @@ pub(crate) fn spawn_mission_wizard_tab(root: &mut ChildSpawnerCommands) {
             WizardStepLabel,
         ));
 
-        spawn_wizard_kind_block(column);
-        spawn_wizard_destination_block(column);
-        spawn_wizard_fleet_block(column);
-        spawn_wizard_params_block(column);
-        spawn_wizard_preview_block(column);
+        column
+            .spawn((Node {
+                width: Val::Percent(100.0),
+                flex_grow: 1.0,
+                min_height: Val::Px(0.0),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(8.0),
+                overflow: Overflow::scroll_y(),
+                ..default()
+            },))
+            .with_children(|steps| {
+                spawn_wizard_fleet_block(steps);
+                spawn_wizard_kind_block(steps);
+                spawn_wizard_destination_block(steps);
+                spawn_wizard_params_block(steps);
+                spawn_wizard_preview_block(steps);
+            });
 
         column
             .spawn((Node {
@@ -308,6 +336,7 @@ fn spawn_wizard_kind_block(parent: &mut ChildSpawnerCommands) {
         ))
         .with_children(|bar| {
             spawn_wizard_kind_button(bar, MissionKind::Probe, "Reconnaissance");
+            spawn_wizard_kind_button(bar, MissionKind::Analyze, "Analyse");
             spawn_wizard_kind_button(bar, MissionKind::Attack, "Attaque");
             spawn_wizard_kind_button(bar, MissionKind::Harvest, "Récolte");
             spawn_wizard_kind_button(bar, MissionKind::Colonize, "Colonisation");
@@ -435,7 +464,7 @@ fn spawn_wizard_fleet_block(parent: &mut ChildSpawnerCommands) {
         ))
         .with_children(|list| {
             list.spawn((
-                Text::new("FLOTTE (aucun choix automatique)"),
+                Text::new("FLOTTE"),
                 ui_text_font(12.0),
                 TextColor(Color::srgb(0.78, 0.86, 1.0)),
             ));
@@ -672,6 +701,7 @@ fn spawn_wizard_preview_block(parent: &mut ChildSpawnerCommands) {
 }
 
 fn handle_wizard_kind_buttons(
+    simulation: Res<SimulationResource>,
     open_panel: Res<OpenPanel>,
     mut ui: ResMut<MissionWizardState>,
     interactions: WizardButtonInteractionQuery,
@@ -684,9 +714,15 @@ fn handle_wizard_kind_buttons(
             continue;
         }
         if let WizardButtonAction::SelectKind(kind) = *action {
+            if let Some(fleet_id) = ui.fleet_id
+                && let Some(fleet) = simulation.simulation().state().fleet(fleet_id)
+                && !fleet_supports_mission_kind(fleet, kind)
+            {
+                ui.feedback = "Cette flotte ne peut pas exécuter ce type de mission.".to_string();
+                continue;
+            }
             ui.kind = kind;
             ui.target = None;
-            ui.fleet_id = None;
             ui.cargo = ResourceStock::ZERO;
             ui.feedback.clear();
         }
@@ -711,13 +747,13 @@ fn handle_wizard_target_buttons(
             && let Some(target) = row.binding
         {
             ui.target = Some(target);
-            ui.fleet_id = None;
             ui.feedback.clear();
         }
     }
 }
 
 fn handle_wizard_fleet_buttons(
+    simulation: Res<SimulationResource>,
     open_panel: Res<OpenPanel>,
     mut ui: ResMut<MissionWizardState>,
     interactions: WizardButtonInteractionQuery,
@@ -735,6 +771,16 @@ fn handle_wizard_fleet_buttons(
             && let Some(fleet_id) = row.binding
         {
             ui.fleet_id = Some(fleet_id);
+            if let Some(fleet) = simulation.simulation().state().fleet(fleet_id)
+                && !fleet_supports_mission_kind(fleet, ui.kind)
+                && let Some(kind) = MISSION_KIND_OPTIONS
+                    .iter()
+                    .copied()
+                    .find(|kind| fleet_supports_mission_kind(fleet, *kind))
+            {
+                ui.kind = kind;
+            }
+            ui.target = None;
             ui.cargo = ResourceStock::ZERO;
             ui.feedback.clear();
         }
@@ -800,6 +846,7 @@ fn adjust_cargo_value(cargo: ResourceStock, current: u64, delta: i64, capacity: 
 }
 
 fn handle_wizard_step_buttons(
+    simulation: Res<SimulationResource>,
     open_panel: Res<OpenPanel>,
     mut ui: ResMut<MissionWizardState>,
     interactions: WizardButtonInteractionQuery,
@@ -813,21 +860,69 @@ fn handle_wizard_step_buttons(
         }
         match *action {
             WizardButtonAction::PreviousStep => {
+                let steps = wizard_steps_for_kind(ui.kind);
                 let index = ui.step_index();
                 if index > 0 {
-                    ui.step = WIZARD_STEPS[index - 1];
+                    ui.step = steps[index - 1];
                     ui.feedback.clear();
                 }
             }
             WizardButtonAction::NextStep => {
+                if let Err(message) = validate_wizard_step(simulation.simulation(), &ui) {
+                    ui.feedback = message.to_string();
+                    continue;
+                }
+                let steps = wizard_steps_for_kind(ui.kind);
                 let index = ui.step_index();
-                if index + 1 < WIZARD_STEPS.len() {
-                    ui.step = WIZARD_STEPS[index + 1];
+                if index + 1 < steps.len() {
+                    ui.step = steps[index + 1];
                     ui.feedback.clear();
                 }
             }
             _ => {}
         }
+    }
+}
+
+fn validate_wizard_step(
+    simulation: &Simulation,
+    ui: &MissionWizardState,
+) -> Result<(), &'static str> {
+    match ui.step {
+        WizardStep::Fleet => {
+            let Some(fleet_id) = ui.fleet_id else {
+                return Err("Sélectionnez une flotte.");
+            };
+            if simulation.state().fleet(fleet_id).is_none() {
+                return Err("La flotte sélectionnée n'est plus disponible.");
+            }
+            Ok(())
+        }
+        WizardStep::Kind => {
+            let Some(fleet_id) = ui.fleet_id else {
+                return Err("Sélectionnez une flotte.");
+            };
+            let Some(fleet) = simulation.state().fleet(fleet_id) else {
+                return Err("La flotte sélectionnée n'est plus disponible.");
+            };
+            if !fleet_supports_mission_kind(fleet, ui.kind) {
+                return Err("Cette flotte ne peut pas exécuter ce type de mission.");
+            }
+            Ok(())
+        }
+        WizardStep::Destination => {
+            if ui.target.is_none() {
+                return Err("Sélectionnez une destination.");
+            }
+            Ok(())
+        }
+        WizardStep::Params => {
+            if ui.kind == MissionKind::Transport && ui.cargo.is_zero() {
+                return Err("Saisissez une cargaison avant de continuer.");
+            }
+            Ok(())
+        }
+        WizardStep::Preview => Ok(()),
     }
 }
 
@@ -908,7 +1003,7 @@ fn confirm_selected_mission(simulation: &mut SimulationResource, ui: &mut Missio
                 },
             );
         }
-        MissionKind::Probe | MissionKind::Attack | MissionKind::Colonize => {
+        MissionKind::Probe | MissionKind::Analyze | MissionKind::Attack | MissionKind::Colonize => {
             apply_simulation_command(simulation, GameAction::LaunchMission(order));
         }
     }
@@ -965,6 +1060,7 @@ fn update_wizard_step_visibility(
             node.display = next_display;
         }
     }
+    let steps = wizard_steps_for_kind(ui.kind);
     let index = ui.step_index();
     for mut visibility in &mut previous_buttons {
         *visibility = if index > 0 {
@@ -974,7 +1070,7 @@ fn update_wizard_step_visibility(
         };
     }
     for mut visibility in &mut next_buttons {
-        *visibility = if index + 1 < WIZARD_STEPS.len() {
+        *visibility = if index + 1 < steps.len() {
             Visibility::Inherited
         } else {
             Visibility::Hidden
@@ -983,7 +1079,7 @@ fn update_wizard_step_visibility(
     let label = format!(
         "Étape {}/{} : {}",
         index + 1,
-        WIZARD_STEPS.len(),
+        steps.len(),
         wizard_step_label(ui.step),
     );
     for (_, mut text) in &mut texts {
@@ -993,11 +1089,23 @@ fn update_wizard_step_visibility(
     }
 }
 
+fn mission_kind_has_params(kind: MissionKind) -> bool {
+    matches!(kind, MissionKind::Transport | MissionKind::Harvest)
+}
+
+fn wizard_steps_for_kind(kind: MissionKind) -> &'static [WizardStep] {
+    if mission_kind_has_params(kind) {
+        &WIZARD_STEPS_WITH_PARAMS
+    } else {
+        &WIZARD_STEPS_WITHOUT_PARAMS
+    }
+}
+
 fn wizard_step_label(step: WizardStep) -> &'static str {
     match step {
+        WizardStep::Fleet => "sélection de flotte",
         WizardStep::Kind => "type de mission",
         WizardStep::Destination => "destination",
-        WizardStep::Fleet => "sélection de flotte",
         WizardStep::Params => "cargaison / paramètres",
         WizardStep::Preview => "route, durée et validation",
     }
@@ -1008,6 +1116,10 @@ fn wizard_no_destination_hint(kind: MissionKind) -> &'static str {
         MissionKind::Probe => {
             "Aucune cible de reconnaissance : il faut d'abord détecter un système ou une planète \
              (portée de détection, technologies de détection)."
+        }
+        MissionKind::Analyze => {
+            "Aucune cible d'analyse : il faut une planète sondée, la technologie Spectrométrie \
+             planétaire, un Satellite Cartographe et une route accessible."
         }
         MissionKind::Attack => {
             "Aucune cible d'attaque : il faut une planète analysée et occupée par une faction hostile."
@@ -1042,6 +1154,7 @@ fn update_wizard_origin_text(
 }
 
 fn update_wizard_kind_buttons(
+    simulation: Res<SimulationResource>,
     ui: Res<MissionWizardState>,
     open_panel: Res<OpenPanel>,
     mut buttons: Query<(
@@ -1054,10 +1167,16 @@ fn update_wizard_kind_buttons(
     if *open_panel != OpenPanel::Fleet {
         return;
     }
+    let selected_fleet = ui
+        .fleet_id
+        .and_then(|fleet_id| simulation.simulation().state().fleet(fleet_id));
     for (button, interaction, mut background, mut outline) in &mut buttons {
         let selected = button.0 == ui.kind;
-        background.0 = action_button_color(true, selected, interaction);
-        outline.color = action_button_outline(true, selected, interaction);
+        let enabled = selected_fleet
+            .map(|fleet| fleet_supports_mission_kind(fleet, button.0))
+            .unwrap_or(false);
+        background.0 = action_button_color(enabled, selected, interaction);
+        outline.color = action_button_outline(enabled, selected, interaction);
     }
 }
 
@@ -1065,35 +1184,54 @@ fn update_wizard_target_rows(
     simulation: Res<SimulationResource>,
     ui: Res<MissionWizardState>,
     open_panel: Res<OpenPanel>,
-    mut rows: Query<(&mut WizardTargetRow, &mut Visibility, &Children)>,
+    mut rows: Query<(
+        &mut WizardTargetRow,
+        &Interaction,
+        &mut BackgroundColor,
+        &mut Outline,
+        &mut Visibility,
+        &Children,
+    )>,
     mut texts: Query<&mut Text, Without<WizardDestinationHintText>>,
     mut hints: Query<(&WizardDestinationHintText, &mut Text)>,
 ) {
     if *open_panel != OpenPanel::Fleet || ui.step != WizardStep::Destination {
         return;
     }
-    let candidates = wizard_target_candidates(simulation.simulation(), ui.kind);
+    let candidates = wizard_target_candidates(simulation.simulation(), &ui);
 
-    let hint = if candidates.is_empty() {
-        wizard_no_destination_hint(ui.kind)
+    let hint = if ui.fleet_id.is_none() {
+        "Sélectionnez une flotte à l'étape précédente.".to_string()
+    } else if ui.target.is_some() {
+        wizard_selected_destination_summary(simulation.simulation(), &ui, &candidates)
+    } else if candidates.is_empty() {
+        wizard_no_destination_hint(ui.kind).to_string()
     } else {
-        ""
+        "Choisissez une destination disponible.".to_string()
     };
     for (_, mut text) in &mut hints {
         if text.0 != hint {
-            text.0 = hint.to_string();
+            text.0 = hint.clone();
         }
     }
 
-    for (mut row, mut visibility, children) in &mut rows {
+    for (mut row, interaction, mut background, mut outline, mut visibility, children) in &mut rows {
         if let Some((target, label)) = candidates.get(row.slot) {
+            let selected = ui.target == Some(*target);
             row.binding = Some(*target);
             *visibility = Visibility::Inherited;
+            background.0 = wizard_row_background(selected, interaction);
+            outline.color = wizard_row_outline(selected);
+            let rendered = if selected {
+                format!("> {label}")
+            } else {
+                label.clone()
+            };
             for child in children {
                 if let Ok(mut text) = texts.get_mut(*child)
-                    && text.0 != *label
+                    && text.0 != rendered
                 {
-                    text.0 = label.clone();
+                    text.0 = rendered.clone();
                 }
             }
         } else {
@@ -1107,7 +1245,14 @@ fn update_wizard_fleet_rows(
     simulation: Res<SimulationResource>,
     ui: Res<MissionWizardState>,
     open_panel: Res<OpenPanel>,
-    mut rows: Query<(&mut WizardFleetRow, &mut Visibility, &Children)>,
+    mut rows: Query<(
+        &mut WizardFleetRow,
+        &Interaction,
+        &mut BackgroundColor,
+        &mut Outline,
+        &mut Visibility,
+        &Children,
+    )>,
     mut texts: Query<&mut Text, Without<WizardFleetHintText>>,
     mut hints: Query<(&WizardFleetHintText, &mut Text)>,
 ) {
@@ -1117,44 +1262,35 @@ fn update_wizard_fleet_rows(
     let sim = simulation.simulation();
     let state = sim.state();
     let Some(colony_id) = state.active_colony_id else {
-        for (mut row, mut visibility, _) in &mut rows {
+        for (mut row, _, _, _, mut visibility, _) in &mut rows {
             row.binding = None;
             *visibility = Visibility::Hidden;
         }
         set_wizard_fleet_hint(&mut hints, "Aucune colonie active.");
         return;
     };
-    let Some(target) = ui
-        .target
-        .and_then(|target| wizard_mission_target(state, target))
-    else {
-        for (mut row, mut visibility, _) in &mut rows {
-            row.binding = None;
-            *visibility = Visibility::Hidden;
-        }
-        set_wizard_fleet_hint(
-            &mut hints,
-            "Sélectionnez une destination à l'étape précédente.",
-        );
-        return;
-    };
-    let fleets = eligible_fleets_for_mission(
-        state,
-        sim.universe_repository(),
-        state.player_faction,
-        colony_id,
-        target,
-        ui.kind,
-    );
+    let mut fleets = state
+        .fleets
+        .iter()
+        .filter(|fleet| {
+            state.can_manage(state.player_faction, fleet.owner)
+                && fleet.is_idle()
+                && fleet.location == FleetLocation::Docked(colony_id)
+        })
+        .map(|fleet| fleet.id)
+        .collect::<Vec<_>>();
+    fleets.sort();
     let labels = fleets
         .iter()
         .map(|fleet_id| {
             let fleet = state.fleet(*fleet_id).expect("eligible fleet exists");
             format!(
-                "#{} {} — {}",
+                "{}  #{} — {} — {} — missions : {}",
+                fleet.name,
                 fleet_id.raw(),
                 fleet_composition_summary(fleet),
                 fleet_location_label(sim, fleet.location),
+                fleet_supported_mission_labels(fleet),
             )
         })
         .collect::<Vec<_>>();
@@ -1162,28 +1298,77 @@ fn update_wizard_fleet_rows(
     if fleets.is_empty() {
         set_wizard_fleet_hint(
             &mut hints,
-            "Aucune flotte disponible pour ce type de mission. Formez d'abord une flotte adaptée (dockée à l'origine, idle, sans cargaison en cours) dans l'onglet FLOTTES.",
+            "Aucune flotte idle dockée à la colonie active. Formez un groupement dans l'onglet FLOTTES.",
+        );
+    } else if let Some(fleet_id) = ui
+        .fleet_id
+        .and_then(|fleet_id| state.fleet(fleet_id).map(|_| fleet_id))
+    {
+        let fleet = state.fleet(fleet_id).expect("selected fleet exists");
+        set_wizard_fleet_hint(
+            &mut hints,
+            &format!("Sélection : {} #{}.", fleet.name, fleet.id.raw()),
         );
     } else {
-        set_wizard_fleet_hint(&mut hints, "");
+        set_wizard_fleet_hint(&mut hints, "Choisissez la flotte qui partira en mission.");
     }
 
-    for (mut row, mut visibility, children) in &mut rows {
+    for (mut row, interaction, mut background, mut outline, mut visibility, children) in &mut rows {
         if let Some(fleet_id) = fleets.get(row.slot) {
+            let selected = ui.fleet_id == Some(*fleet_id);
             row.binding = Some(*fleet_id);
             *visibility = Visibility::Inherited;
             let label = &labels[row.slot];
+            background.0 = wizard_row_background(selected, interaction);
+            outline.color = wizard_row_outline(selected);
+            let rendered = if selected {
+                format!("> {label}")
+            } else {
+                label.clone()
+            };
             for child in children {
                 if let Ok(mut text) = texts.get_mut(*child)
-                    && text.0 != *label
+                    && text.0 != rendered
                 {
-                    text.0 = label.clone();
+                    text.0 = rendered.clone();
                 }
             }
         } else {
             row.binding = None;
             *visibility = Visibility::Hidden;
         }
+    }
+}
+
+fn fleet_supported_mission_labels(fleet: &galactic_sim::FleetState) -> String {
+    let labels = MISSION_KIND_OPTIONS
+        .iter()
+        .copied()
+        .filter(|kind| fleet_supports_mission_kind(fleet, *kind))
+        .map(mission_kind_label)
+        .collect::<Vec<_>>();
+    if labels.is_empty() {
+        "aucune".to_string()
+    } else {
+        labels.join(", ")
+    }
+}
+
+fn wizard_row_background(selected: bool, interaction: &Interaction) -> Color {
+    if selected {
+        Color::srgba(0.10, 0.22, 0.38, 0.98)
+    } else if *interaction == Interaction::Hovered {
+        Color::srgba(0.07, 0.10, 0.16, 0.96)
+    } else {
+        Color::srgba(0.04, 0.06, 0.10, 0.90)
+    }
+}
+
+fn wizard_row_outline(selected: bool) -> Color {
+    if selected {
+        Color::srgba(0.56, 0.78, 1.0, 0.88)
+    } else {
+        Color::srgba(0.34, 0.46, 0.62, 0.40)
     }
 }
 
@@ -1233,10 +1418,12 @@ fn update_wizard_params_text(
                         .unwrap_or(0);
                         match rule {
                             Some(rule) => format!(
-                                "Réserve du site : {}\nRendement : {} / tick sur {} ticks\nQuantité récupérable : {}",
+                                "Réserve du site : {}\nRendement : {} par cycle\nDurée de chargement : {}\nQuantité récupérable : {}",
                                 site.remaining,
                                 rule.yield_per_tick,
-                                rule.harvest_ticks,
+                                format_strategic_duration(StrategicDuration::from_ticks(
+                                    rule.harvest_ticks,
+                                )),
                                 recoverable,
                             ),
                             None => format!("Réserve du site : {}", site.remaining),
@@ -1251,7 +1438,7 @@ fn update_wizard_params_text(
             }
             _ => "Sélectionnez un site à l'étape précédente.".to_string(),
         },
-        MissionKind::Probe | MissionKind::Attack | MissionKind::Colonize => {
+        MissionKind::Probe | MissionKind::Analyze | MissionKind::Attack | MissionKind::Colonize => {
             "Aucun paramètre requis pour ce type de mission.".to_string()
         }
     };
@@ -1314,17 +1501,161 @@ fn wizard_preview_label(
         state.player_faction,
         order,
     ) {
-        Ok((_, plan)) => format!(
-            "Type : {}\nSauts : {}\nDurée aller : {}\nDurée sur place : {}\nDurée retour : {}\nCoût carburant : {}\nArrivée prévue : tick {}",
-            mission_kind_label(ui.kind),
-            plan.hops,
-            format_strategic_duration(plan.travel_duration),
-            format_strategic_duration(plan.resolution_duration),
-            format_strategic_duration(plan.travel_duration),
-            plan.fuel_cost.fuel,
-            plan.outbound_arrival_at.value(),
-        ),
+        Ok((_, plan)) => {
+            let mut label = format!(
+                "Type : {}\nSauts : {}\nDurée aller : {}\nDurée sur place : {}\nDurée retour : {}\nDurée totale : {}\nCoût carburant : {}",
+                mission_kind_label(ui.kind),
+                plan.hops,
+                format_strategic_duration(plan.travel_duration),
+                format_strategic_duration(plan.resolution_duration),
+                format_strategic_duration(plan.travel_duration),
+                format_strategic_duration(mission_total_duration(
+                    plan.travel_duration,
+                    plan.resolution_duration,
+                )),
+                plan.fuel_cost.fuel,
+            );
+            if let Some(estimate) = wizard_attack_estimate(state, ui, target) {
+                label.push_str("\n\n");
+                label.push_str(&estimate);
+            }
+            label
+        }
         Err(error) => format!("Erreur : {}", mission_error_text(error)),
+    }
+}
+
+fn mission_total_duration(
+    travel_duration: StrategicDuration,
+    resolution_duration: StrategicDuration,
+) -> StrategicDuration {
+    StrategicDuration::from_ticks(
+        travel_duration
+            .ticks()
+            .saturating_mul(2)
+            .saturating_add(resolution_duration.ticks()),
+    )
+}
+
+fn wizard_selected_destination_summary(
+    simulation: &Simulation,
+    ui: &MissionWizardState,
+    candidates: &[(WizardTarget, String)],
+) -> String {
+    let Some(target) = ui.target else {
+        return "Choisissez une destination disponible.".to_string();
+    };
+    let label = candidates
+        .iter()
+        .find(|(candidate, _)| *candidate == target)
+        .map(|(_, label)| label.clone())
+        .unwrap_or_else(|| "destination indisponible".to_string());
+    let state = simulation.state();
+    let Some(colony_id) = state.active_colony_id else {
+        return format!("Destination sélectionnée : {label}");
+    };
+    let Some(fleet_id) = ui.fleet_id else {
+        return format!("Destination sélectionnée : {label}");
+    };
+    let Some(origin) = state.colony(colony_id).map(|colony| colony.system_id) else {
+        return format!("Destination sélectionnée : {label}");
+    };
+    let Some(mission_target) = wizard_mission_target(state, target) else {
+        return format!("Destination sélectionnée : {label}");
+    };
+    let order = MissionOrder {
+        fleet_id,
+        origin,
+        target: mission_target,
+        kind: ui.kind,
+        departure_at: state.clock.current_tick(),
+    };
+    match plan_mission(
+        state,
+        simulation.universe_repository(),
+        state.player_faction,
+        order,
+    ) {
+        Ok((_, plan)) => {
+            let mut summary = format!(
+                "Destination sélectionnée : {label}\nRoute : {} saut(s), carburant {}, durée totale {}.",
+                plan.hops,
+                plan.fuel_cost.fuel,
+                format_strategic_duration(mission_total_duration(
+                    plan.travel_duration,
+                    plan.resolution_duration,
+                )),
+            );
+            if let Some(estimate) = wizard_attack_estimate(state, ui, target) {
+                summary.push_str("\n");
+                summary.push_str(&estimate);
+            }
+            summary
+        }
+        Err(error) => format!(
+            "Destination sélectionnée : {label}\nErreur : {}",
+            mission_error_text(error),
+        ),
+    }
+}
+
+fn wizard_attack_estimate(
+    state: &galactic_sim::GameState,
+    ui: &MissionWizardState,
+    target: WizardTarget,
+) -> Option<String> {
+    if ui.kind != MissionKind::Attack {
+        return None;
+    }
+    let planet_id = match target {
+        WizardTarget::Planet { planet_id, .. } => planet_id,
+        _ => return None,
+    };
+    let fleet = ui.fleet_id.and_then(|fleet_id| state.fleet(fleet_id))?;
+    let power = combat_fleet_power(fleet)?;
+    let defense = state
+        .planetary_intelligence_report(planet_id)
+        .map(|report| {
+            format!(
+                "défense connue sol {} • orbite {}",
+                estimate_range_short(report.ground_strength),
+                estimate_range_short(report.orbital_strength),
+            )
+        })
+        .unwrap_or_else(|| "défense connue indisponible".to_string());
+    Some(format!(
+        "Rapport estimé : attaque {} • structure {} • {} vaisseau(x) ({})\n{}.",
+        power.offense,
+        power.hull,
+        power.ships,
+        combat_power_classes_label(power),
+        defense,
+    ))
+}
+
+fn combat_power_classes_label(power: galactic_sim::CombatFleetPower) -> String {
+    let mut classes = Vec::new();
+    if power.light_ships > 0 {
+        classes.push(format!("léger {}", power.light_ships));
+    }
+    if power.medium_ships > 0 {
+        classes.push(format!("moyen {}", power.medium_ships));
+    }
+    if power.heavy_ships > 0 {
+        classes.push(format!("lourd {}", power.heavy_ships));
+    }
+    if classes.is_empty() {
+        "aucun rôle combat".to_string()
+    } else {
+        classes.join(", ")
+    }
+}
+
+fn estimate_range_short(range: galactic_sim::EstimateRange) -> String {
+    if range.is_exact() {
+        range.minimum.to_string()
+    } else {
+        format!("{}-{}", range.minimum, range.maximum)
     }
 }
 
@@ -1383,15 +1714,51 @@ fn wizard_mission_target(
 
 fn wizard_target_candidates(
     simulation: &Simulation,
-    kind: MissionKind,
+    ui: &MissionWizardState,
 ) -> Vec<(WizardTarget, String)> {
-    let mut candidates = match kind {
+    let state = simulation.state();
+    let Some(fleet_id) = ui.fleet_id else {
+        return Vec::new();
+    };
+    let Some(fleet) = state.fleet(fleet_id) else {
+        return Vec::new();
+    };
+    if !fleet_supports_mission_kind(fleet, ui.kind) {
+        return Vec::new();
+    }
+    let Some(colony_id) = state.active_colony_id else {
+        return Vec::new();
+    };
+    let Some(origin) = state.colony(colony_id).map(|colony| colony.system_id) else {
+        return Vec::new();
+    };
+
+    let mut candidates = match ui.kind {
         MissionKind::Probe => probe_candidates(simulation),
+        MissionKind::Analyze => analyze_candidates(simulation),
         MissionKind::Attack => attack_candidates(simulation),
         MissionKind::Colonize => colonize_candidates(simulation),
         MissionKind::Harvest => harvest_candidates(simulation),
         MissionKind::Transport => transport_candidates(simulation),
     };
+    candidates.retain(|(target, _)| {
+        let Some(mission_target) = wizard_mission_target(state, *target) else {
+            return false;
+        };
+        plan_mission(
+            state,
+            simulation.universe_repository(),
+            state.player_faction,
+            MissionOrder {
+                fleet_id,
+                origin,
+                target: mission_target,
+                kind: ui.kind,
+                departure_at: state.clock.current_tick(),
+            },
+        )
+        .is_ok()
+    });
     candidates.truncate(MAX_TARGET_ROWS);
     candidates
 }
@@ -1421,6 +1788,30 @@ fn probe_candidates(simulation: &Simulation) -> Vec<(WizardTarget, String)> {
                     ),
                 ));
             }
+        }
+    }
+    candidates
+}
+
+fn analyze_candidates(simulation: &Simulation) -> Vec<(WizardTarget, String)> {
+    let state = simulation.state();
+    if !state.research.has_unlock(TechnologyUnlock::AnalyzePlanets) {
+        return Vec::new();
+    }
+    let universe = simulation.universe_repository();
+    let mut candidates = Vec::new();
+    for system in &universe.definition().systems {
+        for planet in &system.planets {
+            if state.planet_knowledge_level(planet.id) != KnowledgeLevel::Probed {
+                continue;
+            }
+            candidates.push((
+                WizardTarget::Planet {
+                    system_id: system.id,
+                    planet_id: planet.id,
+                },
+                format!("{} — {} (sondée)", planet.name, system.name),
+            ));
         }
     }
     candidates
@@ -1551,6 +1942,178 @@ fn resource_kind_label(kind: galactic_domain::ResourceKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mission_steps_skip_params_when_the_kind_has_no_parameters() {
+        assert_eq!(
+            wizard_steps_for_kind(MissionKind::Probe),
+            [
+                WizardStep::Fleet,
+                WizardStep::Kind,
+                WizardStep::Destination,
+                WizardStep::Preview,
+            ],
+        );
+        assert_eq!(
+            wizard_steps_for_kind(MissionKind::Transport),
+            [
+                WizardStep::Fleet,
+                WizardStep::Kind,
+                WizardStep::Destination,
+                WizardStep::Params,
+                WizardStep::Preview,
+            ],
+        );
+        assert!(mission_kind_has_params(MissionKind::Harvest));
+        assert!(!mission_kind_has_params(MissionKind::Analyze));
+    }
+
+    #[test]
+    fn wizard_row_selected_state_uses_a_distinct_style() {
+        assert_ne!(
+            wizard_row_background(true, &Interaction::None),
+            wizard_row_background(false, &Interaction::None),
+        );
+        assert_ne!(wizard_row_outline(true), wizard_row_outline(false));
+    }
+
+    #[test]
+    fn wizard_next_validation_blocks_missing_required_choices() {
+        let simulation = Simulation::new(galactic_domain::UniverseConfig::mvp());
+        let mut ui = MissionWizardState::default();
+
+        assert_eq!(
+            validate_wizard_step(&simulation, &ui),
+            Err("Sélectionnez une flotte."),
+        );
+
+        ui.step = WizardStep::Destination;
+        assert_eq!(
+            validate_wizard_step(&simulation, &ui),
+            Err("Sélectionnez une destination."),
+        );
+    }
+
+    #[test]
+    fn wizard_preview_uses_player_durations_without_absolute_tick() {
+        let mut simulation = Simulation::new(galactic_domain::UniverseConfig::mvp());
+        let colony_id = simulation
+            .state()
+            .active_colony_id
+            .expect("home colony is active");
+        let actor = simulation.state().player_faction;
+        let fleet_id = FleetId::new(0);
+        let composition =
+            galactic_sim::FleetComposition::from_stacks([galactic_sim::ShipStack::new(
+                galactic_sim::CraftableId::LIGHT_PROBE,
+                1,
+            )])
+            .expect("probe fleet composition is valid");
+        simulation
+            .state_mut()
+            .fleets
+            .push(galactic_sim::FleetState {
+                id: fleet_id,
+                name: "Recon test".to_string(),
+                owner: galactic_domain::Owner::Faction(actor),
+                location: FleetLocation::Docked(colony_id),
+                composition,
+                cargo: ResourceStock::ZERO,
+                assignment: galactic_sim::FleetAssignment::Idle,
+            });
+        simulation.state_mut().next_fleet_id = 1;
+        let target_system = simulation
+            .universe_repository()
+            .definition()
+            .systems
+            .iter()
+            .map(|system| system.id)
+            .find(|system_id| {
+                simulation.state().system_knowledge_level(*system_id) == KnowledgeLevel::Detected
+            })
+            .expect("MVP start has a detected neighboring system");
+        let ui = MissionWizardState {
+            step: WizardStep::Preview,
+            kind: MissionKind::Probe,
+            target: Some(WizardTarget::System(target_system)),
+            fleet_id: Some(fleet_id),
+            cargo: ResourceStock::ZERO,
+            feedback: String::new(),
+        };
+
+        let label = wizard_preview_label(&simulation, simulation.state(), &ui);
+
+        assert!(label.contains("Durée totale"));
+        assert!(!label.contains("Arrivée prévue"));
+        assert!(!label.contains("tick"));
+    }
+
+    #[test]
+    fn attack_estimate_uses_selected_fleet_power_and_known_defense() {
+        let mut simulation = Simulation::new(galactic_domain::UniverseConfig::mvp());
+        let colony_id = simulation
+            .state()
+            .active_colony_id
+            .expect("home colony is active");
+        let actor = simulation.state().player_faction;
+        let target = simulation
+            .state()
+            .planetary_presences
+            .iter()
+            .find(|presence| {
+                presence.occupant
+                    != galactic_domain::Owner::Faction(simulation.state().player_faction)
+                    && !presence.forces.is_empty()
+            })
+            .expect("hostile presence exists")
+            .planet_id;
+        galactic_sim::refresh_planetary_intelligence(
+            simulation.state_mut(),
+            target,
+            galactic_sim::PlanetaryIntelPrecision::Surveyed,
+            galactic_sim::StrategicTick::new(0),
+        )
+        .expect("presence can be surveyed");
+        let fleet_id = FleetId::new(0);
+        let composition =
+            galactic_sim::FleetComposition::from_stacks([galactic_sim::ShipStack::new(
+                galactic_sim::CraftableId::NEEDLE_INTERCEPTOR,
+                2,
+            )])
+            .expect("combat fleet composition is valid");
+        simulation
+            .state_mut()
+            .fleets
+            .push(galactic_sim::FleetState {
+                id: fleet_id,
+                name: "Aiguilles test".to_string(),
+                owner: galactic_domain::Owner::Faction(actor),
+                location: FleetLocation::Docked(colony_id),
+                composition,
+                cargo: ResourceStock::ZERO,
+                assignment: galactic_sim::FleetAssignment::Idle,
+            });
+        let target = WizardTarget::Planet {
+            system_id: target.system_id(),
+            planet_id: target,
+        };
+        let ui = MissionWizardState {
+            step: WizardStep::Destination,
+            kind: MissionKind::Attack,
+            target: Some(target),
+            fleet_id: Some(fleet_id),
+            cargo: ResourceStock::ZERO,
+            feedback: String::new(),
+        };
+
+        let estimate = wizard_attack_estimate(simulation.state(), &ui, target)
+            .expect("attack estimate is available");
+
+        assert!(estimate.contains("Rapport estimé"));
+        assert!(estimate.contains("attaque 84"));
+        assert!(estimate.contains("léger 2"));
+        assert!(estimate.contains("défense connue"));
+    }
 
     macro_rules! assert_disjoint_queries {
         ($name:ident, $system:expr) => {

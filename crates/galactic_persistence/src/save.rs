@@ -11,8 +11,8 @@ use galactic_sim::{
     TimeSpeed,
 };
 
-/// Version 27 persists extraction sites, reservations and harvest progress.
-pub const SAVE_VERSION: u32 = 27;
+/// Version 29 persists A6 combat roles and per-ship combat snapshots.
+pub const SAVE_VERSION: u32 = 29;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SaveGame {
@@ -104,6 +104,7 @@ pub struct ColonySave {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FleetSave {
     pub id: FleetId,
+    pub name: String,
     pub owner: Owner,
     pub location: FleetLocation,
     pub composition: FleetComposition,

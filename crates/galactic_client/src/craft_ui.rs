@@ -3,7 +3,7 @@ use bevy::prelude::*;
 use galactic_sim::{
     CraftError, CraftQuote, CraftableId, GameAction, GameEventKind, MAX_CRAFT_BATCH_QUANTITY,
     StrategicDuration, craft_progress_ratio, craft_quote, craftable_catalog, craftable_definition,
-    max_affordable_quantity, max_craft_queue, shipyard_output_milli_per_tick,
+    max_affordable_quantity, max_craft_queue, ship_class_label, shipyard_output_milli_per_tick,
     shipyard_output_points_per_second, technology_definition,
 };
 
@@ -169,7 +169,7 @@ fn spawn_craft_screen(mut commands: Commands) {
                 left: Val::Px(14.0),
                 right: Val::Px(14.0),
                 top: Val::Px(112.0),
-                bottom: Val::Px(14.0),
+                bottom: Val::Px(74.0),
                 padding: UiRect::all(Val::Px(12.0)),
                 border: UiRect::all(Val::Px(1.0)),
                 border_radius: BorderRadius::all(Val::Px(8.0)),
@@ -566,7 +566,12 @@ fn handle_craft_shortcuts(
     mut ui: ResMut<CraftUiState>,
     mut open_panel: ResMut<OpenPanel>,
     mut navigation_ui: ResMut<super::navigation_ui::NavigationUiState>,
+    fleet_ui: Res<crate::fleet_ui::FleetUiState>,
 ) {
+    if crate::fleet_ui::fleet_name_is_editing(&fleet_ui) {
+        return;
+    }
+
     if keyboard.just_pressed(KeyCode::KeyY) {
         let opening = *open_panel != OpenPanel::Craft;
         *open_panel = if opening {
@@ -982,12 +987,16 @@ fn craft_detail_text(
             .collect::<Vec<_>>()
             .join(", ")
     };
-    let capabilities = definition
-        .capabilities
-        .iter()
-        .map(|capability| format!("{} : {}", capability.id, capability.value))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let capabilities = if definition.capabilities.is_empty() {
+        "aucune".to_string()
+    } else {
+        definition
+            .capabilities
+            .iter()
+            .map(|capability| format!("{} : {}", capability.id, capability.value))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
 
     let mut lines = vec![
         definition.name.to_uppercase(),
@@ -1007,6 +1016,7 @@ fn craft_detail_text(
         ),
         format!("Bâtiments requis : {buildings}"),
         format!("Technologies requises : {technologies}"),
+        ship_stats_text(definition.ship),
         format!("Capacités : {capabilities}"),
         String::new(),
         format!("Quantité demandée : {quantity}"),
@@ -1051,6 +1061,54 @@ fn craft_detail_text(
     }
 
     lines.join("\n")
+}
+
+fn ship_stats_text(ship: Option<galactic_sim::ShipDefinition>) -> String {
+    let Some(ship) = ship else {
+        return "Châssis : aucun".to_string();
+    };
+    let mut lines = vec![
+        format!("Rôle : {}", ship_class_label(ship.class)),
+        format!(
+            "Transit : vitesse {} • portée {} saut(s) • carburant {} / saut",
+            ship.cruise_speed, ship.range_hops, ship.fuel_per_hop,
+        ),
+        format!("Soute : {} unité(s)", ship.cargo_capacity),
+    ];
+    if let Some(combat) = ship.combat {
+        lines.push(format!(
+            "Combat : cible {} • attaque {} • défense {} • structure {}",
+            combat.target_class.label(),
+            combat.offense,
+            combat.defense,
+            combat.durability,
+        ));
+        lines.push(format!(
+            "Spécialisation : {}",
+            combat_bonus_text(combat.bonuses)
+        ));
+    }
+    lines.join("\n")
+}
+
+fn combat_bonus_text(bonuses: galactic_sim::CombatTargetBonuses) -> String {
+    let entries = bonuses
+        .entries()
+        .into_iter()
+        .filter(|(_, multiplier)| *multiplier != galactic_sim::NEUTRAL_COMBAT_BONUS_PER_MILLE)
+        .map(|(target_class, multiplier)| {
+            format!(
+                "x{:.2} vs {}",
+                f64::from(multiplier) / 1_000.0,
+                target_class.label(),
+            )
+        })
+        .collect::<Vec<_>>();
+    if entries.is_empty() {
+        "aucune".to_string()
+    } else {
+        entries.join(", ")
+    }
 }
 
 fn craft_queue_text(colony: &galactic_sim::ColonyState) -> String {
@@ -1304,6 +1362,18 @@ mod tests {
 
         assert!(text.contains("Durée totale estimée"));
         assert!(text.contains("Résultat"));
+    }
+
+    #[test]
+    fn craft_detail_text_shows_military_role_and_target_bonus() {
+        let text = craft_detail_text(
+            CraftableId::NEEDLE_INTERCEPTOR,
+            1,
+            Err(CraftError::NoShipyardCapacity),
+        );
+
+        assert!(text.contains("Combat : cible Léger"));
+        assert!(text.contains("Spécialisation : x1.40 vs Léger"));
     }
 
     #[test]

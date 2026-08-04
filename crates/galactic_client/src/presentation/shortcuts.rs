@@ -1,8 +1,8 @@
 use bevy::prelude::*;
-use galactic_domain::{PlanetId, SystemId};
-use galactic_sim::{GameAction, KnowledgeLevel, SelectionTarget, Simulation, TimeSpeed};
+use galactic_domain::SystemId;
+use galactic_sim::{GameAction, SelectionTarget, Simulation, TimeSpeed};
 #[cfg(test)]
-use galactic_sim::{MissionTarget, PlanetaryOccupancyIntel};
+use galactic_sim::{KnowledgeLevel, MissionTarget, PlanetaryOccupancyIntel};
 
 use crate::presentation::components::*;
 use crate::presentation::scene::systems_for_universe_view;
@@ -18,8 +18,6 @@ pub(crate) fn simulation_shortcut(keyboard: &ButtonInput<KeyCode>) -> Option<UiA
         Some(UiAction::SetSpeed(TimeSpeed::X2))
     } else if keyboard.just_pressed(KeyCode::Digit3) {
         Some(UiAction::SetSpeed(TimeSpeed::X4))
-    } else if keyboard.just_pressed(KeyCode::KeyL) {
-        Some(UiAction::AnalyzePlanet)
     } else {
         None
     }
@@ -88,11 +86,6 @@ pub(crate) fn apply_ui_action(
             navigation.exit_system();
             rebuild.0 = true;
         }
-        UiAction::AnalyzePlanet => {
-            if let Some(planet_id) = selected_analysis_target(simulation.simulation()) {
-                apply_simulation_command(simulation, GameAction::AnalyzePlanet { planet_id });
-            }
-        }
         UiAction::ToggleProjection => {
             navigation.toggle_projection();
         }
@@ -144,7 +137,6 @@ pub(crate) fn action_available(
                 && enterable_selected_system(simulation, navigation.debug_full_graph).is_some()
         }
         UiAction::ExitSystem => matches!(navigation.mode, StrategicViewMode::System(_)),
-        UiAction::AnalyzePlanet => selected_analysis_target(simulation.simulation()).is_some(),
     }
 }
 
@@ -161,14 +153,6 @@ pub(crate) fn action_active(
         UiAction::ExitSystem => matches!(navigation.mode, StrategicViewMode::System(_)),
         _ => false,
     }
-}
-
-pub(crate) fn selected_analysis_target(simulation: &Simulation) -> Option<PlanetId> {
-    let state = simulation.state();
-    let SelectionTarget::Planet { planet_id, .. } = state.selected else {
-        return None;
-    };
-    (state.planet_knowledge_level(planet_id) == KnowledgeLevel::Probed).then_some(planet_id)
 }
 
 #[cfg(test)]

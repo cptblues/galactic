@@ -7,10 +7,11 @@ use galactic_domain::{
 
 use crate::{
     AuthorizationError, CraftInventory, CraftableCatalog, CraftableId, GameState, ShipClass,
-    default_ruleset,
+    default_ruleset, storage_capacity,
 };
 
 pub const MAX_FLEET_SHIP_STACKS: usize = 128;
+pub const MAX_FLEET_NAME_CHARS: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ShipStack {
@@ -112,6 +113,7 @@ pub enum FleetAssignment {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FleetState {
     pub id: FleetId,
+    pub name: String,
     pub owner: Owner,
     pub location: FleetLocation,
     pub composition: FleetComposition,
@@ -148,6 +150,29 @@ pub struct FleetCreationRejected {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FleetRenamed {
+    pub fleet_id: FleetId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FleetRenameRejected {
+    pub fleet_id: FleetId,
+    pub error: FleetError,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FleetDisbanded {
+    pub fleet_id: FleetId,
+    pub colony_id: ColonyId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FleetDisbandRejected {
+    pub fleet_id: FleetId,
+    pub error: FleetError,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FleetCompositionError {
     Empty,
     TooManyShipStacks { found: usize, maximum: usize },
@@ -163,6 +188,7 @@ pub enum FleetCompositionError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FleetError {
     UnknownColony(ColonyId),
+    UnknownFleet(FleetId),
     Access(AuthorizationError),
     InvalidComposition(FleetCompositionError),
     InsufficientDockedShips {
@@ -170,11 +196,27 @@ pub enum FleetError {
         requested: u64,
         available: u64,
     },
+    FleetNameEmpty,
+    FleetNameTooLong {
+        found: usize,
+        maximum: usize,
+    },
+    FleetNameContainsControlCharacter,
+    FleetNotIdle(FleetId),
+    FleetNotDocked(FleetId),
+    FleetCargoNotEmpty(FleetId),
+    FleetDockOwnerMismatch {
+        fleet_id: FleetId,
+        colony_id: ColonyId,
+    },
     FleetIdOverflow,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FleetStateError {
+    EmptyName,
+    NameTooLong { found: usize, maximum: usize },
+    NameContainsControlCharacter,
     InvalidComposition(FleetCompositionError),
     CargoExceedsCapacity { cargo: ResourceStock, capacity: u64 },
 }
@@ -221,6 +263,7 @@ pub fn form_fleet(
     state.next_fleet_id = next_fleet_id;
     state.fleets.push(FleetState {
         id: fleet_id,
+        name: default_fleet_name(fleet_id),
         owner,
         location: FleetLocation::Docked(colony_id),
         composition,
@@ -235,7 +278,85 @@ pub fn form_fleet(
     })
 }
 
+pub fn rename_fleet(
+    state: &mut GameState,
+    actor: FactionId,
+    fleet_id: FleetId,
+    name: impl AsRef<str>,
+) -> Result<FleetRenamed, FleetError> {
+    let validated = validate_fleet_name(name.as_ref())?;
+    let fleet = state
+        .fleet(fleet_id)
+        .ok_or(FleetError::UnknownFleet(fleet_id))?;
+    state
+        .authorize_management(actor, fleet.owner)
+        .map_err(FleetError::Access)?;
+    let fleet = state
+        .fleet_mut(fleet_id)
+        .expect("validated fleet must remain present");
+    fleet.name = validated;
+    Ok(FleetRenamed { fleet_id })
+}
+
+pub fn disband_fleet(
+    state: &mut GameState,
+    actor: FactionId,
+    fleet_id: FleetId,
+) -> Result<FleetDisbanded, FleetError> {
+    let index = state
+        .fleets
+        .iter()
+        .position(|fleet| fleet.id == fleet_id)
+        .ok_or(FleetError::UnknownFleet(fleet_id))?;
+    let fleet = &state.fleets[index];
+    state
+        .authorize_management(actor, fleet.owner)
+        .map_err(FleetError::Access)?;
+    if !fleet.is_idle() {
+        return Err(FleetError::FleetNotIdle(fleet_id));
+    }
+    let FleetLocation::Docked(colony_id) = fleet.location else {
+        return Err(FleetError::FleetNotDocked(fleet_id));
+    };
+    let Some(colony) = state.colony(colony_id) else {
+        return Err(FleetError::UnknownColony(colony_id));
+    };
+    if colony.owner != fleet.owner {
+        return Err(FleetError::FleetDockOwnerMismatch {
+            fleet_id,
+            colony_id,
+        });
+    }
+    if fleet.cargo != ResourceStock::ZERO {
+        let capacity = storage_capacity(colony.buildings);
+        let accepted = {
+            let mut resources = colony.resources.clone();
+            resources.credit_capped(fleet.cargo, capacity)
+        };
+        if accepted != fleet.cargo {
+            return Err(FleetError::FleetCargoNotEmpty(fleet_id));
+        }
+    }
+    let fleet = state.fleets.remove(index);
+    let colony = state
+        .colony_mut(colony_id)
+        .expect("validated docked colony must remain present");
+    if fleet.cargo != ResourceStock::ZERO {
+        let capacity = storage_capacity(colony.buildings);
+        let accepted = colony.resources.credit_capped(fleet.cargo, capacity);
+        debug_assert_eq!(accepted, fleet.cargo);
+    }
+    for stack in fleet.composition.entries() {
+        colony.inventory.add(stack.craftable, stack.quantity);
+    }
+    Ok(FleetDisbanded {
+        fleet_id,
+        colony_id,
+    })
+}
+
 pub fn validate_fleet_state(fleet: &FleetState) -> Result<(), FleetStateError> {
+    validate_fleet_name_for_state(&fleet.name)?;
     let capabilities = fleet
         .composition
         .capabilities()
@@ -254,6 +375,46 @@ pub fn validate_fleet_state(fleet: &FleetState) -> Result<(), FleetStateError> {
             cargo: fleet.cargo,
             capacity: capabilities.cargo_capacity,
         });
+    }
+    Ok(())
+}
+
+pub fn default_fleet_name(fleet_id: FleetId) -> String {
+    format!("Flotte {}", fleet_id.raw() + 1)
+}
+
+fn validate_fleet_name(name: &str) -> Result<String, FleetError> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(FleetError::FleetNameEmpty);
+    }
+    let length = trimmed.chars().count();
+    if length > MAX_FLEET_NAME_CHARS {
+        return Err(FleetError::FleetNameTooLong {
+            found: length,
+            maximum: MAX_FLEET_NAME_CHARS,
+        });
+    }
+    if trimmed.chars().any(char::is_control) {
+        return Err(FleetError::FleetNameContainsControlCharacter);
+    }
+    Ok(trimmed.to_string())
+}
+
+fn validate_fleet_name_for_state(name: &str) -> Result<(), FleetStateError> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(FleetStateError::EmptyName);
+    }
+    let length = trimmed.chars().count();
+    if length > MAX_FLEET_NAME_CHARS {
+        return Err(FleetStateError::NameTooLong {
+            found: length,
+            maximum: MAX_FLEET_NAME_CHARS,
+        });
+    }
+    if trimmed.chars().any(char::is_control) {
+        return Err(FleetStateError::NameContainsControlCharacter);
     }
     Ok(())
 }
@@ -333,7 +494,7 @@ pub const fn ship_class_label(class: ShipClass) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use galactic_domain::{Owner, UniverseConfig};
+    use galactic_domain::{MissionId, Owner, ResourceStock, SystemId, UniverseConfig};
 
     use crate::{CraftableId, Simulation};
 
@@ -371,6 +532,7 @@ mod tests {
             .fleet(created.fleet_id)
             .expect("fleet exists");
         assert_eq!(fleet.owner, Owner::Faction(actor));
+        assert_eq!(fleet.name, "Flotte 1");
         assert_eq!(fleet.location, FleetLocation::Docked(colony_id));
         assert_eq!(fleet.composition.total_ships(), 3);
         assert_eq!(
@@ -388,6 +550,126 @@ mod tests {
     }
 
     #[test]
+    fn fleet_can_be_renamed_with_validation() {
+        let mut simulation = simulation_with_docked_ships();
+        let actor = simulation.state().player_faction;
+        let colony_id = simulation.state().colonies[0].id;
+        let composition =
+            FleetComposition::from_stacks([ShipStack::new(CraftableId::LIGHT_PROBE, 1)])
+                .expect("composition is valid");
+        let created = form_fleet(simulation.state_mut(), actor, colony_id, composition)
+            .expect("fleet can be formed");
+
+        rename_fleet(
+            simulation.state_mut(),
+            actor,
+            created.fleet_id,
+            "  Cartographie Alpha  ",
+        )
+        .expect("fleet can be renamed");
+
+        assert_eq!(
+            simulation.state().fleet(created.fleet_id).unwrap().name,
+            "Cartographie Alpha"
+        );
+        assert_eq!(
+            rename_fleet(simulation.state_mut(), actor, created.fleet_id, "   "),
+            Err(FleetError::FleetNameEmpty),
+        );
+        assert_eq!(
+            simulation.state().fleet(created.fleet_id).unwrap().name,
+            "Cartographie Alpha"
+        );
+    }
+
+    #[test]
+    fn idle_docked_fleet_can_be_disbanded_without_losing_ships() {
+        let mut simulation = simulation_with_docked_ships();
+        let actor = simulation.state().player_faction;
+        let colony_id = simulation.state().colonies[0].id;
+        let composition =
+            FleetComposition::from_stacks([ShipStack::new(CraftableId::LIGHT_PROBE, 1)])
+                .expect("composition is valid");
+        let created = form_fleet(simulation.state_mut(), actor, colony_id, composition)
+            .expect("fleet can be formed");
+
+        let disbanded = disband_fleet(simulation.state_mut(), actor, created.fleet_id)
+            .expect("fleet can be disbanded");
+
+        assert_eq!(disbanded.colony_id, colony_id);
+        assert!(simulation.state().fleet(created.fleet_id).is_none());
+        assert_eq!(
+            simulation.state().colonies[0]
+                .inventory
+                .quantity(CraftableId::LIGHT_PROBE),
+            2
+        );
+    }
+
+    #[test]
+    fn disbanding_a_docked_fleet_deposits_its_cargo() {
+        let mut simulation = simulation_with_docked_ships();
+        let actor = simulation.state().player_faction;
+        let colony_id = simulation.state().colonies[0].id;
+        let composition =
+            FleetComposition::from_stacks([ShipStack::new(CraftableId::LIGHT_CARGO, 1)])
+                .expect("composition is valid");
+        let created = form_fleet(simulation.state_mut(), actor, colony_id, composition)
+            .expect("fleet can be formed");
+        let cargo = ResourceStock::new(1, 2, 3);
+        let before = simulation.state().colonies[0].resources.available();
+        simulation
+            .state_mut()
+            .fleet_mut(created.fleet_id)
+            .unwrap()
+            .cargo = cargo;
+
+        disband_fleet(simulation.state_mut(), actor, created.fleet_id)
+            .expect("loaded docked fleet can be disbanded when storage has room");
+
+        assert!(simulation.state().fleet(created.fleet_id).is_none());
+        assert_eq!(
+            simulation.state().colonies[0].resources.available(),
+            before
+                .checked_add(cargo)
+                .expect("test cargo does not overflow"),
+        );
+        assert_eq!(
+            simulation.state().colonies[0]
+                .inventory
+                .quantity(CraftableId::LIGHT_CARGO),
+            2
+        );
+    }
+
+    #[test]
+    fn disband_rejects_fleets_that_are_busy_or_remote() {
+        let mut simulation = simulation_with_docked_ships();
+        let actor = simulation.state().player_faction;
+        let colony_id = simulation.state().colonies[0].id;
+        let composition =
+            FleetComposition::from_stacks([ShipStack::new(CraftableId::LIGHT_CARGO, 1)])
+                .expect("composition is valid");
+        let created = form_fleet(simulation.state_mut(), actor, colony_id, composition)
+            .expect("fleet can be formed");
+
+        let fleet = simulation.state_mut().fleet_mut(created.fleet_id).unwrap();
+        fleet.assignment = FleetAssignment::Mission(MissionId::new(7));
+        assert_eq!(
+            disband_fleet(simulation.state_mut(), actor, created.fleet_id),
+            Err(FleetError::FleetNotIdle(created.fleet_id)),
+        );
+
+        let fleet = simulation.state_mut().fleet_mut(created.fleet_id).unwrap();
+        fleet.assignment = FleetAssignment::Idle;
+        fleet.location = FleetLocation::InSystem(SystemId::new(0));
+        assert_eq!(
+            disband_fleet(simulation.state_mut(), actor, created.fleet_id),
+            Err(FleetError::FleetNotDocked(created.fleet_id)),
+        );
+    }
+
+    #[test]
     fn mixed_fleet_uses_slowest_ship_and_sums_capacity() {
         let composition = FleetComposition::from_stacks([
             ShipStack::new(CraftableId::LIGHT_PROBE, 2),
@@ -398,10 +680,10 @@ mod tests {
         assert_eq!(
             composition.capabilities(),
             Ok(FleetCapabilities {
-                cruise_speed: 100,
+                cruise_speed: 130,
                 range_hops: 3,
-                cargo_capacity: 2_400,
-                fuel_per_hop: 57,
+                cargo_capacity: 1_500,
+                fuel_per_hop: 48,
             }),
         );
     }

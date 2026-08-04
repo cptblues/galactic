@@ -391,6 +391,18 @@ pub(crate) fn event_label(event: GameEvent) -> String {
         GameEventKind::FleetCreationRejected(rejected) => {
             format!("formation de flotte refusée : {:?}", rejected.error)
         }
+        GameEventKind::FleetRenamed(renamed) => {
+            format!("flotte {:?} renommée", renamed.fleet_id)
+        }
+        GameEventKind::FleetRenameRejected(rejected) => {
+            format!("renommage de flotte refusé : {:?}", rejected.error)
+        }
+        GameEventKind::FleetDisbanded(disbanded) => {
+            format!("flotte {:?} dissoute", disbanded.fleet_id)
+        }
+        GameEventKind::FleetDisbandRejected(rejected) => {
+            format!("dissolution de flotte refusée : {:?}", rejected.error)
+        }
         GameEventKind::MissionLaunched(launched) => format!(
             "mission {:?} lancée vers {:?}",
             launched.kind, launched.target,

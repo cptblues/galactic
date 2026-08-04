@@ -20,6 +20,7 @@
             offense: 6,
             defense: 8,
             durability: 7,
+            target_class: Light,
             estimate_step: 5,
         ),
         (
@@ -29,6 +30,7 @@
             offense: 14,
             defense: 13,
             durability: 12,
+            target_class: Medium,
             estimate_step: 4,
         ),
         (
@@ -38,6 +40,7 @@
             offense: 4,
             defense: 22,
             durability: 28,
+            target_class: Heavy,
             estimate_step: 2,
         ),
         (
@@ -47,6 +50,7 @@
             offense: 18,
             defense: 12,
             durability: 16,
+            target_class: Medium,
             estimate_step: 2,
         ),
         (
@@ -56,6 +60,7 @@
             offense: 28,
             defense: 18,
             durability: 24,
+            target_class: Heavy,
             estimate_step: 2,
         ),
     ],

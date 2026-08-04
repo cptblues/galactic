@@ -18,7 +18,7 @@ use crate::{
 /// Version of the mutable in-memory state contract.
 ///
 /// Version 26 persists extraction sites, reservations and harvest cargo.
-pub const GAME_STATE_VERSION: u32 = 26;
+pub const GAME_STATE_VERSION: u32 = 28;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemVisibility {

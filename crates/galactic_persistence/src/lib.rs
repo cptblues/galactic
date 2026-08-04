@@ -23,8 +23,8 @@ mod tests {
     use galactic_sim::{
         BuildingKind, CraftableId, FleetComposition, GAME_STATE_VERSION, GameAction,
         KnowledgeLevel, MissionKind, MissionOrder, MissionPhase, MissionResult, MissionTarget,
-        ResearchState, ShipStack, SimulationBuildError, StrategicTick, TechnologyId,
-        default_building_catalog,
+        PlanetaryIntelPrecision, ResearchState, ShipStack, SimulationBuildError, StrategicTick,
+        TechnologyId, default_building_catalog,
     };
 
     use super::*;
@@ -61,6 +61,14 @@ mod tests {
             target,
             KnowledgeLevel::Probed,
         );
+        let observed_at = simulation.state().clock.current_tick();
+        galactic_sim::refresh_planetary_intelligence(
+            simulation.state_mut(),
+            target,
+            PlanetaryIntelPrecision::Contact,
+            observed_at,
+        )
+        .expect("test setup creates contact intelligence");
         {
             let colony = &mut simulation.state_mut().colonies[0];
             colony
@@ -82,7 +90,8 @@ mod tests {
             TechnologyId::PROPULSION,
             TechnologyId::PLANETARY_ANALYSIS,
         ]);
-        simulation.apply_player_action(GameAction::AnalyzePlanet { planet_id: target });
+        galactic_sim::analyze_planet(simulation.state_mut(), &repository, actor, target)
+            .expect("test setup creates an analyzed report");
         assert_eq!(
             simulation.state().planet_knowledge_level(target),
             KnowledgeLevel::Analyzed
@@ -157,6 +166,14 @@ mod tests {
             target,
             KnowledgeLevel::Probed,
         );
+        let observed_at = simulation.state().clock.current_tick();
+        galactic_sim::refresh_planetary_intelligence(
+            simulation.state_mut(),
+            target,
+            PlanetaryIntelPrecision::Contact,
+            observed_at,
+        )
+        .expect("test setup creates contact intelligence");
         simulation.state_mut().research = ResearchState::from_completed([
             TechnologyId::SPATIAL_DETECTION,
             TechnologyId::PROPULSION,
@@ -164,7 +181,8 @@ mod tests {
             TechnologyId::PLANETARY_ANALYSIS,
             TechnologyId::COLONIZATION,
         ]);
-        simulation.apply_player_action(GameAction::AnalyzePlanet { planet_id: target });
+        galactic_sim::analyze_planet(simulation.state_mut(), &repository, actor, target)
+            .expect("test setup creates an analyzed report");
         {
             let colony = &mut simulation.state_mut().colonies[0];
             colony
@@ -312,7 +330,8 @@ mod tests {
                 .credit(ResourceStock::new(1_000, 1_000, 1_000))
                 .expect("test funding fits the configured storage");
         }
-        simulation.apply_player_action(GameAction::AnalyzePlanet { planet_id: target });
+        galactic_sim::analyze_planet(simulation.state_mut(), &repository, actor, target)
+            .expect("test setup creates an analyzed report");
         simulation.apply_player_action(GameAction::QueueCraft {
             colony_id,
             craftable: CraftableId::LIGHT_CARGO,
@@ -443,7 +462,10 @@ mod tests {
             TechnologyId::SPATIAL_DETECTION,
             TechnologyId::PLANETARY_ANALYSIS,
         ]);
-        simulation.apply_player_action(GameAction::AnalyzePlanet { planet_id });
+        let repository = simulation.universe_repository().clone();
+        let actor = simulation.state().player_faction;
+        galactic_sim::analyze_planet(simulation.state_mut(), &repository, actor, planet_id)
+            .expect("test setup creates an analyzed report");
 
         let report = *simulation
             .state()
@@ -860,9 +882,20 @@ mod tests {
         let composition =
             FleetComposition::from_stacks([ShipStack::new(CraftableId::LIGHT_CARGO, 1)])
                 .expect("composition is valid");
-        simulation.apply_player_action(GameAction::FormFleet {
+        let form_events = simulation.apply_player_action(GameAction::FormFleet {
             colony_id,
             composition,
+        });
+        let fleet_id = form_events
+            .iter()
+            .find_map(|event| match event.kind {
+                galactic_sim::GameEventKind::FleetCreated(created) => Some(created.fleet_id),
+                _ => None,
+            })
+            .expect("fleet forms");
+        simulation.apply_player_action(GameAction::RenameFleet {
+            fleet_id,
+            name: "Groupe Sillage".to_string(),
         });
 
         let save = snapshot_from_simulation(&simulation);
@@ -871,6 +904,7 @@ mod tests {
         assert_eq!(restored.state(), simulation.state());
         assert_eq!(restored.state().player_fleets().count(), 1);
         assert_eq!(restored.state().fleets[0].owner, Owner::Faction(actor));
+        assert_eq!(restored.state().fleets[0].name, "Groupe Sillage");
         assert_eq!(
             restored.state().colonies[0]
                 .inventory
@@ -980,7 +1014,127 @@ mod tests {
     }
 
     #[test]
-    fn state_and_save_versions_match_mvp_029_b() {
+    fn satellite_analysis_mission_survives_restore_during_analysis() {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+        let colony_id = simulation.state().colonies[0].id;
+        let origin = simulation.state().colonies[0].system_id;
+        let target = simulation
+            .state()
+            .planet_knowledge
+            .iter()
+            .find(|entry| entry.level == KnowledgeLevel::Detected)
+            .expect("the home system contains a detected planet")
+            .planet_id;
+        let repository = simulation.universe_repository().clone();
+        simulation.state_mut().advance_planet_knowledge(
+            &repository,
+            target,
+            KnowledgeLevel::Probed,
+        );
+        let observed_at = simulation.state().clock.current_tick();
+        galactic_sim::refresh_planetary_intelligence(
+            simulation.state_mut(),
+            target,
+            PlanetaryIntelPrecision::Contact,
+            observed_at,
+        )
+        .expect("test setup creates contact intelligence");
+        simulation.state_mut().research = ResearchState::from_completed([
+            TechnologyId::SPATIAL_DETECTION,
+            TechnologyId::PLANETARY_ANALYSIS,
+        ]);
+        simulation.state_mut().colonies[0]
+            .resources
+            .credit(ResourceStock::new(1_000, 1_000, 1_000))
+            .expect("test fuel fits the ledger");
+        simulation.state_mut().colonies[0]
+            .buildings
+            .set_level(BuildingKind::CONSTRUCTION_CENTER, 2);
+        simulation.state_mut().colonies[0]
+            .buildings
+            .set_level(BuildingKind::METAL_MINE, 2);
+        simulation.state_mut().colonies[0]
+            .buildings
+            .set_level(BuildingKind::CRYSTAL_EXTRACTOR, 2);
+        simulation.state_mut().colonies[0]
+            .buildings
+            .set_level(BuildingKind::SHIPYARD, 2);
+        let buildings = simulation.state().colonies[0].buildings;
+        simulation.state_mut().colonies[0].energy =
+            default_building_catalog().energy_grid_for_levels(buildings);
+        simulation.apply_player_action(GameAction::QueueCraft {
+            colony_id,
+            craftable: CraftableId::CARTOGRAPHER_SATELLITE,
+            quantity: 1,
+        });
+        simulation.advance(Duration::from_secs(200));
+        assert_eq!(
+            simulation.state().colonies[0]
+                .inventory
+                .quantity(CraftableId::CARTOGRAPHER_SATELLITE),
+            1
+        );
+        let composition =
+            FleetComposition::from_stacks([ShipStack::new(CraftableId::CARTOGRAPHER_SATELLITE, 1)])
+                .expect("satellite composition is valid");
+        let formed = simulation.apply_player_action(GameAction::FormFleet {
+            colony_id,
+            composition,
+        });
+        let fleet_id = formed
+            .iter()
+            .find_map(|event| match event.kind {
+                galactic_sim::GameEventKind::FleetCreated(created) => Some(created.fleet_id),
+                _ => None,
+            })
+            .expect("satellite fleet forms");
+        simulation.apply_player_action(GameAction::LaunchMission(MissionOrder {
+            fleet_id,
+            origin,
+            target: MissionTarget::Planet {
+                system_id: target.system_id(),
+                planet_id: target,
+            },
+            kind: MissionKind::Analyze,
+            departure_at: simulation.state().clock.current_tick(),
+        }));
+        let plan = simulation.state().missions[0].plan.clone();
+        let to_outbound_arrival = plan
+            .outbound_arrival_at
+            .value()
+            .saturating_sub(simulation.state().clock.current_tick().value());
+        simulation.advance(Duration::from_millis(
+            to_outbound_arrival.saturating_mul(100),
+        ));
+        assert_eq!(simulation.state().missions[0].phase, MissionPhase::OnSite);
+        assert!(simulation.state().planet_analysis_report(target).is_none());
+
+        let save = snapshot_from_simulation(&simulation);
+        let mut restored =
+            restore_from_snapshot(&save).expect("analysis mission save is compatible");
+        assert_eq!(restored.state(), simulation.state());
+
+        let remaining = plan
+            .return_arrival_at
+            .value()
+            .saturating_sub(restored.state().clock.current_tick().value());
+        simulation.advance(Duration::from_millis(remaining.saturating_mul(100)));
+        restored.advance(Duration::from_millis(remaining.saturating_mul(100)));
+
+        assert_eq!(restored.state(), simulation.state());
+        assert_eq!(restored.state().missions[0].phase, MissionPhase::Completed);
+        assert_eq!(
+            restored.state().planet_knowledge_level(target),
+            KnowledgeLevel::Analyzed
+        );
+        assert!(matches!(
+            restored.state().mission_reports[0].result,
+            Some(MissionResult::Analyze(_))
+        ));
+    }
+
+    #[test]
+    fn state_and_save_versions_match_mvp_030_a6() {
         let simulation = Simulation::new(UniverseConfig::mvp());
         let save = snapshot_from_simulation(&simulation);
 

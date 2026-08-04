@@ -16,7 +16,7 @@ use presentation::colony_management_ui::{
     update_colony_management_visibility,
 };
 use presentation::components::{
-    ColonyManagementState, DebugOverlayState, InspectorContent, InspectorSection,
+    ColonyManagementState, DebugOverlayState, HelpUiState, InspectorContent, InspectorSection,
     InspectorTabBarRoot, InspectorTabButton, InspectorTabButtonQuery, InspectorTabLabelQuery,
     InspectorTabState, InspectorTextQuery, InspectorTextRole, OpenPanel, PointerSelectionState,
     SelectedMission, StrategicViewEntity, TopBarText, UiPointerBlocker,
@@ -29,9 +29,9 @@ use presentation::input::{
     update_pointer_tooltip,
 };
 use presentation::inspector_panel::{
-    format_strategic_duration, handle_inspector_tab_buttons, mission_error_text,
-    mission_kind_label, mission_next_deadline, mission_phase_label, mission_result_text,
-    mission_target_label, update_info_panel, update_ui,
+    combat_report_text, format_strategic_duration, handle_inspector_tab_buttons,
+    mission_error_text, mission_kind_label, mission_next_deadline, mission_phase_label_for_kind,
+    mission_result_text, mission_target_label, update_info_panel, update_ui,
 };
 use presentation::overlays::{
     compute_label_budget, draw_strategic_overlays, update_orbiting_visuals, update_planet_spins,
@@ -44,9 +44,9 @@ use presentation::procedural_materials::{
 };
 use presentation::scene::{
     accent_craft_amber, accent_fleet_blue, accent_research_violet, action_button_color,
-    action_button_outline, handle_tab_bar_galaxy_button, panel_background, panel_outline,
-    rebuild_strategic_view_if_requested, spawn_scene, spawn_strategic_view, spawn_ui, ui_text_font,
-    update_resource_bar,
+    action_button_outline, handle_help_toggle_button, handle_tab_bar_galaxy_button,
+    panel_background, panel_outline, rebuild_strategic_view_if_requested, spawn_scene,
+    spawn_strategic_view, spawn_ui, ui_text_font, update_help_visibility, update_resource_bar,
 };
 use presentation::shortcuts::{apply_simulation_command, apply_ui_action};
 use presentation::strategic_camera::{tick_simulation, update_strategic_camera};
@@ -194,6 +194,7 @@ impl Plugin for ClientPlugin {
         .init_resource::<OpenPanel>()
         .init_resource::<MemoryDiagnostics>()
         .init_resource::<DebugOverlayState>()
+        .init_resource::<HelpUiState>()
         .init_resource::<InspectorTabState>()
         .add_plugins(SimulationBridgePlugin)
         .add_plugins(PresentationPlugin)
@@ -308,6 +309,7 @@ impl Plugin for PresentationPlugin {
                 handle_action_buttons,
                 handle_colony_management_buttons,
                 handle_tab_bar_galaxy_button,
+                handle_help_toggle_button,
                 handle_system_body_colonize_buttons,
                 handle_inspector_tab_buttons,
                 toggle_debug_overlay,
@@ -337,6 +339,7 @@ impl Plugin for PresentationPlugin {
             (
                 update_resource_bar,
                 update_ui,
+                update_help_visibility,
                 update_info_panel,
                 update_debug_overlay_visibility,
             )
@@ -1488,14 +1491,11 @@ VmSwap:\t      2048 kB
     }
 
     #[test]
-    fn planetary_analysis_shortcut_uses_l() {
+    fn planetary_analysis_no_longer_uses_an_instant_shortcut() {
         let mut keyboard = ButtonInput::<KeyCode>::default();
         keyboard.press(KeyCode::KeyL);
 
-        assert_eq!(
-            simulation_shortcut(&keyboard),
-            Some(UiAction::AnalyzePlanet)
-        );
+        assert_eq!(simulation_shortcut(&keyboard), None);
     }
 
     #[test]

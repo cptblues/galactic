@@ -48,6 +48,13 @@ pub enum GameAction {
         colony_id: ColonyId,
         composition: FleetComposition,
     },
+    RenameFleet {
+        fleet_id: FleetId,
+        name: String,
+    },
+    DisbandFleet {
+        fleet_id: FleetId,
+    },
     LaunchProbe {
         colony_id: ColonyId,
         target: MissionTarget,
@@ -70,9 +77,6 @@ pub enum GameAction {
     LaunchColonization {
         colony_id: ColonyId,
         target: MissionTarget,
-    },
-    AnalyzePlanet {
-        planet_id: PlanetId,
     },
     LaunchMission(MissionOrder),
     CancelMission {

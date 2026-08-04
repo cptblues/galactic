@@ -14,8 +14,8 @@
 | MVP-030-A2 | Clarifier l’économie planétaire et la recherche | P1 | 8 pts | À faire |
 | MVP-030-A3 | Ajouter les fabrications par lot et l’annulation des files | P1 | 8 pts | À faire |
 | MVP-030-A4 | Créer un planificateur de missions complet | P0 | 13 pts | À faire |
-| MVP-030-A5 | Transformer l’analyse planétaire en mission satellite | P1 | 8 pts | À faire |
-| MVP-030-A6 | Diversifier les vaisseaux et les rôles de combat | P1 | 13 pts | À faire |
+| MVP-030-A5 | Transformer l’analyse planétaire en mission satellite | P1 | 8 pts | Implémenté |
+| MVP-030-A6 | Diversifier les vaisseaux et les rôles de combat | P1 | 13 pts | Implémenté |
 | MVP-031 | Finaliser sauvegarde, chargement et migrations V1 | P0 | 8 pts | À faire |
 | MVP-032 | Ajouter onboarding et objectifs contextuels | P1 | 5 pts | À faire |
 | MVP-033 | Implémenter la condition de réussite du MVP | P1 | 3 pts | À faire |
@@ -38,7 +38,7 @@
 |---|---|
 | Priorité | P0 |
 | Estimation | 5 points |
-| Statut | À faire |
+| Statut | Implémenté |
 | Dépendances | Interface actuelle du MVP-030 |
 
 ### Objectif
@@ -327,13 +327,14 @@ Permettre au joueur de préparer chaque mission sans raccourci caché ni choix a
 
 Créer un assistant en étapes :
 
-1. origine ;
-2. destination ;
-3. type de mission ;
-4. sélection de flotte ;
-5. cargaison ou paramètres ;
-6. route et durée ;
-7. validation.
+1. gestion des flottes : création, sélection, nommage, dissolution contrôlée ;
+2. préparation : choix d'une flotte, puis des missions compatibles avec sa
+   composition ;
+3. destination : choix parmi les cibles disponibles, avec durée, route,
+   carburant, blocages et informations utiles ;
+4. paramètres : cargaison ou options propres à la mission ;
+5. récapitulatif et validation ;
+6. suivi dans la liste des missions actives.
 
 ### Informations obligatoires
 
@@ -437,7 +438,7 @@ Créer un assistant en étapes :
 |---|---|
 | Priorité | P1 |
 | Estimation | 8 points |
-| Statut | À faire |
+| Statut | Implémenté |
 | Dépendances | MVP-030-A3, MVP-030-A4 |
 
 ### Objectif
@@ -502,12 +503,9 @@ Révèle :
 
 ### Paramètres configurables
 
-- Durée d’analyse.
-- Bonus technologique.
-- Précision du rapport.
-- Durée selon le type de planète.
-- Distance locale ou interstellaire.
-- Conditions de retour.
+- Durée d’analyse configurée dans `planetary_analysis.ron`.
+- Distance locale ou interstellaire calculée par le planificateur commun.
+- Conditions de retour portées par les phases persistées de mission.
 
 ### Hors périmètre
 
@@ -520,13 +518,13 @@ Révèle :
 
 ### Critères d’acceptation
 
-- [ ] Une planète doit être sondée avant d’être analysée.
-- [ ] L’analyse ne produit pas immédiatement un rapport.
-- [ ] Le satellite doit être fabriqué.
-- [ ] La mission progresse uniquement sur les ticks stratégiques.
-- [ ] La sauvegarde conserve la phase d’analyse.
-- [ ] Le rapport n’est révélé qu’à la phase prévue.
-- [ ] Les données inconnues ne fuient pas dans l’interface.
+- [x] Une planète doit être sondée avant d’être analysée.
+- [x] L’analyse ne produit pas immédiatement un rapport.
+- [x] Le satellite doit être fabriqué.
+- [x] La mission progresse uniquement sur les ticks stratégiques.
+- [x] La sauvegarde conserve la phase d’analyse.
+- [x] Le rapport n’est révélé qu’à la phase prévue.
+- [x] Les données inconnues ne fuient pas dans l’interface.
 
 ---
 
@@ -630,13 +628,13 @@ Créer des choix de flotte simples mais significatifs pour le transport, la reco
 
 ### Critères d’acceptation
 
-- [ ] Le joueur dispose d’au moins trois choix de transport.
-- [ ] Le joueur dispose d’au moins trois choix militaires.
-- [ ] Chaque vaisseau possède un rôle lisible.
-- [ ] Les bonus de cible sont visibles avant une attaque.
-- [ ] Les résultats restent déterministes.
-- [ ] Les statistiques viennent du ruleset.
-- [ ] Ajouter un vaisseau utilisant les comportements existants ne nécessite pas de modifier le cœur du moteur.
+- [x] Le joueur dispose d’au moins trois choix de transport.
+- [x] Le joueur dispose d’au moins trois choix militaires.
+- [x] Chaque vaisseau possède un rôle lisible.
+- [x] Les bonus de cible sont visibles avant une attaque.
+- [x] Les résultats restent déterministes.
+- [x] Les statistiques viennent du ruleset.
+- [x] Ajouter un vaisseau utilisant les comportements existants ne nécessite pas de modifier le cœur du moteur.
 
 ---
 

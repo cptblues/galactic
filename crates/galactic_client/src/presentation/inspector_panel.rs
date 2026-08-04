@@ -355,9 +355,8 @@ fn planet_inspector_content(
                 InspectorSection {
                     title: "Aperçu".to_string(),
                     body: format!(
-                        "Système : {system_label}\nType : {:?}\nHabitabilité estimée : {}\nPotentiel : analyse requise",
+                        "Système : {system_label}\nType général : {:?}\nHabitabilité : analyse requise\nPotentiel : analyse requise",
                         planet.kind,
-                        habitability_estimate(planet.habitability),
                     ),
                 },
                 InspectorSection {
@@ -529,19 +528,17 @@ fn planetary_intelligence_text(simulation: &Simulation, planet_id: PlanetId) -> 
         PlanetaryIntelPrecision::Contact => {
             let presence = match report.occupancy {
                 PlanetaryOccupancyIntel::Unoccupied => {
-                    "aucune présence organisée détectée".to_string()
+                    "aucune signature organisée détectée".to_string()
                 }
                 PlanetaryOccupancyIntel::OccupiedUnknown => {
-                    "signature occupante détectée, identité inconnue".to_string()
+                    "signature potentielle détectée, identité inconnue".to_string()
                 }
                 PlanetaryOccupancyIntel::Occupied(faction_id) => {
-                    format!("signature attribuée à la faction {}", faction_id.raw())
+                    format!("signature potentielle détectée ({})", faction_id.raw())
                 }
             };
             format!(
-                "RENSEIGNEMENT PLANÉTAIRE — CONTACT\n{observed}\nPrésence : {presence}\nForces terrestres : {}\nDéfenses orbitales : {}\nUne analyse est requise pour identifier les unités et leurs effectifs.",
-                strategic_signal_label(report.ground_strength),
-                strategic_signal_label(report.orbital_strength),
+                "RENSEIGNEMENT PLANÉTAIRE — CONTACT\n{observed}\nPrésence potentielle : {presence}\nUne analyse orbitale est requise pour révéler occupant, population, forces et défenses.",
             )
         }
         PlanetaryIntelPrecision::Surveyed | PlanetaryIntelPrecision::Exact => {
@@ -608,7 +605,7 @@ fn planetary_intelligence_text(simulation: &Simulation, planet_id: PlanetId) -> 
         .unwrap_or(intelligence)
 }
 
-fn combat_report_text(report: &galactic_sim::CombatReport) -> String {
+pub(crate) fn combat_report_text(report: &galactic_sim::CombatReport) -> String {
     match &report.status {
         CombatReportStatus::TargetInvalid(reason) => format!(
             "RAPPORT DE COMBAT — CIBLE INVALIDÉE\nMission {} • tick {}\n{}.\nAucune donnée défensive supplémentaire n'a été révélée.",
@@ -622,14 +619,16 @@ fn combat_report_text(report: &galactic_sim::CombatReport) -> String {
                 CombatControlChange::Secured { .. } => "orbite et surface sécurisées par le joueur",
             };
             format!(
-                "RAPPORT DE COMBAT — {}\nMission {} • tick {} • {} round(s)\nAttaquants engagés : {}\nAttaquants survivants : {}\nDéfense engagée : {}\nDéfense survivante : {}\nDommages subis/infligés : {} / {}\nRécupérable : {} métal, {} cristal, {} carburant\nRécupéré : {} métal, {} cristal, {} carburant\nContrôle : {}",
+                "RAPPORT DE COMBAT — {}\nMission {} • tick {} • {} round(s)\nAttaquants engagés : {}\nPertes attaquantes : {}\nAttaquants survivants : {}\nDéfense engagée : {}\nPertes défense : {}\nDéfense survivante : {}\nDommages subis/infligés : {} / {}\nRécupérable : {} métal, {} cristal, {} carburant\nRécupéré : {} métal, {} cristal, {} carburant\nContrôle : {}",
                 combat_outcome_label(resolution.outcome).to_uppercase(),
                 report.mission_id.raw(),
                 report.resolved_at.value(),
                 resolution.rounds,
                 combat_ship_stacks_text(&report.attacker.ships),
+                combat_ship_losses_text(&resolution.attacker_losses),
                 combat_ship_stacks_text(&resolution.attacker_survivors),
                 planetary_force_stacks_text(&report.defender.forces),
+                planetary_force_losses_text(&resolution.defender_losses),
                 planetary_force_stacks_text(&resolution.defender_survivors),
                 resolution.attacker_damage,
                 resolution.defender_damage,
@@ -653,9 +652,30 @@ fn combat_ship_stacks_text(stacks: &[galactic_sim::CombatShipStack]) -> String {
         .iter()
         .map(|stack| {
             format!(
-                "{} × {}",
+                "{} × {} [{} • A{} D{} S{}]",
                 stack.quantity,
                 galactic_sim::craftable_definition(stack.craftable).name,
+                stack.target_class.label(),
+                stack.offense,
+                stack.defense,
+                stack.durability,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn combat_ship_losses_text(losses: &[galactic_sim::CombatShipLoss]) -> String {
+    if losses.is_empty() {
+        return "aucune".to_string();
+    }
+    losses
+        .iter()
+        .map(|loss| {
+            format!(
+                "{} × {}",
+                loss.quantity,
+                galactic_sim::craftable_definition(loss.craftable).name,
             )
         })
         .collect::<Vec<_>>()
@@ -674,7 +694,29 @@ fn planetary_force_stacks_text(stacks: &[galactic_sim::PlanetaryForceStack]) -> 
                 .definition(stack.definition_id)
                 .map(|definition| definition.name)
                 .unwrap_or("unité inconnue");
-            format!("{} × {name}", stack.quantity)
+            let class = catalog
+                .definition(stack.definition_id)
+                .map(|definition| definition.target_class.label())
+                .unwrap_or("classe inconnue");
+            format!("{} × {name} [{class}]", stack.quantity)
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn planetary_force_losses_text(losses: &[galactic_sim::PlanetaryForceLoss]) -> String {
+    if losses.is_empty() {
+        return "aucune".to_string();
+    }
+    let catalog = default_ruleset().planetary_presence();
+    losses
+        .iter()
+        .map(|loss| {
+            let name = catalog
+                .definition(loss.definition_id)
+                .map(|definition| definition.name)
+                .unwrap_or("unité inconnue");
+            format!("{} × {name}", loss.quantity)
         })
         .collect::<Vec<_>>()
         .join(", ")
@@ -708,15 +750,6 @@ fn estimate_range_text(range: EstimateRange) -> String {
         range.minimum.to_string()
     } else {
         format!("{}–{}", range.minimum, range.maximum)
-    }
-}
-
-fn strategic_signal_label(range: EstimateRange) -> &'static str {
-    match range.maximum {
-        0 => "aucune signature",
-        1..=749 => "faible",
-        750..=1_999 => "modérée",
-        _ => "forte",
     }
 }
 
@@ -881,7 +914,7 @@ pub(crate) const fn knowledge_badge_fr(level: KnowledgeLevel) -> &'static str {
     match level {
         KnowledgeLevel::Unknown => "[INCONNU — DONNÉES MASQUÉES]",
         KnowledgeLevel::Detected => "[DÉTECTÉ — DONNÉES MASQUÉES]",
-        KnowledgeLevel::Probed => "[SONDÉ — ESTIMATIONS]",
+        KnowledgeLevel::Probed => "[SONDÉ — IDENTITÉ CONFIRMÉE]",
         KnowledgeLevel::Analyzed => "[ANALYSÉ — RAPPORT COMPLET]",
         KnowledgeLevel::Colonized => "[COLONISÉ — VALEURS EXACTES]",
     }
@@ -932,16 +965,6 @@ fn luminosity_estimate(luminosity: f32) -> &'static str {
         "forte"
     } else {
         "très forte"
-    }
-}
-
-fn habitability_estimate(habitability: u8) -> &'static str {
-    match habitability {
-        0..=19 => "très faible",
-        20..=39 => "faible",
-        40..=59 => "moyenne",
-        60..=79 => "bonne",
-        _ => "excellente",
     }
 }
 
@@ -1027,6 +1050,7 @@ pub(crate) fn update_ui(
 pub(crate) fn mission_kind_label(kind: MissionKind) -> &'static str {
     match kind {
         MissionKind::Probe => "Reconnaissance",
+        MissionKind::Analyze => "Analyse planétaire",
         MissionKind::Attack => "Attaque",
         MissionKind::Transport => "Transport",
         MissionKind::Harvest => "Récolte",
@@ -1043,6 +1067,14 @@ pub(crate) fn mission_phase_label(phase: MissionPhase) -> &'static str {
         MissionPhase::Completed => "terminée",
         MissionPhase::Cancelled => "annulée",
         MissionPhase::Failed => "échec",
+    }
+}
+
+pub(crate) fn mission_phase_label_for_kind(kind: MissionKind, phase: MissionPhase) -> &'static str {
+    match (kind, phase) {
+        (MissionKind::Analyze, MissionPhase::OnSite) => "analyse orbitale",
+        (MissionKind::Analyze, MissionPhase::Returning) => "retour des données",
+        _ => mission_phase_label(phase),
     }
 }
 
@@ -1069,7 +1101,7 @@ pub(crate) fn mission_status_line(simulation: &Simulation) -> String {
         return "Missions : aucune mission active".to_string();
     };
     let target = mission_target_label(simulation, mission.order.target);
-    let phase = mission_phase_label(mission.phase);
+    let phase = mission_phase_label_for_kind(mission.order.kind, mission.phase);
     let deadline = mission_next_deadline(mission, state.clock.current_tick());
     let remaining = deadline
         .value()
@@ -1236,6 +1268,12 @@ pub(crate) fn mission_result_text(result: MissionResult) -> String {
                 planet_id.index(),
             ),
         },
+        MissionResult::Analyze(result) => format!(
+            "rapport planétaire terminé sur le corps {} : habitabilité {}%, environnement {}",
+            result.planet_id.index(),
+            result.report.habitability,
+            planet_environment_label(result.report.environment),
+        ),
         MissionResult::Attack(result) => match result.outcome {
             AttackMissionOutcome::Resolved(outcome) => format!(
                 "combat terminé sur le corps {} : {}{}",
@@ -1285,6 +1323,21 @@ pub(crate) fn mission_error_text(error: galactic_sim::MissionError) -> String {
         }
         galactic_sim::MissionError::ProbeTargetNotDetected { .. } => {
             "la reconnaissance exige un système ou une planète actuellement détecté".to_string()
+        }
+        galactic_sim::MissionError::AnalyzePlanetTargetRequired => {
+            "l'analyse doit cibler une planète".to_string()
+        }
+        galactic_sim::MissionError::AnalyzeTargetNotProbed { .. } => {
+            "la planète doit être sondée, mais pas déjà analysée".to_string()
+        }
+        galactic_sim::MissionError::MissingAnalyzeTechnology(_) => {
+            "recherchez Spectrométrie planétaire avant de lancer une analyse".to_string()
+        }
+        galactic_sim::MissionError::AnalyzeSatelliteRequired(_) => {
+            "la flotte sélectionnée doit contenir uniquement un Satellite Cartographe".to_string()
+        }
+        galactic_sim::MissionError::AnalysisTargetBusy { .. } => {
+            "une analyse est déjà en cours sur cette planète".to_string()
         }
         galactic_sim::MissionError::AttackFleetUnavailable(_) => {
             "aucune Frégate Rempart disponible ; construisez-en au chantier orbital".to_string()
@@ -1409,6 +1462,78 @@ pub(crate) fn mission_error_text(error: galactic_sim::MissionError) -> String {
 mod tests {
     use super::*;
     use crate::*;
+
+    #[test]
+    fn combat_report_text_lists_attacker_and_defender_losses() {
+        let report = galactic_sim::CombatReport {
+            mission_id: galactic_domain::MissionId::new(7),
+            planet_id: galactic_domain::PlanetId::new(3),
+            resolved_at: galactic_sim::StrategicTick::new(42),
+            rules_version: 2,
+            seed: 11,
+            attacker: galactic_sim::CombatFleetSnapshot {
+                fleet_id: galactic_domain::FleetId::new(2),
+                owner: galactic_domain::Owner::Faction(galactic_domain::FactionId::new(0)),
+                ships: vec![galactic_sim::CombatShipStack {
+                    craftable: galactic_sim::CraftableId::FRIGATE_BULWARK,
+                    quantity: 2,
+                    offense: 70,
+                    defense: 45,
+                    durability: 60,
+                    target_class: galactic_sim::CombatTargetClass::Medium,
+                    bonuses: galactic_sim::CombatTargetBonuses::default(),
+                }],
+                cargo: galactic_domain::ResourceStock::ZERO,
+                cargo_capacity: 100,
+            },
+            defender: galactic_sim::PlanetDefenseSnapshot {
+                planet_id: galactic_domain::PlanetId::new(3),
+                occupant: galactic_domain::Owner::Faction(galactic_domain::FactionId::new(1)),
+                population: 120,
+                forces: vec![galactic_sim::PlanetaryForceStack {
+                    definition_id: galactic_sim::PlanetaryForceId::from_static("frontier_militia"),
+                    quantity: 6,
+                }],
+                revision: 1,
+            },
+            status: CombatReportStatus::Resolved(galactic_sim::CombatResolution {
+                outcome: CombatOutcome::AttackerVictory,
+                rounds: 3,
+                attacker_losses: vec![galactic_sim::CombatShipLoss {
+                    craftable: galactic_sim::CraftableId::FRIGATE_BULWARK,
+                    quantity: 1,
+                }],
+                attacker_survivors: vec![galactic_sim::CombatShipStack {
+                    craftable: galactic_sim::CraftableId::FRIGATE_BULWARK,
+                    quantity: 1,
+                    offense: 70,
+                    defense: 45,
+                    durability: 60,
+                    target_class: galactic_sim::CombatTargetClass::Medium,
+                    bonuses: galactic_sim::CombatTargetBonuses::default(),
+                }],
+                defender_losses: vec![galactic_sim::PlanetaryForceLoss {
+                    definition_id: galactic_sim::PlanetaryForceId::from_static("frontier_militia"),
+                    quantity: 4,
+                }],
+                defender_survivors: vec![galactic_sim::PlanetaryForceStack {
+                    definition_id: galactic_sim::PlanetaryForceId::from_static("frontier_militia"),
+                    quantity: 2,
+                }],
+                attacker_damage: 30,
+                defender_damage: 90,
+                salvage_recoverable: galactic_domain::ResourceStock::new(10, 5, 0),
+                salvage_recovered: galactic_domain::ResourceStock::new(7, 3, 0),
+                control: CombatControlChange::Unchanged,
+            }),
+        };
+
+        let rendered = combat_report_text(&report);
+
+        assert!(rendered.contains("Pertes attaquantes"));
+        assert!(rendered.contains("Pertes défense"));
+        assert!(rendered.contains("Récupéré"));
+    }
 
     #[test]
     fn planet_specialization_matches_the_dominant_resource() {
@@ -1559,7 +1684,10 @@ mod tests {
             galactic_sim::TechnologyId::SPATIAL_DETECTION,
             galactic_sim::TechnologyId::PLANETARY_ANALYSIS,
         ]);
-        simulation.apply_player_action(GameAction::AnalyzePlanet { planet_id });
+        let repository = simulation.universe_repository().clone();
+        let actor = simulation.state().player_faction;
+        galactic_sim::analyze_planet(simulation.state_mut(), &repository, actor, planet_id)
+            .expect("test setup creates an analyzed report");
 
         let rendered = planet_inspector_content(&simulation, system_id, planet_id).render();
 
@@ -1645,7 +1773,9 @@ mod tests {
             galactic_sim::TechnologyId::SPATIAL_DETECTION,
             galactic_sim::TechnologyId::PLANETARY_ANALYSIS,
         ]);
-        simulation.apply_player_action(GameAction::AnalyzePlanet { planet_id });
+        let actor = simulation.state().player_faction;
+        galactic_sim::analyze_planet(simulation.state_mut(), &repository, actor, planet_id)
+            .expect("test setup creates an analyzed report");
         let report = simulation
             .state()
             .planetary_intelligence_report(planet_id)

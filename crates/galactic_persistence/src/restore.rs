@@ -133,6 +133,7 @@ pub fn restore_from_snapshot(save: &SaveGame) -> Result<Simulation, SaveError> {
             .iter()
             .map(|fleet| FleetState {
                 id: fleet.id,
+                name: fleet.name.clone(),
                 owner: fleet.owner,
                 location: fleet.location,
                 composition: fleet.composition.clone(),

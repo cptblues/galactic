@@ -741,7 +741,6 @@ pub(crate) fn spawn_ui(mut commands: Commands, icon_assets: Res<IconAssets>) {
             spawn_action_button(parent, UiAction::FocusSelection, "Recentrer", "F");
             spawn_action_button(parent, UiAction::EnterSystem, "Entrer système", "Enter");
             spawn_action_button(parent, UiAction::ExitSystem, "Retour univers", "Esc");
-            spawn_action_button(parent, UiAction::AnalyzePlanet, "Analyser planète", "L");
             spawn_action_button(
                 parent,
                 UiAction::ToggleProjection,
@@ -882,6 +881,7 @@ pub(crate) fn spawn_ui(mut commands: Commands, icon_assets: Res<IconAssets>) {
         },
         BackgroundColor(Color::srgba(0.022, 0.026, 0.030, 0.72)),
         Outline::new(Val::Px(1.0), Val::ZERO, Color::srgba(0.60, 0.50, 0.34, 0.35)),
+        Visibility::Hidden,
         Interaction::None,
         UiPointerBlocker,
         HelpText,
@@ -970,6 +970,11 @@ fn spawn_tab_bar(commands: &mut Commands) {
             spawn_tab_bar_slot(row, fleet_ui::spawn_fleet_toggle);
             spawn_tab_bar_slot(row, navigation_ui::spawn_search_toggle);
             spawn_tab_bar_slot(row, navigation_ui::spawn_filters_toggle);
+            row.spawn(Node {
+                width: Val::Px(42.0),
+                ..default()
+            })
+            .with_children(spawn_help_toggle_button);
         });
 }
 
@@ -1014,6 +1019,42 @@ fn spawn_galaxy_tab_button(parent: &mut ChildSpawnerCommands) {
         });
 }
 
+#[derive(Component)]
+pub(crate) struct HelpToggleButton;
+
+fn spawn_help_toggle_button(parent: &mut ChildSpawnerCommands) {
+    parent
+        .spawn((
+            Button,
+            Node {
+                width: Val::Percent(100.0),
+                min_height: Val::Px(36.0),
+                padding: UiRect::axes(Val::Px(10.0), Val::Px(7.0)),
+                border: UiRect::all(Val::Px(1.0)),
+                border_radius: BorderRadius::all(Val::Px(5.0)),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.08, 0.09, 0.11, 0.96)),
+            Outline::new(
+                Val::Px(1.0),
+                Val::ZERO,
+                Color::srgba(0.76, 0.84, 0.90, 0.50),
+            ),
+            HelpToggleButton,
+            UiPointerBlocker,
+        ))
+        .with_children(|button| {
+            button.spawn((
+                Text::new("?"),
+                ui_text_font(14.0),
+                TextColor(Color::srgb(0.86, 0.92, 0.98)),
+                HelpToggleText,
+            ));
+        });
+}
+
 pub(crate) fn handle_tab_bar_galaxy_button(
     mut simulation: ResMut<SimulationResource>,
     mut navigation: ResMut<StrategicNavigation>,
@@ -1026,6 +1067,33 @@ pub(crate) fn handle_tab_bar_galaxy_button(
         if *interaction == Interaction::Pressed {
             *open_panel = OpenPanel::None;
             navigate_to_galaxy(&mut simulation, &mut navigation, &mut history, &mut rebuild);
+        }
+    }
+}
+
+pub(crate) fn handle_help_toggle_button(
+    mut help: ResMut<HelpUiState>,
+    interactions: Query<&Interaction, (Changed<Interaction>, With<HelpToggleButton>)>,
+) {
+    for interaction in &interactions {
+        if *interaction == Interaction::Pressed {
+            help.shortcuts_visible = !help.shortcuts_visible;
+        }
+    }
+}
+
+pub(crate) fn update_help_visibility(
+    help: Res<HelpUiState>,
+    mut texts: Query<&mut Visibility, With<HelpText>>,
+) {
+    let visibility = if help.shortcuts_visible {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    };
+    for mut text in &mut texts {
+        if *text != visibility {
+            *text = visibility;
         }
     }
 }
@@ -1069,7 +1137,7 @@ pub(crate) fn spawn_colony_management_screen(commands: &mut Commands) {
                 left: Val::Px(14.0),
                 right: Val::Px(14.0),
                 top: Val::Px(112.0),
-                bottom: Val::Px(14.0),
+                bottom: Val::Px(74.0),
                 padding: UiRect::all(Val::Px(12.0)),
                 border: UiRect::all(Val::Px(1.0)),
                 border_radius: BorderRadius::all(Val::Px(8.0)),

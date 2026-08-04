@@ -1,16 +1,8 @@
 (
-    version: 1,
+    version: 2,
     maximum_rounds: 12,
     damage_scale: 1000,
     defense_weight_per_mille: 500,
     damage_variance_per_mille: 80,
     salvage_per_destroyed_defender: (metal: 12, crystal: 5, fuel: 2),
-    ships: [
-        (
-            id: "frigate_bulwark",
-            offense: 70,
-            defense: 45,
-            durability: 60,
-        ),
-    ],
 )

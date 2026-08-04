@@ -22,7 +22,7 @@ use crate::{
     TechnologyCatalog, TechnologyCatalogConfig, TechnologyCatalogError,
 };
 
-pub const RULESET_SCHEMA_VERSION: u32 = 11;
+pub const RULESET_SCHEMA_VERSION: u32 = 12;
 pub const RULESET_DIRECTORY_ENV: &str = "GALACTIC_RULESET_DIR";
 pub const DEFAULT_RULESET_DIRECTORY: &str = "assets/rulesets/default";
 
@@ -768,13 +768,13 @@ mod tests {
         );
         assert_eq!(ruleset.buildings().definitions().count(), 8);
         assert_eq!(ruleset.technologies().definitions().count(), 6);
-        assert_eq!(ruleset.craftables().definitions().count(), 4);
+        assert_eq!(ruleset.craftables().definitions().count(), 9);
         assert_eq!(ruleset.extraction().version(), 1);
-        assert_eq!(ruleset.planetary_analysis().version(), 3,);
+        assert_eq!(ruleset.planetary_analysis().version(), 4,);
         assert_eq!(ruleset.planetary_presence().version(), 2);
         assert_eq!(ruleset.planetary_presence().definitions().count(), 5);
-        assert_eq!(ruleset.combat().version(), 1);
-        assert_eq!(ruleset.combat().ships().count(), 1);
+        assert_eq!(ruleset.combat().version(), 2);
+        assert_eq!(ruleset.combat().ships().count(), 3);
     }
 
     #[test]

@@ -151,7 +151,7 @@ fn spawn_research_screen(mut commands: Commands) {
                 left: Val::Px(14.0),
                 right: Val::Px(14.0),
                 top: Val::Px(112.0),
-                bottom: Val::Px(14.0),
+                bottom: Val::Px(74.0),
                 padding: UiRect::all(Val::Px(12.0)),
                 border: UiRect::all(Val::Px(1.0)),
                 border_radius: BorderRadius::all(Val::Px(8.0)),
@@ -479,7 +479,12 @@ fn handle_research_shortcuts(
     mut ui: ResMut<ResearchUiState>,
     mut open_panel: ResMut<OpenPanel>,
     mut navigation_ui: ResMut<super::navigation_ui::NavigationUiState>,
+    fleet_ui: Res<crate::fleet_ui::FleetUiState>,
 ) {
+    if crate::fleet_ui::fleet_name_is_editing(&fleet_ui) {
+        return;
+    }
+
     if keyboard.just_pressed(KeyCode::KeyT) {
         let opening = *open_panel != OpenPanel::Research;
         *open_panel = if opening {

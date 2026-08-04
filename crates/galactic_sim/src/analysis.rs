@@ -7,8 +7,9 @@ use serde::Deserialize;
 use crate::{
     AuthorizationError, BuildingCatalog, BuildingCatalogError, BuildingLevels, CraftableCatalog,
     CraftableId, DiplomaticRelation, GameState, KnowledgeChange, KnowledgeLevel,
-    PlanetResourceProfile, PlanetaryIntelPrecision, ShipClass, StrategicTick, TechnologyUnlock,
-    UniverseRepository, default_ruleset, refresh_planetary_intelligence,
+    PlanetResourceProfile, PlanetaryIntelPrecision, STRATEGIC_TICKS_PER_SECOND, ShipClass,
+    StrategicDuration, StrategicTick, TechnologyUnlock, UniverseRepository, default_ruleset,
+    refresh_planetary_intelligence,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -97,6 +98,7 @@ pub struct PlanetaryAnalysisRules {
     version: u32,
     minimum_habitability: u8,
     maximum_colonies: usize,
+    analysis_duration: StrategicDuration,
     foundation_cost: ResourceCost,
     colony_ship: CraftableId,
     colony_initialization: ColonyInitializationRules,
@@ -109,10 +111,17 @@ impl PlanetaryAnalysisRules {
         craftables: &CraftableCatalog,
         buildings: &BuildingCatalog,
     ) -> Result<Self, PlanetaryAnalysisRulesError> {
-        if config.version != 3 {
+        if config.version != 4 {
             return Err(PlanetaryAnalysisRulesError::UnsupportedVersion(
                 config.version,
             ));
+        }
+        let analysis_duration_ticks = config
+            .analysis_duration_seconds
+            .checked_mul(u64::from(STRATEGIC_TICKS_PER_SECOND))
+            .ok_or(PlanetaryAnalysisRulesError::InvalidAnalysisDuration)?;
+        if analysis_duration_ticks == 0 {
+            return Err(PlanetaryAnalysisRulesError::InvalidAnalysisDuration);
         }
         if config.minimum_habitability > 100 {
             return Err(PlanetaryAnalysisRulesError::InvalidMinimumHabitability(
@@ -229,6 +238,7 @@ impl PlanetaryAnalysisRules {
             version: config.version,
             minimum_habitability: config.minimum_habitability,
             maximum_colonies: config.maximum_colonies,
+            analysis_duration: StrategicDuration::from_ticks(analysis_duration_ticks),
             foundation_cost,
             colony_ship,
             colony_initialization: ColonyInitializationRules {
@@ -249,6 +259,10 @@ impl PlanetaryAnalysisRules {
 
     pub const fn maximum_colonies(&self) -> usize {
         self.maximum_colonies
+    }
+
+    pub const fn analysis_duration(&self) -> StrategicDuration {
+        self.analysis_duration
     }
 
     pub const fn foundation_cost(&self) -> ResourceCost {
@@ -278,6 +292,8 @@ impl PlanetaryAnalysisRules {
         output.push_str(&self.minimum_habitability.to_string());
         output.push(':');
         output.push_str(&self.maximum_colonies.to_string());
+        output.push(':');
+        output.push_str(&self.analysis_duration.ticks().to_string());
         output.push(':');
         output.push_str(&self.foundation_cost.metal.to_string());
         output.push(',');
@@ -422,6 +438,7 @@ pub enum PlanetAnalysisStateError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlanetaryAnalysisRulesError {
     UnsupportedVersion(u32),
+    InvalidAnalysisDuration,
     InvalidMinimumHabitability(u8),
     InvalidMaximumColonies,
     EmptyFoundationCost,
@@ -777,6 +794,7 @@ pub(crate) struct PlanetaryAnalysisRulesConfig {
     version: u32,
     minimum_habitability: u8,
     maximum_colonies: usize,
+    analysis_duration_seconds: u64,
     foundation_cost: ResourceCostConfig,
     colony_ship_id: String,
     new_colony: NewColonyConfig,
@@ -880,7 +898,8 @@ mod tests {
     fn default_rules_cover_every_planet_kind() {
         let rules = planetary_analysis_rules();
 
-        assert_eq!(rules.version(), 3);
+        assert_eq!(rules.version(), 4);
+        assert!(!rules.analysis_duration().is_zero());
         for kind in PlanetKind::ALL {
             assert_eq!(rules.rule_for(kind).kind, kind);
         }

@@ -11,19 +11,22 @@ use crate::{
     ColonizationBlocker, ColonizationMissionCommitment, ColonizationMissionOutcome,
     ColonizationMissionResult, ColonyEstablished, ColonyFoundation, CombatApplicationError,
     CombatSnapshotError, CraftableId, FleetAssignment, FleetCompositionError, FleetError,
-    FleetLocation, GameState, KnowledgeChange, KnowledgeLevel, KnowledgeTarget,
+    FleetLocation, FleetState, GameState, KnowledgeChange, KnowledgeLevel, KnowledgeTarget,
     PlanetaryIntelPrecision, StrategicDuration, StrategicTick, TechnologyUnlock,
-    UniverseRepository, assess_planet_colonizability, colonization_arrival_blocker, combat_rules,
-    extraction_rules, initialize_colony_from_foundation, planetary_analysis_rules,
-    prepare_attack_commitment, refresh_planetary_intelligence, resolve_and_apply_attack, stock_for,
+    UniverseRepository, assess_planet_colonizability, build_planet_analysis_report,
+    colonization_arrival_blocker, combat_rules, extraction_rules,
+    initialize_colony_from_foundation, planetary_analysis_rules, prepare_attack_commitment,
+    refresh_planetary_intelligence, resolve_and_apply_attack, stock_for,
 };
 
+mod analyze;
 mod attack;
 mod colonize;
 mod harvest;
 mod probe;
 mod transport;
 
+pub use analyze::AnalyzeMissionResult;
 pub use attack::launch_attack_mission;
 pub use colonize::launch_colonization_mission;
 pub use harvest::{
@@ -35,6 +38,7 @@ pub use transport::{
     launch_transport_mission,
 };
 
+use analyze::validate_analyze_result;
 use attack::{validate_attack_commitment, validate_attack_result};
 use colonize::{validate_colonization_commitment, validate_colonize_result};
 use harvest::{validate_harvest_launch, validate_harvest_result, validate_harvest_state};
@@ -53,6 +57,7 @@ pub const MISSION_RESOLUTION_TICKS: u64 = 1;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MissionKind {
     Probe,
+    Analyze,
     Attack,
     Transport,
     Harvest,
@@ -175,6 +180,7 @@ pub enum MissionReportOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MissionResult {
     Probe(ProbeMissionResult),
+    Analyze(AnalyzeMissionResult),
     Attack(AttackMissionResult),
     Transport(TransportMissionResult),
     Harvest(HarvestMissionResult),
@@ -233,6 +239,17 @@ pub enum MissionError {
     ProbeTargetNotDetected {
         target: MissionTarget,
         current: KnowledgeLevel,
+    },
+    AnalyzePlanetTargetRequired,
+    AnalyzeTargetNotProbed {
+        planet_id: PlanetId,
+        current: KnowledgeLevel,
+    },
+    MissingAnalyzeTechnology(TechnologyUnlock),
+    AnalyzeSatelliteRequired(FleetId),
+    AnalysisTargetBusy {
+        planet_id: PlanetId,
+        mission_id: MissionId,
     },
     AttackPlanetTargetRequired,
     AttackTargetNotAnalyzed {
@@ -341,6 +358,11 @@ pub enum MissionStateError {
     ProbeResultTargetMismatch {
         expected: MissionTarget,
         found: MissionTarget,
+    },
+    MissingAnalyzeResult,
+    AnalyzeResultTargetMismatch {
+        expected: Option<PlanetId>,
+        found: PlanetId,
     },
     MissingAttackCommitment,
     UnexpectedAttackCommitment,
@@ -514,6 +536,37 @@ pub fn plan_mission(
             return Err(MissionError::ProbeRequired(fleet.id));
         }
     }
+    if order.kind == MissionKind::Analyze {
+        let Some(planet_id) = order.target.planet_id() else {
+            return Err(MissionError::AnalyzePlanetTargetRequired);
+        };
+        let current = state.planet_knowledge_level(planet_id);
+        if current != KnowledgeLevel::Probed {
+            return Err(MissionError::AnalyzeTargetNotProbed { planet_id, current });
+        }
+        if !state.research.has_unlock(TechnologyUnlock::AnalyzePlanets) {
+            return Err(MissionError::MissingAnalyzeTechnology(
+                TechnologyUnlock::AnalyzePlanets,
+            ));
+        }
+        if fleet.composition.total_ships()
+            != fleet
+                .composition
+                .quantity(CraftableId::CARTOGRAPHER_SATELLITE)
+        {
+            return Err(MissionError::AnalyzeSatelliteRequired(fleet.id));
+        }
+        if let Some(existing) = state.missions.iter().find(|mission| {
+            !mission.phase.is_terminal()
+                && mission.order.kind == MissionKind::Analyze
+                && mission.order.target.planet_id() == Some(planet_id)
+        }) {
+            return Err(MissionError::AnalysisTargetBusy {
+                planet_id,
+                mission_id: existing.id,
+            });
+        }
+    }
     if order.kind == MissionKind::Attack {
         let Some(planet_id) = order.target.planet_id() else {
             return Err(MissionError::AttackPlanetTargetRequired);
@@ -578,17 +631,22 @@ pub fn plan_mission(
         .ok_or(MissionError::FuelCostOverflow)?;
     let fuel_cost = ResourceCost::new(0, 0, fuel);
 
-    let resolution_ticks = if order.kind == MissionKind::Harvest {
-        let planet_id = order
-            .target
-            .planet_id()
-            .ok_or(MissionError::HarvestOrderRequired)?;
-        let planet = universe
-            .planet(planet_id)
-            .ok_or(MissionError::UnknownPlanetTarget(planet_id))?;
-        extraction_rules().rule_for(planet.kind).harvest_ticks
-    } else {
-        MISSION_RESOLUTION_TICKS
+    let resolution_ticks = match order.kind {
+        MissionKind::Harvest => {
+            let planet_id = order
+                .target
+                .planet_id()
+                .ok_or(MissionError::HarvestOrderRequired)?;
+            let planet = universe
+                .planet(planet_id)
+                .ok_or(MissionError::UnknownPlanetTarget(planet_id))?;
+            extraction_rules().rule_for(planet.kind).harvest_ticks
+        }
+        MissionKind::Analyze => planetary_analysis_rules().analysis_duration().ticks(),
+        MissionKind::Probe
+        | MissionKind::Attack
+        | MissionKind::Transport
+        | MissionKind::Colonize => MISSION_RESOLUTION_TICKS,
     };
     let outbound_arrival_at = checked_tick_add(order.departure_at, travel_ticks)?;
     let return_departure_at = checked_tick_add(outbound_arrival_at, resolution_ticks)?;
@@ -607,6 +665,31 @@ pub fn plan_mission(
             return_arrival_at,
         },
     ))
+}
+
+pub fn fleet_supports_mission_kind(fleet: &FleetState, kind: MissionKind) -> bool {
+    match kind {
+        MissionKind::Probe => {
+            fleet.composition.total_ships() == fleet.composition.quantity(CraftableId::LIGHT_PROBE)
+        }
+        MissionKind::Analyze => {
+            fleet.composition.total_ships()
+                == fleet
+                    .composition
+                    .quantity(CraftableId::CARTOGRAPHER_SATELLITE)
+        }
+        MissionKind::Attack => combat_rules().is_combat_fleet(fleet),
+        MissionKind::Colonize => {
+            let colony_ship = planetary_analysis_rules().colony_ship();
+            fleet.composition.total_ships() == 1 && fleet.composition.quantity(colony_ship) == 1
+        }
+        MissionKind::Transport | MissionKind::Harvest => {
+            fleet.cargo.is_zero()
+                && fleet
+                    .capabilities()
+                    .is_ok_and(|capabilities| capabilities.cargo_capacity > 0)
+        }
+    }
 }
 
 /// Lists every fleet the player could explicitly assign to a mission of the
@@ -633,7 +716,6 @@ pub fn eligible_fleets_for_mission(
     };
     let origin = origin_colony.system_id;
     let departure_at = state.clock.current_tick();
-    let colony_ship = planetary_analysis_rules().colony_ship();
 
     let mut eligible: Vec<FleetId> = state
         .fleets
@@ -642,23 +724,7 @@ pub fn eligible_fleets_for_mission(
             state.can_manage(actor, fleet.owner)
                 && fleet.is_idle()
                 && fleet.location == FleetLocation::Docked(origin_colony_id)
-                && match kind {
-                    MissionKind::Probe => {
-                        fleet.composition.total_ships()
-                            == fleet.composition.quantity(CraftableId::LIGHT_PROBE)
-                    }
-                    MissionKind::Attack => combat_rules().is_combat_fleet(fleet),
-                    MissionKind::Colonize => {
-                        fleet.composition.total_ships() == 1
-                            && fleet.composition.quantity(colony_ship) == 1
-                    }
-                    MissionKind::Transport | MissionKind::Harvest => {
-                        fleet.cargo.is_zero()
-                            && fleet
-                                .capabilities()
-                                .is_ok_and(|capabilities| capabilities.cargo_capacity > 0)
-                    }
-                }
+                && fleet_supports_mission_kind(fleet, kind)
         })
         .map(|fleet| fleet.id)
         .filter(|fleet_id| {
@@ -1160,6 +1226,7 @@ pub fn validate_mission_state(
     validate_harvest_state(mission)?;
     match mission.order.kind {
         MissionKind::Probe => validate_probe_result(mission)?,
+        MissionKind::Analyze => validate_analyze_result(mission)?,
         MissionKind::Attack => validate_attack_result(mission)?,
         MissionKind::Transport => validate_transport_result(mission)?,
         MissionKind::Harvest => validate_harvest_result(mission)?,
@@ -1535,7 +1602,54 @@ pub(crate) fn advance_missions(
                                 )
                                 .expect("validated foundation reservation releases");
                         }
-                        if let Some(transport) = transport {
+                        if kind == MissionKind::Analyze {
+                            let planet_id = target
+                                .planet_id()
+                                .expect("a validated analysis targets a planet");
+                            let planet = universe
+                                .planet(planet_id)
+                                .expect("a validated analysis target exists");
+                            let previous = state.planet_knowledge_level(planet_id);
+                            let report = state
+                                .planet_analysis_report(planet_id)
+                                .copied()
+                                .unwrap_or_else(|| {
+                                    build_planet_analysis_report(
+                                        planet,
+                                        target_system,
+                                        transition_at,
+                                        planetary_analysis_rules(),
+                                    )
+                                });
+                            if !previous.reveals_exact_details() {
+                                knowledge_changes = state.advance_planet_knowledge(
+                                    universe,
+                                    planet_id,
+                                    KnowledgeLevel::Analyzed,
+                                );
+                                state.planet_analysis_reports.push(report);
+                                state
+                                    .planet_analysis_reports
+                                    .sort_by_key(|entry| entry.planet_id);
+                            }
+                            refresh_planetary_intelligence(
+                                state,
+                                planet_id,
+                                PlanetaryIntelPrecision::Surveyed,
+                                transition_at,
+                            )
+                            .expect("a completed analysis has a validated planetary presence");
+                            resolution = Some(MissionResolution {
+                                mission_id,
+                                result: MissionResult::Analyze(AnalyzeMissionResult {
+                                    planet_id,
+                                    previous,
+                                    current: state.planet_knowledge_level(planet_id),
+                                    report,
+                                }),
+                                occurred_at: transition_at,
+                            });
+                        } else if let Some(transport) = transport {
                             let cargo = state
                                 .fleet(fleet_id)
                                 .expect("validated mission fleet exists")
@@ -1781,7 +1895,7 @@ mod tests {
         AttackInvalidReason, AttackMissionOutcome, CombatOutcome, CombatReportStatus, CraftableId,
         FleetComposition, GameAction, KnowledgeLevel, PlanetaryForceLoss, ResearchState, ShipStack,
         Simulation, TechnologyId, analyze_planet, apply_planetary_force_losses,
-        default_building_catalog, enqueue_building_upgrade, form_fleet,
+        default_building_catalog, disband_fleet, enqueue_building_upgrade, form_fleet,
     };
 
     use super::*;
@@ -1799,6 +1913,50 @@ mod tests {
         let created = form_fleet(simulation.state_mut(), actor, colony_id, composition)
             .expect("probe fleet can be formed");
         (simulation, created.fleet_id)
+    }
+
+    fn advance_ticks(simulation: &mut Simulation, ticks: u64) {
+        simulation.advance(Duration::from_millis(ticks.saturating_mul(100)));
+    }
+
+    fn first_detected_planet(simulation: &Simulation) -> PlanetId {
+        simulation
+            .state()
+            .planet_knowledge
+            .iter()
+            .find(|entry| entry.level == KnowledgeLevel::Detected)
+            .expect("the home system contains detected planets")
+            .planet_id
+    }
+
+    fn simulation_with_analysis_fleet() -> (Simulation, PlanetId, FleetId) {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+        let actor = simulation.state().player_faction;
+        let colony_id = simulation.state().colonies[0].id;
+        let target = first_detected_planet(&simulation);
+        let repository = simulation.universe_repository().clone();
+        simulation.state_mut().advance_planet_knowledge(
+            &repository,
+            target,
+            KnowledgeLevel::Probed,
+        );
+        simulation.state_mut().research = ResearchState::from_completed([
+            TechnologyId::SPATIAL_DETECTION,
+            TechnologyId::PLANETARY_ANALYSIS,
+        ]);
+        simulation.state_mut().colonies[0]
+            .resources
+            .credit(ResourceStock::new(1_000, 1_000, 1_000))
+            .expect("test fuel fits the ledger");
+        simulation.state_mut().colonies[0]
+            .inventory
+            .add(CraftableId::CARTOGRAPHER_SATELLITE, 1);
+        let composition =
+            FleetComposition::from_stacks([ShipStack::new(CraftableId::CARTOGRAPHER_SATELLITE, 1)])
+                .expect("cartographer satellite fleet composition is valid");
+        let created = form_fleet(simulation.state_mut(), actor, colony_id, composition)
+            .expect("analysis fleet can be formed");
+        (simulation, target, created.fleet_id)
     }
 
     fn neighboring_target(simulation: &Simulation) -> SystemId {
@@ -2020,6 +2178,171 @@ mod tests {
             assert_eq!(plan.route.last(), Some(&target));
             assert_eq!(plan.hops, 1);
         }
+    }
+
+    #[test]
+    fn analysis_mission_requires_probe_technology_and_satellite() {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+        let actor = simulation.state().player_faction;
+        let colony_id = simulation.state().colonies[0].id;
+        let origin = simulation.state().colonies[0].system_id;
+        let target = first_detected_planet(&simulation);
+        simulation.state_mut().colonies[0]
+            .inventory
+            .add(CraftableId::CARTOGRAPHER_SATELLITE, 1);
+        let satellite_fleet = form_fleet(
+            simulation.state_mut(),
+            actor,
+            colony_id,
+            FleetComposition::from_stacks([ShipStack::new(CraftableId::CARTOGRAPHER_SATELLITE, 1)])
+                .expect("satellite composition is valid"),
+        )
+        .expect("satellite fleet forms")
+        .fleet_id;
+        let order = MissionOrder {
+            fleet_id: satellite_fleet,
+            origin,
+            target: MissionTarget::Planet {
+                system_id: target.system_id(),
+                planet_id: target,
+            },
+            kind: MissionKind::Analyze,
+            departure_at: simulation.state().clock.current_tick(),
+        };
+
+        assert!(matches!(
+            plan_mission(
+                simulation.state(),
+                simulation.universe_repository(),
+                actor,
+                order
+            ),
+            Err(MissionError::AnalyzeTargetNotProbed { .. })
+        ));
+
+        let repository = simulation.universe_repository().clone();
+        simulation.state_mut().advance_planet_knowledge(
+            &repository,
+            target,
+            KnowledgeLevel::Probed,
+        );
+        assert!(matches!(
+            plan_mission(
+                simulation.state(),
+                simulation.universe_repository(),
+                actor,
+                order
+            ),
+            Err(MissionError::MissingAnalyzeTechnology(
+                TechnologyUnlock::AnalyzePlanets
+            ))
+        ));
+
+        simulation.state_mut().research = ResearchState::from_completed([
+            TechnologyId::SPATIAL_DETECTION,
+            TechnologyId::PLANETARY_ANALYSIS,
+        ]);
+        simulation.state_mut().colonies[0]
+            .inventory
+            .add(CraftableId::LIGHT_PROBE, 1);
+        let probe_fleet = form_fleet(
+            simulation.state_mut(),
+            actor,
+            colony_id,
+            FleetComposition::from_stacks([ShipStack::new(CraftableId::LIGHT_PROBE, 1)])
+                .expect("probe composition is valid"),
+        )
+        .expect("probe fleet forms")
+        .fleet_id;
+        let wrong_fleet_order = MissionOrder {
+            fleet_id: probe_fleet,
+            ..order
+        };
+        assert!(matches!(
+            plan_mission(
+                simulation.state(),
+                simulation.universe_repository(),
+                actor,
+                wrong_fleet_order
+            ),
+            Err(MissionError::AnalyzeSatelliteRequired(_))
+        ));
+    }
+
+    #[test]
+    fn analysis_report_is_revealed_only_after_return() {
+        let (mut simulation, target, fleet_id) = simulation_with_analysis_fleet();
+        let actor = simulation.state().player_faction;
+        let origin = simulation.state().colonies[0].system_id;
+        let order = MissionOrder {
+            fleet_id,
+            origin,
+            target: MissionTarget::Planet {
+                system_id: target.system_id(),
+                planet_id: target,
+            },
+            kind: MissionKind::Analyze,
+            departure_at: simulation.state().clock.current_tick(),
+        };
+        let repository = simulation.universe_repository().clone();
+        launch_mission(simulation.state_mut(), &repository, actor, order)
+            .expect("analysis mission launches");
+        let plan = simulation.state().missions[0].plan.clone();
+        assert_eq!(
+            simulation.state().planet_knowledge_level(target),
+            KnowledgeLevel::Probed
+        );
+        assert!(simulation.state().planet_analysis_report(target).is_none());
+
+        advance_ticks(&mut simulation, plan.outbound_arrival_at.value());
+        assert_eq!(simulation.state().missions[0].phase, MissionPhase::OnSite);
+        assert_eq!(simulation.state().missions[0].result, None);
+        assert_eq!(
+            simulation.state().planet_knowledge_level(target),
+            KnowledgeLevel::Probed
+        );
+        assert!(simulation.state().planet_analysis_report(target).is_none());
+
+        let to_return_departure = plan
+            .return_departure_at
+            .value()
+            .saturating_sub(simulation.state().clock.current_tick().value());
+        advance_ticks(&mut simulation, to_return_departure);
+        assert_eq!(
+            simulation.state().missions[0].phase,
+            MissionPhase::Returning
+        );
+        assert_eq!(simulation.state().missions[0].result, None);
+        assert!(simulation.state().planet_analysis_report(target).is_none());
+
+        let to_return_arrival = plan
+            .return_arrival_at
+            .value()
+            .saturating_sub(simulation.state().clock.current_tick().value());
+        advance_ticks(&mut simulation, to_return_arrival);
+        assert_eq!(
+            simulation.state().missions[0].phase,
+            MissionPhase::Completed
+        );
+        assert_eq!(
+            simulation.state().planet_knowledge_level(target),
+            KnowledgeLevel::Analyzed
+        );
+        let report = *simulation
+            .state()
+            .planet_analysis_report(target)
+            .expect("completed analysis creates a report");
+        let Some(MissionResult::Analyze(result)) = simulation.state().missions[0].result else {
+            panic!("analysis mission keeps its report result");
+        };
+        assert_eq!(result.planet_id, target);
+        assert_eq!(result.previous, KnowledgeLevel::Probed);
+        assert_eq!(result.current, KnowledgeLevel::Analyzed);
+        assert_eq!(result.report, report);
+        assert_eq!(
+            simulation.state().mission_reports[0].result,
+            Some(MissionResult::Analyze(result))
+        );
     }
 
     #[test]
@@ -2447,6 +2770,37 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn returned_attack_fleet_with_survivors_can_be_disbanded() {
+        let (mut simulation, target) = simulation_with_attack_target();
+        let actor = simulation.state().player_faction;
+        let colony_id = simulation.state().colonies[0].id;
+        simulation.apply_player_action(GameAction::LaunchAttack {
+            colony_id,
+            target: MissionTarget::Planet {
+                system_id: target.system_id(),
+                planet_id: target,
+            },
+        });
+        let fleet_id = simulation.state().missions[0].order.fleet_id;
+        simulation.advance(Duration::from_secs(120));
+        let returned = simulation
+            .state()
+            .fleet(fleet_id)
+            .expect("the attacker fleet survived and returned");
+        assert_eq!(returned.location, FleetLocation::Docked(colony_id));
+        assert_eq!(returned.assignment, FleetAssignment::Idle);
+        assert!(
+            returned.composition.total_ships() < 3,
+            "the test scenario should exercise a reduced surviving fleet",
+        );
+
+        disband_fleet(simulation.state_mut(), actor, fleet_id)
+            .expect("a returned survivor fleet can be disbanded");
+
+        assert!(simulation.state().fleet(fleet_id).is_none());
     }
 
     #[test]
@@ -2884,7 +3238,7 @@ mod tests {
             ),
             Err(MissionError::TransportCargoExceedsCapacity {
                 cargo: oversized,
-                capacity: 800,
+                capacity: 500,
             }),
         );
         assert_eq!(simulation.state(), &before);

@@ -1,7 +1,8 @@
 (
-    version: 3,
+    version: 4,
     minimum_habitability: 50,
     maximum_colonies: 3,
+    analysis_duration_seconds: 30,
     foundation_cost: (metal: 650, crystal: 420, fuel: 260),
     colony_ship_id: "colony_ship",
     new_colony: (

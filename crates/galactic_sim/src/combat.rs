@@ -6,13 +6,13 @@ use galactic_domain::{FleetId, MissionId, Owner, PlanetId, ResourceStock};
 use serde::Deserialize;
 
 use crate::{
-    CraftableCatalog, CraftableId, FleetComposition, FleetState, GameState, PlanetaryForceLoss,
-    PlanetaryForceStack, PlanetaryIntelPrecision, PlanetaryPresence, PlanetaryPresenceRules,
-    ShipStack, StrategicTick, default_ruleset, refresh_planetary_intelligence,
+    CombatTargetBonuses, CombatTargetClass, CraftableCatalog, CraftableId, FleetComposition,
+    FleetState, GameState, NEUTRAL_COMBAT_BONUS_PER_MILLE, PlanetaryForceLoss, PlanetaryForceStack,
+    PlanetaryIntelPrecision, PlanetaryPresence, PlanetaryPresenceRules, ShipStack, StrategicTick,
+    default_ruleset, refresh_planetary_intelligence,
 };
 
 pub const MAX_COMBAT_SHIP_DEFINITIONS: usize = 64;
-const COMBAT_STAT_LIMIT: u32 = 1_000_000;
 const PER_MILLE: u128 = 1_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,6 +21,8 @@ pub struct CombatShipDefinition {
     pub offense: u32,
     pub defense: u32,
     pub durability: u32,
+    pub target_class: CombatTargetClass,
+    pub bonuses: CombatTargetBonuses,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,7 +42,7 @@ impl CombatRules {
         craftables: &CraftableCatalog,
         planetary_presence: &PlanetaryPresenceRules,
     ) -> Result<Self, CombatRulesError> {
-        if config.version != 1 {
+        if config.version != 2 {
             return Err(CombatRulesError::UnsupportedVersion(config.version));
         }
         if config.maximum_rounds == 0 {
@@ -58,48 +60,31 @@ impl CombatRules {
         if config.salvage_per_destroyed_defender.into_stock().is_zero() {
             return Err(CombatRulesError::InvalidSalvage);
         }
-        if config.ships.is_empty() || config.ships.len() > MAX_COMBAT_SHIP_DEFINITIONS {
+        let mut ships = BTreeMap::new();
+        for craftable in craftables.definitions() {
+            let Some(ship) = craftable.ship else {
+                continue;
+            };
+            let Some(combat) = ship.combat else {
+                continue;
+            };
+            ships.insert(
+                craftable.id,
+                CombatShipDefinition {
+                    craftable: craftable.id,
+                    offense: combat.offense,
+                    defense: combat.defense,
+                    durability: combat.durability,
+                    target_class: combat.target_class,
+                    bonuses: combat.bonuses,
+                },
+            );
+        }
+        if ships.is_empty() || ships.len() > MAX_COMBAT_SHIP_DEFINITIONS {
             return Err(CombatRulesError::InvalidShipCount {
-                found: config.ships.len(),
+                found: ships.len(),
                 maximum: MAX_COMBAT_SHIP_DEFINITIONS,
             });
-        }
-
-        let mut ships = BTreeMap::new();
-        for configured in config.ships {
-            let Some(craftable) = craftables.id_by_key(&configured.id) else {
-                return Err(CombatRulesError::UnknownCraftable);
-            };
-            let definition = craftables.definition(craftable);
-            let Some(ship) = definition.ship else {
-                return Err(CombatRulesError::CraftableIsNotShip(craftable));
-            };
-            if ship.class != crate::ShipClass::Military {
-                return Err(CombatRulesError::CraftableIsNotMilitary(craftable));
-            }
-            if configured.offense == 0
-                || configured.defense == 0
-                || configured.durability == 0
-                || configured.offense > COMBAT_STAT_LIMIT
-                || configured.defense > COMBAT_STAT_LIMIT
-                || configured.durability > COMBAT_STAT_LIMIT
-            {
-                return Err(CombatRulesError::InvalidShipStats(craftable));
-            }
-            if ships
-                .insert(
-                    craftable,
-                    CombatShipDefinition {
-                        craftable,
-                        offense: configured.offense,
-                        defense: configured.defense,
-                        durability: configured.durability,
-                    },
-                )
-                .is_some()
-            {
-                return Err(CombatRulesError::DuplicateCraftable(craftable));
-            }
         }
 
         if planetary_presence.definitions().any(|definition| {
@@ -148,6 +133,15 @@ impl CombatRules {
         output.push_str(";ships:");
         for definition in self.ships.values() {
             output.push_str(definition.craftable.key());
+            output.push(':');
+            output.push_str(definition.target_class.structural_key());
+            output.push(':');
+            for (target_class, multiplier) in definition.bonuses.entries() {
+                if multiplier != NEUTRAL_COMBAT_BONUS_PER_MILLE {
+                    output.push_str(target_class.structural_key());
+                    output.push(',');
+                }
+            }
             output.push(';');
         }
     }
@@ -175,6 +169,8 @@ impl CombatRules {
                     offense: definition.offense,
                     defense: definition.defense,
                     durability: definition.durability,
+                    target_class: definition.target_class,
+                    bonuses: definition.bonuses,
                 }
             })
             .collect();
@@ -185,6 +181,12 @@ impl CombatRules {
             cargo: fleet.cargo,
             cargo_capacity: capabilities.cargo_capacity,
         })
+    }
+
+    pub fn fleet_power(&self, fleet: &FleetState) -> Option<CombatFleetPower> {
+        self.snapshot_fleet(fleet)
+            .ok()
+            .map(|snapshot| fleet_power_from_snapshot(&snapshot, self))
     }
 
     fn snapshot_defender(&self, presence: &PlanetaryPresence) -> PlanetDefenseSnapshot {
@@ -200,6 +202,10 @@ impl CombatRules {
 
 pub fn combat_rules() -> &'static CombatRules {
     default_ruleset().combat()
+}
+
+pub fn combat_fleet_power(fleet: &FleetState) -> Option<CombatFleetPower> {
+    combat_rules().fleet_power(fleet)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -236,6 +242,8 @@ pub struct CombatShipStack {
     pub offense: u32,
     pub defense: u32,
     pub durability: u32,
+    pub target_class: CombatTargetClass,
+    pub bonuses: CombatTargetBonuses,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -245,6 +253,16 @@ pub struct CombatFleetSnapshot {
     pub ships: Vec<CombatShipStack>,
     pub cargo: ResourceStock,
     pub cargo_capacity: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CombatFleetPower {
+    pub ships: u64,
+    pub offense: u64,
+    pub hull: u64,
+    pub light_ships: u64,
+    pub medium_ships: u64,
+    pub heavy_ships: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -380,7 +398,7 @@ pub fn resolve_combat(
     rules: &CombatRules,
     planetary_rules: &PlanetaryPresenceRules,
 ) -> CombatResolution {
-    let attacker_totals = attacker_totals(attacker, rules);
+    let attacker_totals = attacker_totals(attacker, defender, rules, planetary_rules);
     let defender_totals = defender_totals(defender, rules, planetary_rules);
     let attacker_initial_hull = attacker_totals.hull;
     let defender_initial_hull = defender_totals.hull;
@@ -625,26 +643,139 @@ struct SideTotals {
     hull: u128,
 }
 
-fn attacker_totals(attacker: &CombatFleetSnapshot, rules: &CombatRules) -> SideTotals {
+fn attacker_totals(
+    attacker: &CombatFleetSnapshot,
+    defender: &PlanetDefenseSnapshot,
+    rules: &CombatRules,
+    planetary_rules: &PlanetaryPresenceRules,
+) -> SideTotals {
+    let defender_weights = defender_target_class_weights(defender, rules, planetary_rules);
     attacker.ships.iter().fold(
         SideTotals {
             offense: 0,
             hull: 0,
         },
-        |totals, stack| SideTotals {
-            offense: totals.offense.saturating_add(
-                u128::from(stack.offense).saturating_mul(u128::from(stack.quantity)),
-            ),
-            hull: totals.hull.saturating_add(
-                effective_hull(
-                    stack.defense,
-                    stack.durability,
-                    rules.defense_weight_per_mille,
-                )
-                .saturating_mul(u128::from(stack.quantity)),
-            ),
+        |totals, stack| {
+            let multiplier = defender_weights.weighted_multiplier(stack.bonuses);
+            SideTotals {
+                offense: totals.offense.saturating_add(
+                    u128::from(stack.offense)
+                        .saturating_mul(u128::from(stack.quantity))
+                        .saturating_mul(multiplier)
+                        / PER_MILLE,
+                ),
+                hull: totals.hull.saturating_add(
+                    effective_hull(
+                        stack.defense,
+                        stack.durability,
+                        rules.defense_weight_per_mille,
+                    )
+                    .saturating_mul(u128::from(stack.quantity)),
+                ),
+            }
         },
     )
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct TargetClassWeights {
+    light: u128,
+    medium: u128,
+    heavy: u128,
+}
+
+impl TargetClassWeights {
+    fn add(&mut self, target_class: CombatTargetClass, weight: u128) {
+        match target_class {
+            CombatTargetClass::Light => self.light = self.light.saturating_add(weight),
+            CombatTargetClass::Medium => self.medium = self.medium.saturating_add(weight),
+            CombatTargetClass::Heavy => self.heavy = self.heavy.saturating_add(weight),
+        }
+    }
+
+    fn total(self) -> u128 {
+        self.light
+            .saturating_add(self.medium)
+            .saturating_add(self.heavy)
+    }
+
+    fn weighted_multiplier(self, bonuses: CombatTargetBonuses) -> u128 {
+        let total = self.total();
+        if total == 0 {
+            return u128::from(NEUTRAL_COMBAT_BONUS_PER_MILLE);
+        }
+        self.light
+            .saturating_mul(u128::from(bonuses.multiplier_for(CombatTargetClass::Light)))
+            .saturating_add(self.medium.saturating_mul(u128::from(
+                bonuses.multiplier_for(CombatTargetClass::Medium),
+            )))
+            .saturating_add(
+                self.heavy
+                    .saturating_mul(u128::from(bonuses.multiplier_for(CombatTargetClass::Heavy))),
+            )
+            / total
+    }
+}
+
+fn defender_target_class_weights(
+    defender: &PlanetDefenseSnapshot,
+    rules: &CombatRules,
+    planetary_rules: &PlanetaryPresenceRules,
+) -> TargetClassWeights {
+    let mut weights = TargetClassWeights::default();
+    for stack in &defender.forces {
+        let definition = planetary_rules
+            .definition(stack.definition_id)
+            .expect("a validated defense snapshot references known forces");
+        let weight = effective_hull(
+            definition.defense,
+            definition.durability,
+            rules.defense_weight_per_mille,
+        )
+        .saturating_mul(u128::from(stack.quantity));
+        weights.add(definition.target_class, weight);
+    }
+    weights
+}
+
+fn fleet_power_from_snapshot(
+    snapshot: &CombatFleetSnapshot,
+    rules: &CombatRules,
+) -> CombatFleetPower {
+    let mut power = CombatFleetPower {
+        ships: 0,
+        offense: 0,
+        hull: 0,
+        light_ships: 0,
+        medium_ships: 0,
+        heavy_ships: 0,
+    };
+    for stack in &snapshot.ships {
+        power.ships = power.ships.saturating_add(stack.quantity);
+        power.offense = power.offense.saturating_add(clamp_u128(
+            u128::from(stack.offense).saturating_mul(u128::from(stack.quantity)),
+        ));
+        power.hull = power.hull.saturating_add(clamp_u128(
+            effective_hull(
+                stack.defense,
+                stack.durability,
+                rules.defense_weight_per_mille,
+            )
+            .saturating_mul(u128::from(stack.quantity)),
+        ));
+        match stack.target_class {
+            CombatTargetClass::Light => {
+                power.light_ships = power.light_ships.saturating_add(stack.quantity);
+            }
+            CombatTargetClass::Medium => {
+                power.medium_ships = power.medium_ships.saturating_add(stack.quantity);
+            }
+            CombatTargetClass::Heavy => {
+                power.heavy_ships = power.heavy_ships.saturating_add(stack.quantity);
+            }
+        }
+    }
+    power
 }
 
 fn defender_totals(
@@ -840,15 +971,6 @@ pub(crate) struct CombatRulesConfig {
     defense_weight_per_mille: u32,
     damage_variance_per_mille: u32,
     salvage_per_destroyed_defender: CombatResourceConfig,
-    ships: Vec<CombatShipConfig>,
-}
-
-#[derive(Debug, Deserialize)]
-struct CombatShipConfig {
-    id: String,
-    offense: u32,
-    defense: u32,
-    durability: u32,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -889,6 +1011,8 @@ mod tests {
                 offense,
                 defense,
                 durability,
+                target_class: CombatTargetClass::Medium,
+                bonuses: CombatTargetBonuses::default(),
             }],
             cargo: ResourceStock::ZERO,
             cargo_capacity: 1_000,
@@ -911,6 +1035,93 @@ mod tests {
             }],
             revision: 0,
         }
+    }
+
+    fn specialist_snapshot(
+        craftable: CraftableId,
+        target_class: CombatTargetClass,
+        bonuses: CombatTargetBonuses,
+    ) -> CombatFleetSnapshot {
+        CombatFleetSnapshot {
+            fleet_id: FleetId::new(0),
+            owner: Owner::Faction(FactionId::new(0)),
+            ships: vec![CombatShipStack {
+                craftable,
+                quantity: 1,
+                offense: 100,
+                defense: 40,
+                durability: 40,
+                target_class,
+                bonuses,
+            }],
+            cargo: ResourceStock::ZERO,
+            cargo_capacity: 100,
+        }
+    }
+
+    #[test]
+    fn default_combat_rules_are_sourced_from_military_craftables() {
+        let rules = combat_rules();
+
+        assert!(rules.ship(CraftableId::NEEDLE_INTERCEPTOR).is_some());
+        assert!(rules.ship(CraftableId::FRIGATE_BULWARK).is_some());
+        assert!(rules.ship(CraftableId::BASTION_CRUISER).is_some());
+        assert!(rules.ship(CraftableId::LIGHT_CARGO).is_none());
+        assert_eq!(
+            rules
+                .ship(CraftableId::NEEDLE_INTERCEPTOR)
+                .expect("interceptor combat stats exist")
+                .bonuses
+                .multiplier_for(CombatTargetClass::Light),
+            1_400,
+        );
+    }
+
+    #[test]
+    fn offensive_bonus_depends_on_defender_target_class() {
+        let rules = combat_rules();
+        let planetary = default_ruleset().planetary_presence();
+        let light_force = planetary
+            .id_by_key("frontier_militia")
+            .expect("default light force exists");
+        let heavy_force = planetary
+            .id_by_key("surface_bunker")
+            .expect("default heavy force exists");
+        let mut light_bonuses = CombatTargetBonuses::default();
+        light_bonuses.light_per_mille = 1_400;
+        let mut heavy_bonuses = CombatTargetBonuses::default();
+        heavy_bonuses.heavy_per_mille = 1_400;
+        let light_specialist = specialist_snapshot(
+            CraftableId::NEEDLE_INTERCEPTOR,
+            CombatTargetClass::Light,
+            light_bonuses,
+        );
+        let heavy_specialist = specialist_snapshot(
+            CraftableId::BASTION_CRUISER,
+            CombatTargetClass::Heavy,
+            heavy_bonuses,
+        );
+        let light_defender = defense(
+            PlanetId::from_system_index(crate::MVP_HOME_SYSTEM_ID, 1),
+            FactionId::new(2),
+            light_force,
+            10,
+        );
+        let heavy_defender = defense(
+            PlanetId::from_system_index(crate::MVP_HOME_SYSTEM_ID, 2),
+            FactionId::new(2),
+            heavy_force,
+            10,
+        );
+
+        assert!(
+            attacker_totals(&light_specialist, &light_defender, rules, planetary).offense
+                > attacker_totals(&heavy_specialist, &light_defender, rules, planetary).offense
+        );
+        assert!(
+            attacker_totals(&heavy_specialist, &heavy_defender, rules, planetary).offense
+                > attacker_totals(&light_specialist, &heavy_defender, rules, planetary).offense
+        );
     }
 
     #[test]
@@ -976,6 +1187,7 @@ mod tests {
                 .expect("combat composition");
         simulation.state_mut().fleets.push(FleetState {
             id: FleetId::new(0),
+            name: "Force de test".to_string(),
             owner: Owner::Faction(FactionId::new(0)),
             location: FleetLocation::Docked(colony_id),
             composition,

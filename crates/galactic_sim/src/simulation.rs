@@ -7,10 +7,10 @@ use crate::{
     ColonySelectionRejected, CommandRejection, GameAction, GameCommand, GameEvent, GameEventKind,
     GameState, MissionEngineEvent, SelectionTarget, StartingScenario, StrategicDuration,
     UniverseRepository, advance_colony_construction, advance_colony_craft, advance_missions,
-    advance_research, analyze_planet, cancel_construction, cancel_craft, cancel_mission,
-    cancel_research, enqueue_building_upgrade, enqueue_craft, enqueue_research, form_fleet,
+    advance_research, cancel_construction, cancel_craft, cancel_mission, cancel_research,
+    disband_fleet, enqueue_building_upgrade, enqueue_craft, enqueue_research, form_fleet,
     launch_attack_mission, launch_colonization_mission, launch_harvest_mission, launch_mission,
-    launch_probe_mission, launch_transport_mission, queue_colony_production,
+    launch_probe_mission, launch_transport_mission, queue_colony_production, rename_fleet,
 };
 
 mod build_error;
@@ -177,6 +177,22 @@ impl Simulation {
                     crate::FleetCreationRejected { colony_id, error },
                 )],
             },
+            GameAction::RenameFleet { fleet_id, name } => {
+                match rename_fleet(&mut self.state, issuer, fleet_id, name) {
+                    Ok(renamed) => vec![GameEventKind::FleetRenamed(renamed)],
+                    Err(error) => vec![GameEventKind::FleetRenameRejected(
+                        crate::FleetRenameRejected { fleet_id, error },
+                    )],
+                }
+            }
+            GameAction::DisbandFleet { fleet_id } => {
+                match disband_fleet(&mut self.state, issuer, fleet_id) {
+                    Ok(disbanded) => vec![GameEventKind::FleetDisbanded(disbanded)],
+                    Err(error) => vec![GameEventKind::FleetDisbandRejected(
+                        crate::FleetDisbandRejected { fleet_id, error },
+                    )],
+                }
+            }
             GameAction::LaunchProbe { colony_id, target } => {
                 match launch_probe_mission(
                     &mut self.state,
@@ -292,25 +308,6 @@ impl Simulation {
                             fleet_id: None,
                             error,
                         },
-                    )],
-                }
-            }
-            GameAction::AnalyzePlanet { planet_id } => {
-                match analyze_planet(&mut self.state, &self.universe, issuer, planet_id) {
-                    Ok(outcome) => {
-                        let mut events =
-                            Vec::with_capacity(outcome.knowledge_changes.len().saturating_add(1));
-                        events.extend(
-                            outcome
-                                .knowledge_changes
-                                .into_iter()
-                                .map(GameEventKind::KnowledgeChanged),
-                        );
-                        events.push(GameEventKind::PlanetAnalyzed(outcome.report));
-                        events
-                    }
-                    Err(error) => vec![GameEventKind::PlanetAnalysisRejected(
-                        crate::PlanetAnalysisRejected { planet_id, error },
                     )],
                 }
             }

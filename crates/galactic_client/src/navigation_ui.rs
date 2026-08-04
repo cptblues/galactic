@@ -229,7 +229,8 @@ fn build_search_index(
                 continue;
             }
             let label = format!(
-                "Flotte #{} ({})",
+                "{} #{} ({})",
+                fleet.name,
                 fleet.id.raw(),
                 fleet_composition_label(fleet)
             );
@@ -287,8 +288,9 @@ fn sector_name(simulation: &Simulation, sector_id: SectorId) -> String {
         .unwrap_or_else(|| "secteur inconnu".to_string())
 }
 
-const MISSION_KIND_CYCLE: [MissionKind; 5] = [
+const MISSION_KIND_CYCLE: [MissionKind; 6] = [
     MissionKind::Probe,
+    MissionKind::Analyze,
     MissionKind::Attack,
     MissionKind::Transport,
     MissionKind::Harvest,
@@ -654,7 +656,12 @@ fn handle_navigation_shortcuts(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut ui: ResMut<NavigationUiState>,
     mut open_panel: ResMut<OpenPanel>,
+    fleet_ui: Res<crate::fleet_ui::FleetUiState>,
 ) {
+    if crate::fleet_ui::fleet_name_is_editing(&fleet_ui) {
+        return;
+    }
+
     if keyboard.just_pressed(KeyCode::Slash) && !ui.search_open {
         ui.search_open = true;
         ui.filters_open = false;

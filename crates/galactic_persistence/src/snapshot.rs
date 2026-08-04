@@ -77,6 +77,7 @@ pub fn snapshot_from_simulation(simulation: &Simulation) -> SaveGame {
                 .iter()
                 .map(|fleet| FleetSave {
                     id: fleet.id,
+                    name: fleet.name.clone(),
                     owner: fleet.owner,
                     location: fleet.location,
                     composition: fleet.composition.clone(),

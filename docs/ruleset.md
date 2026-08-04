@@ -12,12 +12,13 @@ Le ruleset est composé de onze fichiers RON :
 - `buildings.ron` : bâtiments, coûts, durées, effets et prérequis ;
 - `technologies.ron` : arbre de recherche, coûts et déblocages ;
 - `craftables.ron` : objets fabricables, vaisseaux, coûts, prérequis et capacités ;
-- `planetary_analysis.ron` : seuil de colonisabilité, coût de fondation et
-  profils environnementaux par type de planète ;
+- `planetary_analysis.ron` : durée de mission d'analyse, seuil de
+  colonisabilité, coût de fondation et profils environnementaux par type de
+  planète ;
 - `planetary_presence.ron` : profils d'occupation, population et forces
   terrestres ou orbitales ;
-- `combat.ron` : rounds, variation, récupération et statistiques des
-  vaisseaux militaires ;
+- `combat.ron` : rounds, variation, récupération et paramètres globaux du
+  combat ;
 - `extraction.ron` : ressource, réserve, rendement et durée de récolte des
   sites distants par type de planète ;
 - `starting_scenario.ron` : faction joueur, colonie, ressources et bâtiments initiaux.
@@ -67,18 +68,24 @@ Les fabrications possèdent un `CraftableId` textuel, une catégorie, un coût,
 une durée de base, une quantité produite, des prérequis de bâtiments et de
 technologies ainsi qu'une liste de capacités numériques. Une fabrication qui
 représente un vaisseau ajoute une classe, une vitesse de croisière, une portée
-en sauts, une capacité cargo et une consommation de carburant par saut. Le
-catalogue par défaut contient :
+en sauts, une capacité cargo et une consommation de carburant par saut. Les
+vaisseaux militaires ajoutent aussi un bloc `combat` avec attaque, défense,
+durabilité, classe de cible (`Light`, `Medium`, `Heavy`) et bonus offensifs
+optionnels par classe de cible. Le catalogue par défaut contient :
 
 - `light_probe` avec `probe_strength` ;
-- `light_cargo` avec 800 unités de capacité cargo ;
+- `cartographer_satellite` avec `sensor_level`, dédié aux missions d'analyse ;
+- `light_cargo`, cargo rapide de 500 unités ;
+- `meridian_carrier`, cargo intermédiaire de 1 600 unités ;
+- `atlas_cargo`, cargo lourd de 4 200 unités ;
+- `needle_interceptor`, militaire léger spécialisé contre les cibles légères ;
+- `frigate_bulwark`, militaire moyen polyvalent ;
+- `bastion_cruiser`, militaire lourd spécialisé contre les cibles lourdes ;
 - `colony_ship` avec `colonization_capacity` ;
-- `frigate_bulwark`, vaisseau militaire de première ligne.
 
 Les classes de vaisseau reconnues sont `Probe`, `Cargo`, `Colony`, `Military`
-et `Support`. Les catégories `Defense`, `Military` et `Support` sont déjà
-reconnues, sans imposer de contenu militaire actif. Une défense n'est pas un
-vaisseau. Une fabrication doit dépendre d'au moins un bâtiment ayant l'effet
+et `Support`. Une défense n'est pas un vaisseau. Une fabrication doit dépendre
+d'au moins un bâtiment ayant l'effet
 `ShipyardPoints`. Sa durée de base correspond à la cadence du niveau minimal
 requis ; améliorer le chantier accélère ensuite la file.
 
@@ -87,17 +94,18 @@ une implémentation Rust.
 
 ## Analyse planétaire
 
-`planetary_analysis.ron` configure le seuil minimal d'habitabilité, la limite
-de colonies, l'investissement de fondation, le `CraftableId` du vaisseau-colonie
-et le socle économique d'une nouvelle colonie : population et niveaux de
-bâtiments. Pour chaque `PlanetKind`, il définit aussi le milieu, les potentiels
-de base, l'éligibilité à une implantation et les contraintes reconnues. Le
-vaisseau référencé doit exister, appartenir à la classe `Colony` et disposer
-d'une capacité cargo au moins égale au chargement de fondation. Les bâtiments
-initiaux doivent respecter le catalogue et fournir une capacité suffisante
-pour ce chargement. Le moteur applique ensuite une variation déterministe
-bornée à chaque potentiel afin que deux mondes de même type ne soient pas
-strictement identiques.
+`planetary_analysis.ron` configure la durée passée en orbite par une mission
+`Analyze`, le seuil minimal d'habitabilité, la limite de colonies,
+l'investissement de fondation, le `CraftableId` du vaisseau-colonie et le socle
+économique d'une nouvelle colonie : population et niveaux de bâtiments. Pour
+chaque `PlanetKind`, il définit aussi le milieu, les potentiels de base,
+l'éligibilité à une implantation et les contraintes reconnues. Le vaisseau
+référencé doit exister, appartenir à la classe `Colony` et disposer d'une
+capacité cargo au moins égale au chargement de fondation. Les bâtiments initiaux
+doivent respecter le catalogue et fournir une capacité suffisante pour ce
+chargement. Le moteur applique ensuite une variation déterministe bornée à
+chaque potentiel afin que deux mondes de même type ne soient pas strictement
+identiques.
 
 Les contraintes reconnues sont `ThinAtmosphere`, `GlobalOcean`,
 `AridClimate`, `CryogenicClimate`, `ExtremeVolcanism` et `NoSolidSurface`.
@@ -116,9 +124,10 @@ son profil de production reprend le rapport d'analyse de la planète.
 
 `planetary_presence.ron` définit des forces réutilisables et des profils
 d'occupation pondérés. Une force indique son domaine (`Ground` ou `Orbital`),
-ses valeurs d'attaque, de défense et de durabilité ainsi que le pas utilisé
-pour arrondir les estimations du joueur. Un profil choisit une faction
-occupante éventuelle, une population bornée et les quantités de chaque force.
+ses valeurs d'attaque, de défense et de durabilité, sa classe de cible
+(`Light`, `Medium`, `Heavy`) ainsi que le pas utilisé pour arrondir les
+estimations du joueur. Un profil choisit une faction occupante éventuelle, une
+population bornée et les quantités de chaque force.
 
 Le moteur sélectionne et matérialise ces données de façon déterministe pour
 chaque `PlanetId`. La planète colonisée au départ utilise un profil séparé
@@ -133,16 +142,22 @@ fournit une cible de combat proche sans modifier la distribution du reste de
 l'univers.
 
 Le ruleset configure l'état réel, jamais la précision de l'interface. Une sonde
-ne révèle que le contact ; une analyse transforme les valeurs réelles en
-fourchettes arrondies. Les pertes futures modifient l'état réel sans actualiser
+ne révèle que l'identité minimale et le contact ; une mission de Satellite
+Cartographe transforme les valeurs réelles en fourchettes arrondies au retour
+du rapport. Les pertes futures modifient l'état réel sans actualiser
 automatiquement le dernier renseignement connu.
 
 ## Combat
 
-`combat.ron` versionne la résolution de combat V1. Il fixe le nombre maximal de
+`combat.ron` versionne la résolution de combat V2. Il fixe le nombre maximal de
 rounds, l'échelle des dommages, le poids défensif, la variation déterministe et
-la récupération par défense détruite. Chaque vaisseau militaire utilisable
-référence un `CraftableId` existant et définit attaque, défense et durabilité.
+la récupération par défense détruite. Les vaisseaux utilisables en attaque sont
+dérivés des craftables militaires qui possèdent un bloc `ship.combat`.
+
+La puissance offensive de l'attaquant est pondérée par les classes de cible
+défensives engagées. Un bonus `offense_multiplier_per_mille: 1400` signifie
+donc `x1.40` contre la classe correspondante, sans changer les valeurs
+d'attaque affichées du vaisseau.
 
 Modifier une statistique ou un paramètre exige une nouvelle version de contenu.
 Ajouter ou retirer un identifiant de vaisseau militaire change l'empreinte

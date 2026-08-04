@@ -14,14 +14,21 @@ use crate::{
 };
 
 pub const MAX_RULESET_CRAFTABLES: usize = 128;
+const COMBAT_STAT_LIMIT: u32 = 1_000_000;
+const COMBAT_BONUS_PER_MILLE_LIMIT: u32 = 10_000;
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CraftableId(&'static str);
 
 impl CraftableId {
     pub const LIGHT_PROBE: Self = Self("light_probe");
+    pub const CARTOGRAPHER_SATELLITE: Self = Self("cartographer_satellite");
     pub const LIGHT_CARGO: Self = Self("light_cargo");
+    pub const MERIDIAN_CARRIER: Self = Self("meridian_carrier");
+    pub const ATLAS_CARGO: Self = Self("atlas_cargo");
+    pub const NEEDLE_INTERCEPTOR: Self = Self("needle_interceptor");
     pub const FRIGATE_BULWARK: Self = Self("frigate_bulwark");
+    pub const BASTION_CRUISER: Self = Self("bastion_cruiser");
     pub const COLONY_SHIP: Self = Self("colony_ship");
 
     pub const fn from_static(key: &'static str) -> Self {
@@ -140,6 +147,77 @@ impl ShipClass {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
+pub enum CombatTargetClass {
+    Light,
+    Medium,
+    Heavy,
+}
+
+impl CombatTargetClass {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Light => "Léger",
+            Self::Medium => "Moyen",
+            Self::Heavy => "Lourd",
+        }
+    }
+
+    pub(crate) const fn structural_key(self) -> &'static str {
+        match self {
+            Self::Light => "light",
+            Self::Medium => "medium",
+            Self::Heavy => "heavy",
+        }
+    }
+}
+
+pub const NEUTRAL_COMBAT_BONUS_PER_MILLE: u32 = 1_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CombatTargetBonuses {
+    pub light_per_mille: u32,
+    pub medium_per_mille: u32,
+    pub heavy_per_mille: u32,
+}
+
+impl Default for CombatTargetBonuses {
+    fn default() -> Self {
+        Self {
+            light_per_mille: NEUTRAL_COMBAT_BONUS_PER_MILLE,
+            medium_per_mille: NEUTRAL_COMBAT_BONUS_PER_MILLE,
+            heavy_per_mille: NEUTRAL_COMBAT_BONUS_PER_MILLE,
+        }
+    }
+}
+
+impl CombatTargetBonuses {
+    pub const fn multiplier_for(self, class: CombatTargetClass) -> u32 {
+        match class {
+            CombatTargetClass::Light => self.light_per_mille,
+            CombatTargetClass::Medium => self.medium_per_mille,
+            CombatTargetClass::Heavy => self.heavy_per_mille,
+        }
+    }
+
+    pub const fn entries(self) -> [(CombatTargetClass, u32); 3] {
+        [
+            (CombatTargetClass::Light, self.light_per_mille),
+            (CombatTargetClass::Medium, self.medium_per_mille),
+            (CombatTargetClass::Heavy, self.heavy_per_mille),
+        ]
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShipCombatStats {
+    pub offense: u32,
+    pub defense: u32,
+    pub durability: u32,
+    pub target_class: CombatTargetClass,
+    pub bonuses: CombatTargetBonuses,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ShipDefinition {
     pub class: ShipClass,
@@ -147,6 +225,7 @@ pub struct ShipDefinition {
     pub range_hops: u16,
     pub cargo_capacity: u64,
     pub fuel_per_hop: u64,
+    pub combat: Option<ShipCombatStats>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -288,7 +367,7 @@ impl CraftableCatalog {
                     building_prerequisites,
                     technology_prerequisites,
                     capabilities,
-                    ship: craftable.ship.map(ShipDefinitionConfig::compile),
+                    ship: craftable.ship.map(|ship| ship.compile(id)).transpose()?,
                 },
             );
         }
@@ -360,6 +439,18 @@ impl CraftableCatalog {
                 output.push_str("ship:");
                 output.push_str(ship.class.structural_key());
                 output.push_str(":cruise_speed:range_hops:cargo_capacity:fuel_per_hop");
+                if let Some(combat) = ship.combat {
+                    output.push_str(":combat:");
+                    output.push_str(combat.target_class.structural_key());
+                    output.push_str(":offense:defense:durability:bonuses[");
+                    for (target_class, multiplier) in combat.bonuses.entries() {
+                        if multiplier != NEUTRAL_COMBAT_BONUS_PER_MILLE {
+                            output.push_str(target_class.structural_key());
+                            output.push(',');
+                        }
+                    }
+                    output.push(']');
+                }
             }
             output.push_str("];");
         }
@@ -457,6 +548,16 @@ impl CraftableCatalog {
                     }
                     if ship.cruise_speed == 0 || ship.range_hops == 0 || ship.fuel_per_hop == 0 {
                         return Err(CraftCatalogError::InvalidShipDefinition(definition.id));
+                    }
+                    match (ship.class, ship.combat) {
+                        (ShipClass::Military, None) => {
+                            return Err(CraftCatalogError::MissingCombatStats(definition.id));
+                        }
+                        (ShipClass::Military, Some(_)) => {}
+                        (_, Some(_)) => {
+                            return Err(CraftCatalogError::UnexpectedCombatStats(definition.id));
+                        }
+                        (_, None) => {}
                     }
                 }
             }
@@ -1216,6 +1317,14 @@ pub enum CraftCatalogError {
     },
     MissingShipDefinition(CraftableId),
     InvalidShipDefinition(CraftableId),
+    MissingCombatStats(CraftableId),
+    UnexpectedCombatStats(CraftableId),
+    InvalidCombatStats(CraftableId),
+    InvalidCombatBonus(CraftableId),
+    DuplicateCombatBonus {
+        craftable: CraftableId,
+        target_class: CombatTargetClass,
+    },
     DefenseCannotBeShip(CraftableId),
     ShipClassMismatch {
         craftable: CraftableId,
@@ -1258,25 +1367,97 @@ struct CraftCapabilityConfig {
     value: u64,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct ShipDefinitionConfig {
     class: ShipClass,
     cruise_speed: u64,
     range_hops: u16,
     cargo_capacity: u64,
     fuel_per_hop: u64,
+    #[serde(default)]
+    combat: Option<ShipCombatStatsConfig>,
 }
 
 impl ShipDefinitionConfig {
-    const fn compile(self) -> ShipDefinition {
-        ShipDefinition {
+    fn compile(self, craftable: CraftableId) -> Result<ShipDefinition, CraftCatalogError> {
+        let combat = self
+            .combat
+            .map(|combat| combat.compile(craftable))
+            .transpose()?;
+        Ok(ShipDefinition {
             class: self.class,
             cruise_speed: self.cruise_speed,
             range_hops: self.range_hops,
             cargo_capacity: self.cargo_capacity,
             fuel_per_hop: self.fuel_per_hop,
-        }
+            combat,
+        })
     }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ShipCombatStatsConfig {
+    offense: u32,
+    defense: u32,
+    durability: u32,
+    target_class: CombatTargetClass,
+    #[serde(default)]
+    bonuses: Vec<CombatTargetBonusConfig>,
+}
+
+impl ShipCombatStatsConfig {
+    fn compile(self, craftable: CraftableId) -> Result<ShipCombatStats, CraftCatalogError> {
+        if self.offense == 0
+            || self.defense == 0
+            || self.durability == 0
+            || self.offense > COMBAT_STAT_LIMIT
+            || self.defense > COMBAT_STAT_LIMIT
+            || self.durability > COMBAT_STAT_LIMIT
+        {
+            return Err(CraftCatalogError::InvalidCombatStats(craftable));
+        }
+
+        let mut seen_targets = BTreeSet::new();
+        let mut bonuses = CombatTargetBonuses::default();
+        for bonus in self.bonuses {
+            if bonus.offense_multiplier_per_mille == 0
+                || bonus.offense_multiplier_per_mille > COMBAT_BONUS_PER_MILLE_LIMIT
+            {
+                return Err(CraftCatalogError::InvalidCombatBonus(craftable));
+            }
+            if !seen_targets.insert(bonus.target_class) {
+                return Err(CraftCatalogError::DuplicateCombatBonus {
+                    craftable,
+                    target_class: bonus.target_class,
+                });
+            }
+            match bonus.target_class {
+                CombatTargetClass::Light => {
+                    bonuses.light_per_mille = bonus.offense_multiplier_per_mille;
+                }
+                CombatTargetClass::Medium => {
+                    bonuses.medium_per_mille = bonus.offense_multiplier_per_mille;
+                }
+                CombatTargetClass::Heavy => {
+                    bonuses.heavy_per_mille = bonus.offense_multiplier_per_mille;
+                }
+            }
+        }
+
+        Ok(ShipCombatStats {
+            offense: self.offense,
+            defense: self.defense,
+            durability: self.durability,
+            target_class: self.target_class,
+            bonuses,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+struct CombatTargetBonusConfig {
+    target_class: CombatTargetClass,
+    offense_multiplier_per_mille: u32,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -1353,9 +1534,13 @@ mod tests {
     #[test]
     fn default_catalog_is_external_and_generic() {
         assert_eq!(craftable_catalog().version(), 2);
-        assert_eq!(craftable_catalog().ids().count(), 4);
+        assert_eq!(craftable_catalog().ids().count(), 9);
         assert_eq!(
             craftable_definition(CraftableId::LIGHT_PROBE).category,
+            CraftableCategory::Probe,
+        );
+        assert_eq!(
+            craftable_definition(CraftableId::CARTOGRAPHER_SATELLITE).category,
             CraftableCategory::Probe,
         );
         assert_eq!(
@@ -1363,11 +1548,39 @@ mod tests {
                 .ship
                 .expect("cargo is a ship")
                 .cargo_capacity,
-            800,
+            500,
+        );
+        assert_eq!(
+            craftable_definition(CraftableId::MERIDIAN_CARRIER)
+                .ship
+                .expect("cargo is a ship")
+                .cargo_capacity,
+            1_600,
+        );
+        assert_eq!(
+            craftable_definition(CraftableId::ATLAS_CARGO)
+                .ship
+                .expect("cargo is a ship")
+                .cargo_capacity,
+            4_200,
         );
         assert_eq!(
             craftable_definition(CraftableId::FRIGATE_BULWARK).category,
             CraftableCategory::Military,
+        );
+        assert!(
+            craftable_definition(CraftableId::NEEDLE_INTERCEPTOR)
+                .ship
+                .expect("interceptor is a ship")
+                .combat
+                .is_some()
+        );
+        assert!(
+            craftable_definition(CraftableId::BASTION_CRUISER)
+                .ship
+                .expect("cruiser is a ship")
+                .combat
+                .is_some()
         );
     }
 
