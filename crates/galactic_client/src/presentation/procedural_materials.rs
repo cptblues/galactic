@@ -441,12 +441,15 @@ pub(crate) fn planet_analysis_error_text(error: PlanetAnalysisError) -> String {
             "la faction active ne peut pas effectuer cette analyse".to_string()
         }
         PlanetAnalysisError::UnknownPlanet(_) => "la planète sélectionnée est inconnue".to_string(),
-        PlanetAnalysisError::PlanetNotProbed { .. } => {
-            "la planète doit d'abord être identifiée par une Sonde Luciole".to_string()
-        }
-        PlanetAnalysisError::MissingTechnology(TechnologyUnlock::AnalyzePlanets) => {
-            "recherchez Spectrométrie planétaire avant de lancer l'analyse".to_string()
-        }
+        PlanetAnalysisError::PlanetNotProbed { .. } => format!(
+            "la planète doit d'abord être identifiée par une {}",
+            galactic_sim::craftable_definition(galactic_sim::CraftableId::LIGHT_PROBE).name
+        ),
+        PlanetAnalysisError::MissingTechnology(TechnologyUnlock::AnalyzePlanets) => format!(
+            "recherchez {} avant de lancer l'analyse",
+            galactic_sim::technology_definition(galactic_sim::TechnologyId::PLANETARY_ANALYSIS)
+                .name
+        ),
         PlanetAnalysisError::MissingTechnology(unlock) => {
             format!("technologie d'analyse manquante : {unlock:?}")
         }

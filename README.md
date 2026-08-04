@@ -38,7 +38,7 @@ cargo build --release
 Le domaine, la simulation et la persistance ne dependent pas de Bevy. Les vues
 peuvent etre recreees depuis l'etat metier sans conserver d'`Entity`. Le moteur
 de mission calcule les trajets, verrouille les flottes et progresse uniquement
-sur les ticks stratégiques. Une Sonde Luciole construite au chantier peut être
+sur les ticks stratégiques. Une Sonde — Œil construite au chantier peut être
 envoyée vers un système ou une planète détectés. Une cible planétaire locale est
 identifiée sans révéler ses voisines ; une cible interstellaire ouvre ensuite la
 frontière de découverte normale. La définition immuable de l'univers regroupe
@@ -66,14 +66,14 @@ Référence éditoriale : `docs/universe_bible.md`.
 | Vitesse x2 | `2` |
 | Vitesse x4 | `3` |
 | Gestion planétaire | `C` |
-| Recherche | `T` |
-| Chantier orbital | `Y` |
+| Recherche techno | `T` |
+| Chantier flotte | `Y` |
 | Flottes & missions | `V` |
 | Sonder le système ou la planète sélectionnés | `K` |
 | Analyser la planète sondée sélectionnée | `L` |
 | Basculer projection 3D / 2,5D | `P` |
 | Reconstruire les vues Bevy | `R` |
-| Recherche globale (systèmes, planètes, colonies, flottes, missions) | `/` |
+| Recherche carte (systèmes, planètes, colonies, flottes, missions) | `/` |
 | Filtres de la carte | `B` |
 | Navigation précédente | `Retour arrière` |
 | Navigation suivante | `]` |
@@ -118,7 +118,7 @@ silhouettes et ne révèlent aucune donnée cachée.
 
 Les corps détectés d'un système reçoivent une désignation orbitale stable
 (`Port-Sillage I`, `II`, etc.) avant que leur véritable identité soit connue.
-Sélectionner l'un de ces corps puis appuyer sur `K` lance une Sonde Luciole :
+Sélectionner l'un de ces corps puis appuyer sur `K` lance une Sonde — Œil :
 à l'arrivée, cette planète seule passe au niveau `Probed`, révélant son nom et
 son type sans anticiper l'analyse de sa colonisabilité.
 
@@ -130,11 +130,11 @@ ticks stratégiques, indépendamment du nombre d'images par seconde.
 
 ## MVP-024 — Analyse planétaire et colonisabilité
 
-Une planète identifiée peut être analysée avec `L` après acquisition de
-Spectrométrie planétaire. Le rapport horodaté révèle l'environnement, les
-contraintes d'installation, l'habitabilité exacte et quatre potentiels de
-ressources déterministes. Il est conservé dans la sauvegarde séparément des
-données réelles de l'univers.
+Une planète identifiée peut être analysée avec `L` après acquisition d'Analyse
+planétaire, via une mission de Satellite — Veilleur. Le rapport
+horodaté révèle l'environnement, les contraintes d'installation,
+l'habitabilité exacte et quatre potentiels de ressources déterministes. Il est
+conservé dans la sauvegarde séparément des données réelles de l'univers.
 
 L'inspecteur évalue aussi la colonisabilité sans lancer de colonie : il indique
 les blocages précis liés au type de monde, à l'habitabilité, aux routes connues,
@@ -160,7 +160,7 @@ la colonisation.
 
 Une planète analysée et occupée par une faction étrangère peut être attaquée
 avec `M`. Le raccourci réutilise une flotte militaire disponible ou regroupe
-les Frégates Rempart présentes dans la colonie de départ. La mission suit le
+les Frégates — Garde présentes dans la colonie de départ. La mission suit le
 même trajet aller-retour que la reconnaissance puis résout un combat
 déterministe à l'arrivée.
 
@@ -171,10 +171,10 @@ que cette boucle soit immédiatement testable, chaque système voisin du départ
 contient au moins une petite patrouille hostile ; les autres planètes
 conservent leur distribution déterministe et peuvent légitimement être vides.
 
-## MVP-026 — Arche Pionnière et mission de colonisation
+## MVP-026 — Arche coloniale — Essor et mission de colonisation
 
 Une planète analysée, habitable et libre peut recevoir une mission de
-colonisation avec `N`. Le raccourci réutilise une flotte d'une Arche Pionnière
+colonisation avec `N`. Le raccourci réutilise une flotte d'une Arche coloniale — Essor
 ou en forme une depuis l'inventaire du chantier. La portée, le trajet et le
 carburant passent par le moteur de missions existant.
 

@@ -107,9 +107,26 @@ pub(crate) struct DebugOverlayState {
     pub(crate) visible: bool,
 }
 
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub(crate) struct HelpUiState {
-    pub(crate) shortcuts_visible: bool,
+    pub(crate) visible: bool,
+}
+
+impl Default for HelpUiState {
+    fn default() -> Self {
+        Self { visible: true }
+    }
+}
+
+#[derive(Resource)]
+pub(crate) struct IntroPitchUiState {
+    pub(crate) visible: bool,
+}
+
+impl Default for IntroPitchUiState {
+    fn default() -> Self {
+        Self { visible: true }
+    }
 }
 
 #[derive(Component)]
@@ -122,6 +139,12 @@ pub(crate) struct ResourceBarCardText {
 
 #[derive(Component)]
 pub(crate) struct HelpText;
+
+#[derive(Component)]
+pub(crate) struct IntroPitchRoot;
+
+#[derive(Component)]
+pub(crate) struct IntroPitchCloseButton;
 
 #[derive(Component)]
 pub(crate) struct HelpToggleText;

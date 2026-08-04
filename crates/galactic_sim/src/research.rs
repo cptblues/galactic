@@ -890,7 +890,7 @@ mod tests {
         .expect("planetary analysis has no unmet prerequisite");
 
         // Tech-to-tech prerequisites are satisfied (both are queued), but the home colony's
-        // Institut d'analyse (research_lab) is still level 1, below colonization's building
+        // The research_lab building is still level 1, below colonization's building
         // requirement of level 4.
         assert_eq!(
             research_quote(simulation.state(), actor, TechnologyId::COLONIZATION),

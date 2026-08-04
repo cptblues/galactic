@@ -1,9 +1,10 @@
 // MVP-017: dedicated minimal shipyard screen.
 use bevy::prelude::*;
 use galactic_sim::{
-    CraftError, CraftQuote, CraftableId, GameAction, GameEventKind, MAX_CRAFT_BATCH_QUANTITY,
-    StrategicDuration, craft_progress_ratio, craft_quote, craftable_catalog, craftable_definition,
-    max_affordable_quantity, max_craft_queue, ship_class_label, shipyard_output_milli_per_tick,
+    BuildingKind, CraftError, CraftQuote, CraftableId, GameAction, GameEventKind,
+    MAX_CRAFT_BATCH_QUANTITY, StrategicDuration, craft_progress_ratio, craft_quote,
+    craftable_catalog, craftable_definition, default_building_catalog, max_affordable_quantity,
+    max_craft_queue, ship_class_label, shipyard_output_milli_per_tick,
     shipyard_output_points_per_second, technology_definition,
 };
 
@@ -153,7 +154,7 @@ pub(crate) fn spawn_craft_toggle(parent: &mut ChildSpawnerCommands) {
         ))
         .with_children(|button| {
             button.spawn((
-                Text::new("Chantier orbital  [Y]"),
+                Text::new("Chantier flotte  [Y]"),
                 ui_text_font(12.0),
                 TextColor(Color::srgb(1.0, 0.86, 0.66)),
                 CraftTextRole::Toggle,
@@ -568,7 +569,9 @@ fn handle_craft_shortcuts(
     mut navigation_ui: ResMut<super::navigation_ui::NavigationUiState>,
     fleet_ui: Res<crate::fleet_ui::FleetUiState>,
 ) {
-    if crate::fleet_ui::fleet_name_is_editing(&fleet_ui) {
+    if super::navigation_ui::navigation_text_or_filter_is_active(&navigation_ui)
+        || crate::fleet_ui::fleet_name_is_editing(&fleet_ui)
+    {
         return;
     }
 
@@ -717,7 +720,7 @@ fn update_craft_visibility(
             let next = if is_open {
                 "Fermer chantier".to_string()
             } else {
-                "Chantier orbital  [Y]".to_string()
+                "Chantier flotte  [Y]".to_string()
             };
             if text.0 != next {
                 text.0 = next;
@@ -1115,9 +1118,12 @@ fn craft_queue_text(colony: &galactic_sim::ColonyState) -> String {
     let mut lines = Vec::new();
     if colony.craft_queue.is_empty() {
         let hint = if shipyard_output_milli_per_tick(colony) == 0 {
-            "Construis un Chantier orbital pour fabriquer des unités."
+            format!(
+                "Construis un {} pour fabriquer des unités.",
+                shipyard_building_name()
+            )
         } else {
-            "Sélectionne une fabrication disponible."
+            "Sélectionne une fabrication disponible.".to_string()
         };
         lines.push(format!(
             "FILE VIDE\n\n{}\n\n{} emplacement(s) disponible(s).",
@@ -1199,7 +1205,7 @@ fn craft_error_text(error: CraftError) -> String {
         CraftError::MissingTechnology(technology) => {
             format!("Requiert {}", technology_definition(technology).name)
         }
-        CraftError::NoShipyardCapacity => "Chantier orbital requis".to_string(),
+        CraftError::NoShipyardCapacity => format!("{} requis", shipyard_building_name()),
         CraftError::InsufficientResources { available, cost } => format!(
             "Ressources insuffisantes — dispo {} métal, {} cristal, {} carburant • coût {} métal, {} cristal, {} carburant",
             available.metal, available.crystal, available.fuel, cost.metal, cost.crystal, cost.fuel,
@@ -1211,6 +1217,12 @@ fn craft_error_text(error: CraftError) -> String {
         }
         CraftError::NoActiveOrder => "Aucune fabrication en cours".to_string(),
     }
+}
+
+fn shipyard_building_name() -> &'static str {
+    default_building_catalog()
+        .definition(BuildingKind::SHIPYARD)
+        .name
 }
 
 fn active_colony(simulation: &galactic_sim::Simulation) -> Option<&galactic_sim::ColonyState> {
@@ -1291,7 +1303,7 @@ mod tests {
     fn craft_error_text_translates_every_variant_to_french() {
         assert_eq!(
             craft_error_text(CraftError::NoShipyardCapacity),
-            "Chantier orbital requis"
+            format!("{} requis", shipyard_building_name())
         );
         assert_eq!(
             craft_error_text(CraftError::QueueFull { maximum: 5 }),
@@ -1307,7 +1319,7 @@ mod tests {
         let text = craft_detail_text(craftable, 1, quote);
 
         assert!(text.contains("BLOCAGE"));
-        assert!(text.contains("Chantier orbital requis"));
+        assert!(text.contains(&format!("{} requis", shipyard_building_name())));
     }
 
     fn simulation_with_shipyard() -> Simulation {

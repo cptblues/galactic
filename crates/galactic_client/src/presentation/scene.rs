@@ -564,9 +564,9 @@ pub(crate) fn spawn_system_view(
             }
         }
 
-        // MVP-030-A1: a colonized planet must be identifiable without being selected — the
-        // territory-tint ring already used for systems in the Universe view is reused here so
-        // the marker orbits with the planet instead of a separate hardcoded position/color.
+        // MVP-030-A1: a colonized planet must be identifiable without being selected.
+        // The marker keeps the self-owned tint but uses a thinner mesh than system territory
+        // rings so it does not visually swallow the planet.
         if colony.is_some() {
             let ring_orbit = OrbitingVisual {
                 vertical_offset: -0.03,
@@ -578,7 +578,7 @@ pub(crate) fn spawn_system_view(
                 .expect("territory material exists")
                 .clone();
             commands.spawn((
-                Mesh3d(assets.ring_mesh.clone()),
+                Mesh3d(assets.colony_ring_mesh.clone()),
                 MeshMaterial3d(material),
                 Transform::from_translation(ring_orbit.translation_at(0.0))
                     .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2))
@@ -864,26 +864,26 @@ pub(crate) fn spawn_ui(mut commands: Commands, icon_assets: Res<IconAssets>) {
         });
 
     commands.spawn((
-        Text::new(
-            "Clic sélectionner | Double-clic ouvrir/recentrer | K sonder | L analyser | M attaquer | H récolter | N coloniser | P projection | droit orbite | milieu déplacer | molette zoom",
-        ),
+        Text::new(help_panel_text()),
         ui_text_font(12.0),
         TextColor(Color::srgb(0.76, 0.84, 0.90)),
         Node {
             position_type: PositionType::Absolute,
-            left: Val::Px(14.0),
             right: Val::Px(14.0),
             bottom: Val::Px(68.0),
+            width: Val::Px(560.0),
             padding: UiRect::axes(Val::Px(12.0), Val::Px(8.0)),
             border: UiRect::all(Val::Px(1.0)),
             border_radius: BorderRadius::all(Val::Px(6.0)),
             ..default()
         },
         BackgroundColor(Color::srgba(0.022, 0.026, 0.030, 0.72)),
-        Outline::new(Val::Px(1.0), Val::ZERO, Color::srgba(0.60, 0.50, 0.34, 0.35)),
-        Visibility::Hidden,
-        Interaction::None,
-        UiPointerBlocker,
+        Outline::new(
+            Val::Px(1.0),
+            Val::ZERO,
+            Color::srgba(0.60, 0.50, 0.34, 0.35),
+        ),
+        Visibility::Inherited,
         HelpText,
     ));
 
@@ -939,6 +939,114 @@ pub(crate) fn spawn_ui(mut commands: Commands, icon_assets: Res<IconAssets>) {
     ));
 
     spawn_colony_management_screen(&mut commands);
+    spawn_intro_pitch_modal(&mut commands);
+}
+
+fn spawn_intro_pitch_modal(commands: &mut Commands) {
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(0.0),
+                right: Val::Px(0.0),
+                top: Val::Px(0.0),
+                bottom: Val::Px(0.0),
+                padding: UiRect::all(Val::Px(28.0)),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.62)),
+            GlobalZIndex(220),
+            Interaction::None,
+            UiPointerBlocker,
+            Visibility::Inherited,
+            IntroPitchRoot,
+        ))
+        .with_children(|overlay| {
+            overlay
+                .spawn((
+                    Node {
+                        width: Val::Px(690.0),
+                        max_height: Val::Percent(86.0),
+                        padding: UiRect::all(Val::Px(22.0)),
+                        border: UiRect::all(Val::Px(1.0)),
+                        border_radius: BorderRadius::all(Val::Px(7.0)),
+                        flex_direction: FlexDirection::Column,
+                        row_gap: Val::Px(14.0),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(0.020, 0.026, 0.034, 0.98)),
+                    Outline::new(
+                        Val::Px(1.0),
+                        Val::ZERO,
+                        Color::srgba(0.70, 0.76, 0.86, 0.56),
+                    ),
+                    Interaction::None,
+                    UiPointerBlocker,
+                ))
+                .with_children(|panel| {
+                    panel.spawn((
+                        Text::new("LA SURVIE DE L'HUMANITÉ"),
+                        ui_text_font(22.0),
+                        TextColor(Color::srgb(0.90, 0.96, 1.0)),
+                        Node {
+                            width: Val::Percent(100.0),
+                            ..default()
+                        },
+                    ));
+
+                    panel
+                        .spawn(Node {
+                            width: Val::Percent(100.0),
+                            max_height: Val::Px(430.0),
+                            overflow: Overflow::scroll_y(),
+                            ..default()
+                        })
+                        .with_children(|scroll| {
+                            scroll.spawn((
+                                Text::new(intro_pitch_text()),
+                                ui_text_font(14.0),
+                                TextColor(Color::srgb(0.78, 0.86, 0.92)),
+                                Node {
+                                    width: Val::Percent(100.0),
+                                    ..default()
+                                },
+                            ));
+                        });
+
+                    panel
+                        .spawn((
+                            Button,
+                            Node {
+                                align_self: AlignSelf::End,
+                                min_width: Val::Px(132.0),
+                                min_height: Val::Px(38.0),
+                                padding: UiRect::axes(Val::Px(14.0), Val::Px(8.0)),
+                                border: UiRect::all(Val::Px(1.0)),
+                                border_radius: BorderRadius::all(Val::Px(5.0)),
+                                justify_content: JustifyContent::Center,
+                                align_items: AlignItems::Center,
+                                ..default()
+                            },
+                            BackgroundColor(Color::srgba(0.08, 0.18, 0.22, 0.98)),
+                            Outline::new(
+                                Val::Px(1.0),
+                                Val::ZERO,
+                                Color::srgba(0.34, 0.82, 0.92, 0.68),
+                            ),
+                            IntroPitchCloseButton,
+                            UiPointerBlocker,
+                        ))
+                        .with_children(|button| {
+                            button.spawn((
+                                Text::new("Commencer"),
+                                ui_text_font(13.0),
+                                TextColor(Color::srgb(0.88, 0.98, 1.0)),
+                            ));
+                        });
+                });
+        });
 }
 
 fn spawn_tab_bar(commands: &mut Commands) {
@@ -1077,7 +1185,27 @@ pub(crate) fn handle_help_toggle_button(
 ) {
     for interaction in &interactions {
         if *interaction == Interaction::Pressed {
-            help.shortcuts_visible = !help.shortcuts_visible;
+            help.visible = !help.visible;
+        }
+    }
+}
+
+pub(crate) fn handle_intro_pitch_buttons(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut intro: ResMut<IntroPitchUiState>,
+    interactions: Query<&Interaction, (Changed<Interaction>, With<IntroPitchCloseButton>)>,
+) {
+    if !intro.visible {
+        return;
+    }
+    if keyboard.just_pressed(KeyCode::Escape) || keyboard.just_pressed(KeyCode::Enter) {
+        intro.visible = false;
+        return;
+    }
+    for interaction in &interactions {
+        if *interaction == Interaction::Pressed {
+            intro.visible = false;
+            return;
         }
     }
 }
@@ -1086,7 +1214,7 @@ pub(crate) fn update_help_visibility(
     help: Res<HelpUiState>,
     mut texts: Query<&mut Visibility, With<HelpText>>,
 ) {
-    let visibility = if help.shortcuts_visible {
+    let visibility = if help.visible {
         Visibility::Inherited
     } else {
         Visibility::Hidden
@@ -1095,6 +1223,84 @@ pub(crate) fn update_help_visibility(
         if *text != visibility {
             *text = visibility;
         }
+    }
+}
+
+pub(crate) fn update_intro_pitch_visibility(
+    intro: Res<IntroPitchUiState>,
+    mut roots: Query<&mut Visibility, With<IntroPitchRoot>>,
+) {
+    let visibility = if intro.visible {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    };
+    for mut root in &mut roots {
+        if *root != visibility {
+            *root = visibility;
+        }
+    }
+}
+
+pub(crate) fn intro_pitch_text() -> &'static str {
+    "Le monde d'avant était à bout de souffle.\n\
+Guerres, famines, pollution, surpopulation. Les nations se disputaient les dernières ressources tandis que la planète s'épuisait.\n\
+\n\
+Face à l'effondrement, les gouvernements survivants formèrent le Consortium, avec une idée simple : une seule direction, un seul objectif, une seule humanité.\n\
+Et, pour la première fois, un ennemi commun.\n\
+Tout ce qui viendrait d'au-delà de notre monde.\n\
+\n\
+L'espace devint notre seule chance de survie.\n\
+Nous avons exploré. Colonisé. Exploité les ressources nécessaires à notre avenir. Chaque nouveau monde assurait quelques années de plus à notre civilisation.\n\
+Puis quelques années devinrent des décennies.\n\
+Les colonies prospérèrent. Les flottes grandirent. Les besoins aussi.\n\
+\n\
+Avec le temps, nous avons appris qu'une planète inhabitée était une opportunité.\n\
+Qu'une planète occupée était un problème.\n\
+Et qu'un problème pouvait toujours être résolu.\n\
+\n\
+Aujourd'hui, l'humanité s'étend à travers la galaxie au nom de sa survie, apportant stabilité et sécurité aux nouveaux mondes placés sous sa protection.\n\
+\n\
+Vous venez d'être promu Amiral.\n\
+Votre mission est simple : assurer la survie de notre peuple, sécuriser les ressources dont il dépend et étendre notre présence aussi loin que nécessaire.\n\
+\n\
+La galaxie est vaste.\n\
+Nos besoins aussi."
+}
+
+pub(crate) fn help_panel_text() -> &'static str {
+    "BRIEFING DU CONSORTIUM\n\
+Mission : assurer la survie de notre peuple, sécuriser les ressources nécessaires \
+et étendre notre présence aussi loin que nécessaire.\n\
+Boucle conseillée : produire -> rechercher -> sonder -> analyser -> exploiter -> coloniser.\n\
+\n\
+Commandes : clic sélectionner | double-clic ouvrir/recentrer | ? masquer/rouvrir | \
+K sonder | L analyser | M attaquer | H récolter | N coloniser | P projection | \
+droit orbite | milieu déplacer | molette zoom"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn help_starts_visible_with_consortium_briefing() {
+        assert!(HelpUiState::default().visible);
+
+        let text = help_panel_text();
+        assert!(text.contains("BRIEFING DU CONSORTIUM"));
+        assert!(text.contains("Boucle conseillée"));
+        assert!(!text.contains("Helldivers"));
+    }
+
+    #[test]
+    fn intro_starts_visible_with_pitch_excerpt() {
+        assert!(IntroPitchUiState::default().visible);
+
+        let text = intro_pitch_text();
+        assert!(text.contains("Le monde d'avant était à bout de souffle"));
+        assert!(text.contains("formèrent le Consortium"));
+        assert!(text.contains("Vous venez d'être promu Amiral"));
     }
 }
 

@@ -10,8 +10,8 @@ pub const MVP_UNIVERSE_SEED: u64 = 42;
 pub const TEST_SYSTEM_COUNT: usize = 16;
 pub const MVP_SYSTEM_COUNT: usize = 64;
 pub const STRESS_SYSTEM_COUNT: usize = 128;
-pub const GENERATION_VERSION: u32 = 4;
-pub const TEST_REFERENCE_FINGERPRINT: u64 = 15733294683163488985;
+pub const GENERATION_VERSION: u32 = 5;
+pub const TEST_REFERENCE_FINGERPRINT: u64 = 7965321313134283584;
 
 const MAX_SYSTEM_COUNT: usize = 256;
 
@@ -727,6 +727,54 @@ fn system_name(index: usize, rng: &mut ChaCha8Rng) -> String {
         "Orphéon",
         "Nacréon",
         "Arkan",
+        "Solédris",
+        "Noctavéa",
+        "Thaléryne",
+        "Brontar",
+        "Lyséa",
+        "Oradis",
+        "Kéméris",
+        "Phanéon",
+        "Lunévar",
+        "Axoria",
+        "Ilvaris",
+        "Cendral",
+        "Dikéa",
+        "Cantéor",
+        "Opalys",
+        "Varkane",
+        "Aurélys",
+        "Crépuscor",
+        "Pélagis",
+        "Colosséa",
+        "Myrion",
+        "Zéphara",
+        "Sabaël",
+        "Mnémoris",
+        "Nysséa",
+        "Ordalis",
+        "Vaelune",
+        "Braséon",
+        "Noméria",
+        "Mélodran",
+        "Iridys",
+        "Kharéon",
+        "Héméria",
+        "Ombrelis",
+        "Abyssara",
+        "Gravéon",
+        "Elarque",
+        "Oryssia",
+        "Aksomar",
+        "Spectéon",
+        "Artélys",
+        "Agréon",
+        "Ylvane",
+        "Ferrélys",
+        "Équoria",
+        "Harméon",
+        "Perléa",
+        "Arcandor",
     ];
 
     if index == 0 {
@@ -900,6 +948,23 @@ mod tests {
         assert_eq!(universe.systems[0].planets[0].name, "Nacre");
         assert_eq!(universe.systems[0].planets[1].name, "Hélianthe c");
         assert_eq!(universe.systems[1].planets[0].name, "Vespera b");
+    }
+
+    #[test]
+    fn mvp_system_names_replace_cycle_suffixes_with_canonical_names() {
+        let universe = generate_universe(UniverseConfig::mvp());
+        let system_names = universe
+            .systems
+            .iter()
+            .map(|system| system.name.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(system_names[16], "Solédris");
+        assert_eq!(system_names[32], "Aurélys");
+        assert_eq!(system_names[48], "Héméria");
+        assert_eq!(system_names[63], "Arcandor");
+        assert!(!system_names.iter().any(|name| name.ends_with("-2")));
+        assert_eq!(universe.systems[16].planets[0].name, "Solédris b");
     }
 
     #[test]

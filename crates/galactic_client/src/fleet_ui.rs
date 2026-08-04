@@ -878,7 +878,9 @@ fn handle_fleet_shortcuts(
     mut open_panel: ResMut<OpenPanel>,
     mut navigation_ui: ResMut<super::navigation_ui::NavigationUiState>,
 ) {
-    if ui.rename_editing {
+    if super::navigation_ui::navigation_text_or_filter_is_active(&navigation_ui)
+        || ui.rename_editing
+    {
         return;
     }
 

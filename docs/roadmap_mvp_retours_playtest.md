@@ -16,6 +16,7 @@
 | MVP-030-A4 | Créer un planificateur de missions complet | P0 | 13 pts | À faire |
 | MVP-030-A5 | Transformer l’analyse planétaire en mission satellite | P1 | 8 pts | Implémenté |
 | MVP-030-A6 | Diversifier les vaisseaux et les rôles de combat | P1 | 13 pts | Implémenté |
+| MVP-030-A7 | Polir l’UX flotte, ressources et cadrage narratif | P1 | 5 pts | Implémenté |
 | MVP-031 | Finaliser sauvegarde, chargement et migrations V1 | P0 | 8 pts | À faire |
 | MVP-032 | Ajouter onboarding et objectifs contextuels | P1 | 5 pts | À faire |
 | MVP-033 | Implémenter la condition de réussite du MVP | P1 | 3 pts | À faire |
@@ -71,7 +72,7 @@ Supprimer les ambiguïtés visuelles, caractères cassés et superpositions afin
 ### Présentation attendue d’un bâtiment
 
 ```text
-FOSSE SIDÉRURGIQUE
+MINE PATRIOTIQUE DE MÉTAL
 
 Niveau actuel : 3
 Production actuelle : 48 métal/h
@@ -159,40 +160,40 @@ production réelle
 - Afficher la production scientifique globale.
 - Afficher la progression en points de la recherche active.
 - Afficher le temps restant.
-- Afficher les Instituts d’analyse qui contribuent à la production.
+- Afficher les Instituts de vérité appliquée qui contribuent à la production.
 - Conserver une recherche globale au joueur.
 - Ne pas ajouter de stock de science consommable pour cette version.
 - Ajouter des prérequis de bâtiments aux technologies.
 - Renforcer les prérequis de la technologie de colonisation.
 - Augmenter le coût et la durée des technologies avancées.
-- Rendre l’accès à l’Arche Pionnière sensiblement plus difficile.
+- Rendre l’accès à l’Arche coloniale — Essor sensiblement plus difficile.
 
 ### Chaîne de progression recommandée
 
 ```text
-Veille sidérale
-└── Propulsion à flux
-    ├── Architecture de soute
-    │   └── Prospection autonome
-    └── Spectrométrie planétaire
-        └── Ingénierie d’implantation
+Détection longue portée
+└── Propulsion avancée
+    ├── Soutes agrandies
+    │   └── Extraction automatisée
+    └── Analyse planétaire
+        └── Colonisation avancée
 ```
 
-### Prérequis recommandés pour Ingénierie d’implantation
+### Prérequis recommandés pour Colonisation avancée
 
-- Veille sidérale terminée.
-- Propulsion à flux terminée.
-- Architecture de soute terminée.
-- Spectrométrie planétaire terminée.
-- Institut d’analyse niveau 4.
-- Atelier d’assemblage niveau 3.
+- Détection longue portée terminée.
+- Propulsion avancée terminée.
+- Soutes agrandies terminée.
+- Analyse planétaire terminée.
+- Laboratoire niveau 4.
+- Centre de construction niveau 3.
 
-### Prérequis recommandés pour l’Arche Pionnière
+### Prérequis recommandés pour l’Arche coloniale — Essor
 
-- Ingénierie d’implantation terminée.
-- Chantier orbital niveau 3.
-- Dépôt logistique niveau 3.
-- Atelier d’assemblage niveau 4.
+- Colonisation avancée terminée.
+- Chantier naval niveau 3.
+- Entrepôt niveau 3.
+- Centre de construction niveau 4.
 - Coût élevé dans les trois ressources.
 - Temps de fabrication significatif.
 
@@ -447,7 +448,7 @@ Remplacer l’analyse instantanée d’une planète par une mission visible, pro
 
 ### Nouveau craftable
 
-**Satellite Cartographe**
+**Satellite — Veilleur**
 
 Caractéristiques minimales :
 
@@ -478,7 +479,7 @@ Préparation
 
 ### Répartition des informations
 
-#### Sonde Luciole
+#### Sonde — Œil
 
 Révèle :
 
@@ -488,7 +489,7 @@ Révèle :
 - type général ;
 - présence potentielle.
 
-#### Satellite Cartographe
+#### Satellite — Veilleur
 
 Révèle :
 
@@ -547,21 +548,21 @@ Créer des choix de flotte simples mais significatifs pour le transport, la reco
 
 ### Vaisseaux de transport
 
-#### Caboteur Sillage
+#### Caboteur — Relais
 
 - Faible coût.
 - Rapide.
 - Faible capacité.
 - Faible durabilité.
 
-#### Porteur Méridien
+#### Porteur — Navette
 
 - Coût moyen.
 - Vitesse moyenne.
 - Capacité moyenne.
 - Usage polyvalent.
 
-#### Cargo Atlas
+#### Cargo — Chargeur
 
 - Coût élevé.
 - Lent.
@@ -570,20 +571,20 @@ Créer des choix de flotte simples mais significatifs pour le transport, la reco
 
 ### Vaisseaux militaires
 
-#### Intercepteur Aiguille
+#### Intercepteur — Riposte
 
 - Léger.
 - Rapide.
 - Efficace contre les unités légères.
 - Fragile contre les unités lourdes.
 
-#### Frégate Rempart
+#### Frégate — Garde
 
 - Moyen.
 - Polyvalent.
 - Aucun bonus extrême.
 
-#### Croiseur Bastion
+#### Croiseur — Verdict
 
 - Lourd.
 - Lent.
@@ -638,6 +639,56 @@ Créer des choix de flotte simples mais significatifs pour le transport, la reco
 
 ---
 
+<a id="mvp-030-a7"></a>
+
+## MVP-030-A7 — Polir l’UX flotte, ressources et cadrage narratif
+
+| Métadonnée | Valeur |
+|---|---|
+| Priorité | P1 |
+| Estimation | 5 points |
+| Statut | Implémenté |
+| Dépendances | MVP-030-A1 à MVP-030-A6 |
+
+### Objectif
+
+Lever les dernières ambiguïtés de playtest avant la sauvegarde : ressources
+réservées, recherche carte vs recherche techno, helpers trop visibles et cadre
+narratif encore trop neutre.
+
+### Périmètre
+
+- Clarifier `Stock total`, `Disponible maintenant` et `Réservé par ordres/missions`.
+- Renommer la recherche de technologies et la recherche de carte pour éviter
+  toute confusion.
+- Empêcher les raccourcis globaux de se déclencher pendant une saisie ou un
+  filtre de navigation.
+- Remplacer le helper permanent par un briefing réouvrable/masquable via `?`.
+- Introduire le cadrage satirique original du Consortium.
+- Renommer les libellés visibles du ruleset `default` sans changer les IDs.
+- Documenter le remplacement des anciennes séries de systèmes `-2`, `-3` et
+  `-4` par des noms propres.
+
+### Hors périmètre
+
+- Sauvegarde de l'état du briefing.
+- Système complet de quêtes et récompenses.
+- Refonte complète des noms de planètes au-delà de leur dérivation depuis le
+  système.
+- Nouvelle mécanique de faction ou diplomatie.
+
+### Critères d’acceptation
+
+- [x] Le joueur comprend pourquoi une ressource stockée n'est pas disponible.
+- [x] La recherche techno et la recherche carte sont libellées distinctement.
+- [x] Les raccourcis ne réagissent pas pendant la saisie de recherche/filtres.
+- [x] Le briefing initial peut être masqué et rouvert.
+- [x] Le ruleset garde ses identifiants techniques.
+- [x] Les séries de systèmes `-2`, `-3` et `-4` reçoivent des noms propres.
+- [x] `content_version` du ruleset `default` est incrémentée à 16.
+
+---
+
 # Phase 7 — Persistance et partie complète
 
 <a id="mvp-031"></a>
@@ -649,7 +700,7 @@ Créer des choix de flotte simples mais significatifs pour le transport, la reco
 | Priorité | P0 |
 | Estimation | 8 points |
 | Statut | À faire |
-| Dépendances | MVP-030-A3 à MVP-030-A6 |
+| Dépendances | MVP-030-A3 à MVP-030-A7 |
 
 ### Objectif
 
@@ -722,24 +773,36 @@ Permettre au joueur de sauvegarder une partie sur disque, la recharger et contin
 
 ### Objectif
 
-Guider un nouveau joueur jusqu’à sa première colonisation sans documentation externe.
+Guider un nouveau joueur jusqu’à sa première colonisation sans documentation externe, puis proposer des objectifs facultatifs qui poussent à explorer des zones plus lointaines sans transformer la boucle en liste obligatoire.
 
 ### Suite d’objectifs recommandée
 
 1. Observer les ressources de Port-Sillage.
 2. Améliorer un bâtiment de production.
-3. Construire un Institut d’analyse.
+3. Construire un Laboratoire.
 4. Lancer une première recherche.
-5. Construire une Sonde Luciole.
+5. Construire une Sonde — Œil.
 6. Sonder une planète.
-7. Construire un Satellite Cartographe.
+7. Construire un Satellite — Veilleur.
 8. Analyser la planète.
 9. Récolter une ressource distante.
 10. Construire une flotte militaire.
 11. Sécuriser une planète si nécessaire.
-12. Débloquer Ingénierie d’implantation.
-13. Construire une Arche Pionnière.
+12. Débloquer Colonisation avancée.
+13. Construire une Arche coloniale — Essor.
 14. Fonder une deuxième colonie.
+
+### Objectifs facultatifs recommandés
+
+- Sonder un système situé à au moins trois sauts.
+- Analyser une planète occupée hors du voisinage immédiat.
+- Récolter un site distant rare.
+- Gagner un combat avec une flotte mixte.
+- Fonder une colonie dans une zone à risque.
+
+Les récompenses doivent rester modestes et explicables : petite quantité de
+ressources, accélération courte, lot de renseignement, ou priorité de file. Un
+objectif ne doit pas devenir le meilleur moyen d'optimiser l'économie.
 
 ### Périmètre
 
@@ -751,6 +814,8 @@ Guider un nouveau joueur jusqu’à sa première colonisation sans documentation
 - Possibilité de les réactiver.
 - Validation depuis l’état réel de simulation.
 - Sauvegarde de la progression.
+- Objectifs facultatifs avec récompenses modestes.
+- Ton narratif cohérent avec le Consortium.
 
 ### Critères d’acceptation
 
@@ -759,6 +824,8 @@ Guider un nouveau joueur jusqu’à sa première colonisation sans documentation
 - [ ] Les conseils ne bloquent pas la navigation.
 - [ ] La progression est sauvegardée.
 - [ ] Les objectifs utilisent les systèmes réels du jeu.
+- [ ] Les objectifs facultatifs incitent à explorer plus loin sans bloquer la partie.
+- [ ] Les récompenses ne dominent pas la production normale.
 
 ---
 
@@ -1159,8 +1226,9 @@ MVP-030-A3  Lots et annulation des files
 MVP-030-A4  Planificateur de missions
 MVP-030-A5  Analyse par satellite
 MVP-030-A6  Diversification des flottes
+MVP-030-A7  Polish UX et cadrage narratif
 MVP-031     Sauvegarde et migrations
-MVP-032     Onboarding
+MVP-032     Onboarding et objectifs
 MVP-033     Condition de réussite
 MVP-034     Presets graphiques
 MVP-035     Benchmark
@@ -1191,7 +1259,7 @@ Le MVP consolidé est considéré comme jouable lorsqu’un nouveau joueur peut 
 13. choisir entre plusieurs cargos ;
 14. choisir entre plusieurs vaisseaux militaires ;
 15. combattre ;
-16. débloquer difficilement l’Arche Pionnière ;
+16. débloquer difficilement l’Arche coloniale — Essor ;
 17. fonder une deuxième colonie ;
 18. sauvegarder ;
 19. recharger ;

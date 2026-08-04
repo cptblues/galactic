@@ -15,7 +15,7 @@
     units: [
         (
             id: "frontier_militia",
-            name: "Milice de frontière",
+            name: "Milice réticente",
             domain: Ground,
             offense: 6,
             defense: 8,
@@ -25,7 +25,7 @@
         ),
         (
             id: "line_garrison",
-            name: "Garnison de ligne",
+            name: "Garnison anti-libération",
             domain: Ground,
             offense: 14,
             defense: 13,
@@ -35,7 +35,7 @@
         ),
         (
             id: "surface_bunker",
-            name: "Bunker de surface",
+            name: "Bunker de mauvaise volonté",
             domain: Ground,
             offense: 4,
             defense: 22,
@@ -45,7 +45,7 @@
         ),
         (
             id: "orbital_sentry",
-            name: "Sentinelle orbitale",
+            name: "Sentinelle du statu quo",
             domain: Orbital,
             offense: 18,
             defense: 12,
@@ -55,7 +55,7 @@
         ),
         (
             id: "orbital_battery",
-            name: "Batterie orbitale",
+            name: "Batterie d'oppression orbitale",
             domain: Orbital,
             offense: 28,
             defense: 18,

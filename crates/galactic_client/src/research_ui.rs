@@ -1,10 +1,11 @@
 // MVP-016: dedicated research screen kept outside the main client module.
 use bevy::prelude::*;
 use galactic_sim::{
-    GameAction, GameEventKind, ResearchError, ResearchQuote, STRATEGIC_TICKS_PER_SECOND,
-    StrategicDuration, TechnologyId, max_research_queue, research_lab_level_total,
-    research_output_milli_points_per_tick, research_output_points_per_second,
-    research_progress_ratio, research_quote, technology_catalog, technology_definition,
+    BuildingKind, GameAction, GameEventKind, ResearchError, ResearchQuote,
+    STRATEGIC_TICKS_PER_SECOND, StrategicDuration, TechnologyId, default_building_catalog,
+    max_research_queue, research_lab_level_total, research_output_milli_points_per_tick,
+    research_output_points_per_second, research_progress_ratio, research_quote, technology_catalog,
+    technology_definition,
 };
 
 use super::{
@@ -135,7 +136,7 @@ pub(crate) fn spawn_research_toggle(parent: &mut ChildSpawnerCommands) {
         ))
         .with_children(|button| {
             button.spawn((
-                Text::new("Recherche  [T]"),
+                Text::new("Recherche techno  [T]"),
                 ui_text_font(12.0),
                 TextColor(Color::srgb(0.84, 0.86, 1.0)),
                 ResearchTextRole::Toggle,
@@ -208,7 +209,7 @@ fn spawn_research_header(root: &mut ChildSpawnerCommands) {
     },))
         .with_children(|header| {
             header.spawn((
-                Text::new("RECHERCHE"),
+                Text::new("RECHERCHE TECHNO"),
                 ui_text_font(18.0),
                 TextColor(Color::srgb(0.86, 0.88, 1.0)),
                 Node {
@@ -409,7 +410,7 @@ fn spawn_research_queue(row: &mut ChildSpawnerCommands) {
     ))
     .with_children(|queue| {
         queue.spawn((
-            Text::new("FILE DE RECHERCHE GLOBALE"),
+            Text::new("FILE DE RECHERCHE TECHNO"),
             ui_text_font(12.0),
             TextColor(Color::srgb(0.76, 0.82, 1.0)),
         ));
@@ -481,7 +482,9 @@ fn handle_research_shortcuts(
     mut navigation_ui: ResMut<super::navigation_ui::NavigationUiState>,
     fleet_ui: Res<crate::fleet_ui::FleetUiState>,
 ) {
-    if crate::fleet_ui::fleet_name_is_editing(&fleet_ui) {
+    if super::navigation_ui::navigation_text_or_filter_is_active(&navigation_ui)
+        || crate::fleet_ui::fleet_name_is_editing(&fleet_ui)
+    {
         return;
     }
 
@@ -608,7 +611,7 @@ fn update_research_visibility(
             let next = if is_open {
                 "Fermer recherche".to_string()
             } else {
-                "Recherche  [T]".to_string()
+                "Recherche techno  [T]".to_string()
             };
             if text.0 != next {
                 text.0 = next;
@@ -635,7 +638,7 @@ fn update_research_summary(
         match role {
             ResearchTextRole::Title => {
                 text.0 = format!(
-                    "RECHERCHE — {} / {} technologie(s)",
+                    "RECHERCHE TECHNO — {} / {} technologie(s)",
                     completed,
                     technology_catalog().ids().count(),
                 );
@@ -918,9 +921,12 @@ fn research_queue_text(state: &galactic_sim::GameState) -> String {
     if state.research.is_queue_empty() {
         let has_output = research_output_milli_points_per_tick(state, state.player_faction) > 0;
         let hint = if !has_output {
-            "Construis un Institut d'analyse pour produire des points de recherche."
+            format!(
+                "Construis un {} pour produire des points de recherche.",
+                research_lab_building_name()
+            )
         } else {
-            "Sélectionne une technologie disponible."
+            "Sélectionne une technologie disponible.".to_string()
         };
         return format!(
             "File vide\n\n{}\n\n{} emplacement(s) disponible(s).",
@@ -970,7 +976,7 @@ fn research_queue_text(state: &galactic_sim::GameState) -> String {
 fn research_error_text(error: ResearchError) -> String {
     match error {
         ResearchError::Access(_) => "Recherche non autorisée".to_string(),
-        ResearchError::NoResearchCapacity => "Institut d'analyse requis".to_string(),
+        ResearchError::NoResearchCapacity => format!("{} requis", research_lab_building_name()),
         ResearchError::AlreadyCompleted(technology) => {
             format!("{} déjà acquise", technology_definition(technology).name,)
         }
@@ -1000,6 +1006,12 @@ fn research_error_text(error: ResearchError) -> String {
     }
 }
 
+fn research_lab_building_name() -> &'static str {
+    default_building_catalog()
+        .definition(BuildingKind::RESEARCH_LAB)
+        .name
+}
+
 fn technology_button_color(selected: bool, interaction: &Interaction) -> Color {
     if selected {
         return Color::srgba(0.16, 0.20, 0.48, 0.98);
@@ -1021,6 +1033,7 @@ fn technology_button_outline(selected: bool) -> Color {
 
 #[cfg(test)]
 mod tests {
+    use bevy::ecs::system::RunSystemOnce;
     use galactic_domain::UniverseConfig;
     use galactic_sim::{BuildingKind, Simulation, default_building_catalog};
 
@@ -1052,8 +1065,14 @@ mod tests {
             ),
         );
 
-        assert!(text.contains("Institut d'analyse requis"));
-        assert!(text.contains("VEILLE SIDÉRALE"));
+        assert!(text.contains(&format!("{} requis", research_lab_building_name())));
+        assert!(
+            text.contains(
+                &technology_definition(TechnologyId::SPATIAL_DETECTION)
+                    .name
+                    .to_uppercase()
+            )
+        );
     }
 
     #[test]
@@ -1074,5 +1093,25 @@ mod tests {
     #[test]
     fn research_overlay_is_above_colony_management() {
         const { assert!(RESEARCH_Z_INDEX > 100) };
+    }
+
+    #[test]
+    fn research_shortcut_ignores_navigation_text_input() {
+        let mut world = World::new();
+        world.insert_resource(OpenPanel::Navigation);
+        world.insert_resource(ResearchUiState::default());
+        let mut navigation_ui = super::super::navigation_ui::NavigationUiState::default();
+        navigation_ui.search_open = true;
+        world.insert_resource(navigation_ui);
+        world.insert_resource(crate::fleet_ui::FleetUiState::default());
+        let mut keyboard = ButtonInput::<KeyCode>::default();
+        keyboard.press(KeyCode::KeyT);
+        world.insert_resource(keyboard);
+
+        world
+            .run_system_once(handle_research_shortcuts)
+            .expect("handle_research_shortcuts runs");
+
+        assert_eq!(*world.resource::<OpenPanel>(), OpenPanel::Navigation);
     }
 }

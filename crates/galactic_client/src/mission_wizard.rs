@@ -1111,27 +1111,30 @@ fn wizard_step_label(step: WizardStep) -> &'static str {
     }
 }
 
-fn wizard_no_destination_hint(kind: MissionKind) -> &'static str {
+fn wizard_no_destination_hint(kind: MissionKind) -> String {
     match kind {
-        MissionKind::Probe => {
+        MissionKind::Probe =>
             "Aucune cible de reconnaissance : il faut d'abord détecter un système ou une planète \
              (portée de détection, technologies de détection)."
-        }
-        MissionKind::Analyze => {
-            "Aucune cible d'analyse : il faut une planète sondée, la technologie Spectrométrie \
-             planétaire, un Satellite Cartographe et une route accessible."
-        }
-        MissionKind::Attack => {
+                .to_string(),
+        MissionKind::Analyze => format!(
+            "Aucune cible d'analyse : il faut une planète sondée, la technologie {}, un {} et une route accessible.",
+            galactic_sim::technology_definition(galactic_sim::TechnologyId::PLANETARY_ANALYSIS)
+                .name,
+            galactic_sim::craftable_definition(galactic_sim::CraftableId::CARTOGRAPHER_SATELLITE)
+                .name,
+        ),
+        MissionKind::Attack =>
             "Aucune cible d'attaque : il faut une planète analysée et occupée par une faction hostile."
-        }
-        MissionKind::Colonize => {
+                .to_string(),
+        MissionKind::Colonize =>
             "Aucune planète colonisable : il faut une planète analysée, libre, habitable et accessible."
-        }
-        MissionKind::Harvest => {
-            "Aucun site d'extraction disponible : il faut une planète analysée avec un site non \
-             colonisé, non réservé et la technologie Prospection autonome."
-        }
-        MissionKind::Transport => "Une deuxième colonie est nécessaire pour un transport.",
+                .to_string(),
+        MissionKind::Harvest => format!(
+            "Aucun site d'extraction disponible : il faut une planète analysée avec un site non colonisé, non réservé et la technologie {}.",
+            galactic_sim::technology_definition(galactic_sim::TechnologyId::REMOTE_EXTRACTION).name,
+        ),
+        MissionKind::Transport => "Une deuxième colonie est nécessaire pour un transport.".to_string(),
     }
 }
 
@@ -1205,7 +1208,7 @@ fn update_wizard_target_rows(
     } else if ui.target.is_some() {
         wizard_selected_destination_summary(simulation.simulation(), &ui, &candidates)
     } else if candidates.is_empty() {
-        wizard_no_destination_hint(ui.kind).to_string()
+        wizard_no_destination_hint(ui.kind)
     } else {
         "Choisissez une destination disponible.".to_string()
     };

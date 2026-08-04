@@ -501,7 +501,10 @@ fn extraction_site_text(simulation: &Simulation, planet_id: PlanetId) -> String 
         .research
         .has_unlock(TechnologyUnlock::RemoteExtraction)
     {
-        "Prospection autonome requise".to_string()
+        format!(
+            "{} requise",
+            galactic_sim::technology_definition(galactic_sim::TechnologyId::REMOTE_EXTRACTION).name
+        )
     } else {
         "disponible — H pour lancer la récolte".to_string()
     };
@@ -802,6 +805,10 @@ fn colonizability_text(
         let origin = active_colony
             .map(|colony| colony.name.as_str())
             .unwrap_or("aucune colonie active");
+        let colony_ship_name = galactic_sim::craftable_definition(colony_ship).name;
+        let shipyard_name = galactic_sim::default_building_catalog()
+            .definition(galactic_sim::BuildingKind::SHIPYARD)
+            .name;
         let ship_ready = active_colony.is_some_and(|colony| {
             colony.inventory.quantity(colony_ship) > 0
                 || state.fleets.iter().any(|fleet| {
@@ -813,11 +820,11 @@ fn colonizability_text(
         });
         let ship_status = if ship_ready {
             format!(
-                "Depuis {origin} : Arche Pionnière disponible — appuyez sur N pour lancer la mission."
+                "Depuis {origin} : {colony_ship_name} disponible — appuyez sur N pour lancer la mission."
             )
         } else {
             format!(
-                "Depuis {origin} : Arche Pionnière manquante — construisez-en une au chantier orbital."
+                "Depuis {origin} : {colony_ship_name} manquante — construisez-en une au {shipyard_name}."
             )
         };
         return format!(
@@ -1300,10 +1307,14 @@ pub(crate) fn mission_result_text(result: MissionResult) -> String {
             result.site_remaining,
         ),
         MissionResult::Colonize(result) => match result.outcome {
-            ColonizationMissionOutcome::FoundationPrepared => format!(
-                "fondation prête sur le corps {} : Arche Pionnière et chargement déployés",
-                result.target.index(),
-            ),
+            ColonizationMissionOutcome::FoundationPrepared => {
+                let colony_ship_name =
+                    mission_craftable_name(galactic_sim::CraftableId::COLONY_SHIP);
+                format!(
+                    "fondation prête sur le corps {} : {colony_ship_name} et chargement déployés",
+                    result.target.index(),
+                )
+            }
             ColonizationMissionOutcome::TargetInvalid(blocker) => format!(
                 "colonisation annulée sur le corps {} : {}",
                 result.target.index(),
@@ -1313,13 +1324,42 @@ pub(crate) fn mission_result_text(result: MissionResult) -> String {
     }
 }
 
+fn mission_craftable_name(craftable: galactic_sim::CraftableId) -> &'static str {
+    galactic_sim::craftable_definition(craftable).name
+}
+
+fn mission_shipyard_name() -> &'static str {
+    galactic_sim::default_building_catalog()
+        .definition(galactic_sim::BuildingKind::SHIPYARD)
+        .name
+}
+
+fn mission_unlock_name(unlock: TechnologyUnlock) -> &'static str {
+    let technology = match unlock {
+        TechnologyUnlock::DetectUnknownSystems => galactic_sim::TechnologyId::SPATIAL_DETECTION,
+        TechnologyUnlock::InterstellarTravel => galactic_sim::TechnologyId::PROPULSION,
+        TechnologyUnlock::ExpandedCargo => galactic_sim::TechnologyId::CARGO_CAPACITY,
+        TechnologyUnlock::RemoteExtraction => galactic_sim::TechnologyId::REMOTE_EXTRACTION,
+        TechnologyUnlock::AnalyzePlanets => galactic_sim::TechnologyId::PLANETARY_ANALYSIS,
+        TechnologyUnlock::FoundColonies => galactic_sim::TechnologyId::COLONIZATION,
+    };
+    galactic_sim::technology_definition(technology).name
+}
+
 pub(crate) fn mission_error_text(error: galactic_sim::MissionError) -> String {
     match error {
         galactic_sim::MissionError::ProbeUnavailable(_) => {
-            "aucune Sonde Luciole disponible ; construisez-en une au chantier orbital".to_string()
+            format!(
+                "aucune {} disponible ; construisez-en une au {}",
+                mission_craftable_name(galactic_sim::CraftableId::LIGHT_PROBE),
+                mission_shipyard_name()
+            )
         }
         galactic_sim::MissionError::ProbeRequired(_) => {
-            "la flotte sélectionnée ne contient aucune Sonde Luciole".to_string()
+            format!(
+                "la flotte sélectionnée ne contient aucune {}",
+                mission_craftable_name(galactic_sim::CraftableId::LIGHT_PROBE)
+            )
         }
         galactic_sim::MissionError::ProbeTargetNotDetected { .. } => {
             "la reconnaissance exige un système ou une planète actuellement détecté".to_string()
@@ -1330,17 +1370,25 @@ pub(crate) fn mission_error_text(error: galactic_sim::MissionError) -> String {
         galactic_sim::MissionError::AnalyzeTargetNotProbed { .. } => {
             "la planète doit être sondée, mais pas déjà analysée".to_string()
         }
-        galactic_sim::MissionError::MissingAnalyzeTechnology(_) => {
-            "recherchez Spectrométrie planétaire avant de lancer une analyse".to_string()
-        }
+        galactic_sim::MissionError::MissingAnalyzeTechnology(technology) => format!(
+            "recherchez {} avant de lancer une analyse",
+            mission_unlock_name(technology)
+        ),
         galactic_sim::MissionError::AnalyzeSatelliteRequired(_) => {
-            "la flotte sélectionnée doit contenir uniquement un Satellite Cartographe".to_string()
+            format!(
+                "la flotte sélectionnée doit contenir uniquement un {}",
+                mission_craftable_name(galactic_sim::CraftableId::CARTOGRAPHER_SATELLITE)
+            )
         }
         galactic_sim::MissionError::AnalysisTargetBusy { .. } => {
             "une analyse est déjà en cours sur cette planète".to_string()
         }
         galactic_sim::MissionError::AttackFleetUnavailable(_) => {
-            "aucune Frégate Rempart disponible ; construisez-en au chantier orbital".to_string()
+            format!(
+                "aucune {} disponible ; construisez-en au {}",
+                mission_craftable_name(galactic_sim::CraftableId::FRIGATE_BULWARK),
+                mission_shipyard_name()
+            )
         }
         galactic_sim::MissionError::AttackTargetNotAnalyzed { .. } => {
             "la cible doit être sondée puis analysée avant une attaque".to_string()
@@ -1394,9 +1442,10 @@ pub(crate) fn mission_error_text(error: galactic_sim::MissionError) -> String {
         galactic_sim::MissionError::HarvestPlanetNotAnalyzed { .. } => {
             "la planète doit être sondée puis analysée avant toute récolte".to_string()
         }
-        galactic_sim::MissionError::MissingHarvestTechnology(_) => {
-            "recherchez Prospection autonome avant de lancer une récolte".to_string()
-        }
+        galactic_sim::MissionError::MissingHarvestTechnology(technology) => format!(
+            "recherchez {} avant de lancer une récolte",
+            mission_unlock_name(technology)
+        ),
         galactic_sim::MissionError::ExtractionSiteOnColony(_) => {
             "ce gisement appartient déjà à une colonie et n'est pas un site distant".to_string()
         }
@@ -1413,10 +1462,17 @@ pub(crate) fn mission_error_text(error: galactic_sim::MissionError) -> String {
             "une colonisation doit cibler une planète".to_string()
         }
         galactic_sim::MissionError::ColonizationShipUnavailable(_) => {
-            "aucune Arche Pionnière disponible ; construisez-en une au chantier orbital".to_string()
+            format!(
+                "aucune {} disponible ; construisez-en une au {}",
+                mission_craftable_name(galactic_sim::CraftableId::COLONY_SHIP),
+                mission_shipyard_name()
+            )
         }
         galactic_sim::MissionError::ColonizationFleetRequired(_) => {
-            "la flotte de colonisation doit contenir exactement une Arche Pionnière".to_string()
+            format!(
+                "la flotte de colonisation doit contenir exactement une {}",
+                mission_craftable_name(galactic_sim::CraftableId::COLONY_SHIP)
+            )
         }
         galactic_sim::MissionError::ColonizationBlocked(blocker) => {
             format!(
@@ -1698,7 +1754,10 @@ mod tests {
         assert!(rendered.contains("Potentiel"));
         assert!(rendered.contains("COLONISABILITÉ — BLOQUÉE"));
         assert!(rendered.contains("SITE D'EXTRACTION"));
-        assert!(rendered.contains("Prospection autonome requise"));
+        assert!(rendered.contains(&format!(
+            "{} requise",
+            galactic_sim::technology_definition(galactic_sim::TechnologyId::REMOTE_EXTRACTION).name
+        )));
         assert!(!rendered.contains("Potentiel : analyse requise"));
     }
 

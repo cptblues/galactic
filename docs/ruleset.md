@@ -4,6 +4,10 @@ Galactic charge son ruleset au démarrage depuis
 `assets/rulesets/default/`. La variable d'environnement
 `GALACTIC_RULESET_DIR` permet de sélectionner un autre dossier.
 
+Le ruleset `default` est actuellement en `content_version: 16`. Cette version
+actualise les noms et descriptions visibles selon
+`docs/galactic_nomenclature_mvp.md`, sans renommer les identifiants stables.
+
 Le ruleset est composé de onze fichiers RON :
 
 - `manifest.ron` : identifiant et versions ;
@@ -142,8 +146,8 @@ fournit une cible de combat proche sans modifier la distribution du reste de
 l'univers.
 
 Le ruleset configure l'état réel, jamais la précision de l'interface. Une sonde
-ne révèle que l'identité minimale et le contact ; une mission de Satellite
-Cartographe transforme les valeurs réelles en fourchettes arrondies au retour
+ne révèle que l'identité minimale et le contact ; une mission de Satellite —
+Veilleur transforme les valeurs réelles en fourchettes arrondies au retour
 du rapport. Les pertes futures modifient l'état réel sans actualiser
 automatiquement le dernier renseignement connu.
 

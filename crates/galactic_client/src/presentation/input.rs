@@ -23,7 +23,9 @@ pub(crate) fn handle_simulation_input(
     navigation_ui: Res<navigation_ui::NavigationUiState>,
     fleet_ui: Res<crate::fleet_ui::FleetUiState>,
 ) {
-    if navigation_ui.search_open || crate::fleet_ui::fleet_name_is_editing(&fleet_ui) {
+    if navigation_ui::navigation_text_or_filter_is_active(&navigation_ui)
+        || crate::fleet_ui::fleet_name_is_editing(&fleet_ui)
+    {
         return;
     }
     if let Some(action) = simulation_shortcut(&keyboard) {
@@ -40,9 +42,12 @@ pub(crate) fn handle_simulation_input(
 pub(crate) fn toggle_debug_overlay(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut debug_overlay: ResMut<DebugOverlayState>,
+    navigation_ui: Res<navigation_ui::NavigationUiState>,
     fleet_ui: Res<crate::fleet_ui::FleetUiState>,
 ) {
-    if crate::fleet_ui::fleet_name_is_editing(&fleet_ui) {
+    if navigation_ui::navigation_text_or_filter_is_active(&navigation_ui)
+        || crate::fleet_ui::fleet_name_is_editing(&fleet_ui)
+    {
         return;
     }
     if keyboard.just_pressed(KeyCode::Backquote) {

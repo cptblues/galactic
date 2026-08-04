@@ -37,11 +37,13 @@ PLEIN — PRODUCTION BLOQUÉE"
     ResourceHudView {
         text: format!(
             "{}  {} / {}
-Disponible {}  •  Réservé {}
+Stock total {}  •  Disponible maintenant {}
+Réservé par ordres/missions {}  •  Disponible = Stock - Réservé
 Production +{:.2}/s  •  plein {}{}",
             kind.title(),
             stock,
             capacity,
+            stock,
             available,
             reserved,
             rate,
@@ -664,6 +666,23 @@ mod tests {
     }
 
     #[test]
+    fn resource_hud_detail_explains_stock_available_and_reserved() {
+        let simulation = Simulation::new(UniverseConfig::mvp());
+        let colony = simulation
+            .state()
+            .player_home_colony()
+            .expect("home colony exists");
+        let production = galactic_sim::colony_production_snapshot(colony);
+
+        let view = resource_hud_view(ResourceHudKind::Metal, colony, production);
+
+        assert!(view.text.contains("Stock total"));
+        assert!(view.text.contains("Disponible maintenant"));
+        assert!(view.text.contains("Réservé par ordres/missions"));
+        assert!(view.text.contains("Disponible = Stock - Réservé"));
+    }
+
+    #[test]
     fn energy_deficit_uses_a_full_warning_gauge() {
         assert_eq!(energy_fill_ratio(60, 40), 1.0);
         assert_eq!(energy_fill_ratio(0, 0), 0.0);
@@ -686,7 +705,14 @@ mod tests {
         let text =
             building_management_detail_text(colony, galactic_sim::BuildingKind::METAL_MINE, quote);
 
-        assert!(text.contains("FOSSE SIDÉRURGIQUE"));
+        assert!(
+            text.contains(
+                &galactic_sim::default_building_catalog()
+                    .definition(galactic_sim::BuildingKind::METAL_MINE)
+                    .name
+                    .to_uppercase()
+            )
+        );
         assert!(text.contains("Niveau actuel"));
         assert!(text.contains("Coût"));
         assert!(text.contains("Production actuelle"));

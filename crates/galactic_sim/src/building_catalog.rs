@@ -629,7 +629,7 @@ mod tests {
         assert_eq!(catalog.definitions().count(), 8);
         assert_eq!(
             catalog.definition(BuildingKind::METAL_MINE).name,
-            "Fosse sidérurgique",
+            "Mine de métal",
         );
     }
 

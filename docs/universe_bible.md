@@ -1,65 +1,62 @@
-# Bible d'univers et nomenclature V1
+# Bible d'univers et nomenclature V3
 
 Cette bible fixe l'identité éditoriale du ruleset `default`. Elle sert de
 référence pour tout nouveau nom visible par le joueur.
 
 ## Promesse
 
-Galactic est une science-fiction de frontière sobre et lisible. L'Expédition
-Aster s'établit dans les Confins d'Orphée, une région isolée depuis la Rupture
-des anciennes routes. Depuis Port-Sillage, le joueur reconstruit une chaîne
-industrielle, cartographie des systèmes silencieux et rencontre des puissances
-dont les intentions restent incertaines.
+Le monde d'avant était à bout de souffle : guerres, famines, pollution,
+surpopulation et lutte pour les dernières ressources. Les gouvernements
+survivants formèrent le **Consortium** autour d'une doctrine simple : une seule
+direction, un seul objectif, une seule humanité.
 
-Le monde doit évoquer :
-
-- une exploration méthodique plutôt qu'une aventure magique ;
-- une technologie industrielle compréhensible ;
-- des distances, des délais et une logistique qui comptent ;
-- des traces d'un espace humain fragmenté, sans expliquer trop tôt tous ses
-  mystères.
+Dans Galactic, le joueur vient d'être promu Amiral. Sa mission est d'assurer la
+survie de l'humanité, sécuriser les ressources dont elle dépend et étendre sa
+présence aussi loin que nécessaire. L'humour vient du décalage entre une
+administration persuadée d'agir pour le bien commun et des opérations
+d'exploration, d'exploitation et de résolution orbitale de plus en plus
+expéditives.
 
 ## Ton et langue
 
 - Tous les textes d'interface et noms communs sont en français.
-- Les noms propres sont courts, prononçables et distincts au premier regard.
-- Le vocabulaire maritime est réservé au voyage, au fret et aux colonies.
-- Le vocabulaire de lumière sert à la détection, aux sondes et à l'énergie.
-- Les termes militaires restent fonctionnels et sobres.
-- Éviter les anglicismes, les numéros de modèle gratuits et les superlatifs
-  comme `ultime`, `suprême` ou `méga`.
-- Un nom évocateur ne doit jamais masquer la fonction : `Sonde Luciole` reste
+- Les noms d'éléments restent courts, simples et immédiatement compréhensibles.
+- Les descriptions portent l'identité humoristique, militariste et
+  bureaucratique de l'univers.
+- Le ton évoque une administration galactique persuadée que toute action
+  militaire relève du service public.
+- Éviter les références directes à des licences existantes.
+- Un nom évocateur ne doit jamais masquer la fonction : `Sonde — Œil` reste
   identifiable comme une sonde.
 
 ## Repères canoniques
 
 | Élément | Nom |
 |---|---|
-| Région | Confins d'Orphée |
-| Faction joueur | Expédition Aster |
-| Faction neutre | Communes des Confins |
-| Puissance hostile dormante | Directoire Vesper |
+| Faction joueur | Consortium |
+| Faction neutre | Collectifs à Convaincre |
+| Puissance hostile dormante | Bureau Vesper de l'Oppression |
 | Système natal | Hélianthe |
 | Planète mère | Nacre |
 | Colonie initiale | Port-Sillage |
 
 ### Factions
 
-- **Expédition Aster** : organisation scientifique et industrielle envoyée
-  pour rouvrir la frontière. Son lexique privilégie navigation, veille,
-  assemblage et implantation.
-- **Communes des Confins** : habitats autonomes sans autorité centrale unique.
-  Les futurs noms associés doivent évoquer havres, relais, comptoirs et
-  communautés.
-- **Directoire Vesper** : puissance structurée, distante et potentiellement
-  hostile. Son lexique futur privilégiera ordre, protocoles, cohortes et
-  désignations froides.
+- **Consortium** : coalition humaine survivante, centralisée et expansionniste.
+  Son vocabulaire privilégie survie, stabilité, sécurité, ressources et
+  protection.
+- **Collectifs à Convaincre** : habitats autonomes que le Consortium décrit
+  comme des interlocuteurs mal alignés.
+- **Bureau Vesper de l'Oppression** : puissance hostile dormante. Son lexique
+  futur privilégiera protocoles fermés, garnisons, batteries et contrôle
+  orbital.
 
 ## Systèmes et planètes
 
-Les seize premiers systèmes, qui constituent le preset Test, ont un nom propre
-fixe. Les presets MVP et Stress réemploient ensuite cette liste avec un suffixe
-de cycle stable :
+Les 64 systèmes du preset MVP ont un nom propre stable. Les planètes gardent la
+règle `nom du système + lettre orbitale`, sauf `Nacre`.
+
+Les seize premiers systèmes restent :
 
 1. Hélianthe
 2. Vespera
@@ -78,78 +75,101 @@ de cycle stable :
 15. Nacréon
 16. Arkan
 
-Règles :
+Les anciennes séries `-2`, `-3` et `-4` sont remplacées par :
 
-- un système porte un nom propre unique ;
-- une planète non baptisée reprend le nom du système suivi d'une lettre
-  astronomique minuscule : `Vespera b`, `Vespera c` ;
-- une planète habitée ou scénaristiquement importante peut recevoir un nom
-  propre court, comme `Nacre` ;
-- une colonie reçoit un nom d'implantation distinct de sa planète :
-  `Port-Sillage`, `Relais-Cyrène`, `Havre-Néréide` ;
-- ne pas employer `Prime`, `Major` ou `Minor` sans nécessité astronomique ou
-  politique explicite.
+1. Solédris
+2. Noctavéa
+3. Thaléryne
+4. Brontar
+5. Lyséa
+6. Oradis
+7. Kéméris
+8. Phanéon
+9. Lunévar
+10. Axoria
+11. Ilvaris
+12. Cendral
+13. Dikéa
+14. Cantéor
+15. Opalys
+16. Varkane
+17. Aurélys
+18. Crépuscor
+19. Pélagis
+20. Colosséa
+21. Myrion
+22. Zéphara
+23. Sabaël
+24. Mnémoris
+25. Nysséa
+26. Ordalis
+27. Vaelune
+28. Braséon
+29. Noméria
+30. Mélodran
+31. Iridys
+32. Kharéon
+33. Héméria
+34. Ombrelis
+35. Abyssara
+36. Gravéon
+37. Elarque
+38. Oryssia
+39. Aksomar
+40. Spectéon
+41. Artélys
+42. Agréon
+43. Ylvane
+44. Ferrélys
+45. Équoria
+46. Harméon
+47. Perléa
+48. Arcandor
 
 ## Infrastructures
 
 | Identifiant stable | Nom affiché | Famille |
 |---|---|---|
-| `metal_mine` | Fosse sidérurgique | extraction |
-| `crystal_extractor` | Extracteur cristallin | extraction |
-| `fuel_refinery` | Raffinerie de volatils | transformation |
-| `power_plant` | Réacteur hélionique | énergie |
-| `warehouse` | Dépôt logistique | logistique |
-| `construction_center` | Atelier d'assemblage | industrie |
-| `research_lab` | Institut d'analyse | science |
-| `shipyard` | Chantier orbital | industrie orbitale |
-
-Un nouveau bâtiment suit la formule `fonction + précision éventuelle`. Sa
-description commence par ce qu'il fait, puis précise son rôle dans la boucle de
-jeu.
+| `metal_mine` | Mine de métal | extraction |
+| `crystal_extractor` | Extracteur de cristal | extraction |
+| `fuel_refinery` | Raffinerie de carburant | transformation |
+| `power_plant` | Centrale énergétique | énergie |
+| `warehouse` | Entrepôt | logistique |
+| `construction_center` | Centre de construction | industrie |
+| `research_lab` | Laboratoire | science |
+| `shipyard` | Chantier naval | industrie orbitale |
 
 ## Recherches
 
 | Identifiant stable | Nom affiché | Déblocage |
 |---|---|---|
-| `spatial_detection` | Veille sidérale | cartographie des signaux |
-| `propulsion` | Propulsion à flux | transit interstellaire |
-| `cargo_capacity` | Architecture de soute | soutes modulaires |
-| `remote_extraction` | Prospection autonome | extraction hors-colonie |
-| `planetary_analysis` | Spectrométrie planétaire | diagnostic des mondes |
-| `colonization` | Ingénierie d'implantation | fondation d'avant-postes |
-
-Une technologie décrit une discipline ou une méthode, pas seulement son bonus.
-Le libellé de déblocage décrit l'action rendue possible.
+| `spatial_detection` | Détection longue portée | détection de systèmes inconnus |
+| `propulsion` | Propulsion avancée | transit interstellaire |
+| `cargo_capacity` | Soutes agrandies | capacité cargo augmentée |
+| `remote_extraction` | Extraction automatisée | récolte distante |
+| `planetary_analysis` | Analyse planétaire | rapport planétaire complet |
+| `colonization` | Colonisation avancée | fondation de colonies |
 
 ## Vaisseaux
 
 | Identifiant stable | Nom affiché | Rôle |
 |---|---|---|
-| `light_probe` | Sonde Luciole | reconnaissance rapide |
-| `light_cargo` | Caboteur Sillage | fret à courte portée |
-| `colony_ship` | Arche Pionnière | fondation de colonie |
-| `frigate_bulwark` | Frégate Rempart | combat de première ligne |
-
-Formule recommandée :
-
-- sonde : phénomène lumineux ou instrument d'observation ;
-- cargo : vocabulaire maritime ou logistique ;
-- colonisation : arche, implantation ou départ ;
-- militaire : fonction tactique suivie d'un nom de classe ;
-- soutien : rôle opérationnel immédiatement lisible.
-
-Les classes futures peuvent être introduites sous la forme `Croiseur Vigie` ou
-`Ravitailleur Estuaire`. Un même nom de classe ne doit pas être réutilisé pour
-deux rôles.
+| `light_probe` | Sonde — Œil | reconnaissance rapide |
+| `cartographer_satellite` | Satellite — Veilleur | analyse planétaire |
+| `light_cargo` | Caboteur — Relais | fret à courte portée |
+| `meridian_carrier` | Porteur — Navette | fret intermédiaire |
+| `atlas_cargo` | Cargo — Chargeur | fret lourd |
+| `needle_interceptor` | Intercepteur — Riposte | militaire léger |
+| `frigate_bulwark` | Frégate — Garde | combat de première ligne |
+| `bastion_cruiser` | Croiseur — Verdict | combat lourd |
+| `colony_ship` | Arche coloniale — Essor | fondation de colonie |
 
 ## Contrat technique
 
 - Les identifiants RON en `snake_case` sont des clés de sauvegarde et ne sont
   jamais renommés pour une raison éditoriale.
-- Les noms et descriptions du ruleset peuvent évoluer avec
-  `content_version`; ils ne modifient pas son empreinte structurelle.
+- Les noms et descriptions du ruleset peuvent évoluer avec `content_version`.
 - Les noms générés des systèmes et planètes participent au fingerprint de
-  l'univers. Toute modification exige une nouvelle `GENERATION_VERSION` et une
-  nouvelle valeur de référence.
+  l'univers. Ce checkpoint incrémente donc `GENERATION_VERSION`.
 - Une nouvelle mécanique conserve un nom fonctionnel dans Rust et reçoit son
   nom d'univers dans les données affichées.

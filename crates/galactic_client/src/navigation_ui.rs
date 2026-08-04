@@ -82,6 +82,10 @@ pub(crate) struct NavigationUiState {
     filters: NavigationFilters,
 }
 
+pub(crate) const fn navigation_text_or_filter_is_active(ui: &NavigationUiState) -> bool {
+    ui.search_open || ui.filters_open
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SearchEntryKind {
     System(SystemId),
@@ -363,7 +367,7 @@ pub(crate) fn spawn_search_toggle(parent: &mut ChildSpawnerCommands) {
         ))
         .with_children(|button| {
             button.spawn((
-                Text::new("Rechercher  [/]"),
+                Text::new("Recherche carte  [/]"),
                 ui_text_font(12.0),
                 TextColor(Color::srgb(0.78, 0.86, 1.0)),
             ));
@@ -389,7 +393,7 @@ pub(crate) fn spawn_filters_toggle(parent: &mut ChildSpawnerCommands) {
         ))
         .with_children(|button| {
             button.spawn((
-                Text::new("Filtres  [B]"),
+                Text::new("Filtres carte  [B]"),
                 ui_text_font(12.0),
                 TextColor(Color::srgb(0.78, 0.86, 1.0)),
             ));
@@ -448,7 +452,9 @@ fn spawn_navigation_panels(mut commands: Commands) {
         ))
         .with_children(|panel| {
             panel.spawn((
-                Text::new("RECHERCHE — tapez un nom, Entrée pour sélectionner, Échap pour fermer"),
+                Text::new(
+                    "RECHERCHE CARTE — tapez un nom, Entrée pour sélectionner, Échap pour fermer",
+                ),
                 ui_text_font(11.0),
                 TextColor(Color::srgb(0.78, 0.86, 1.0)),
             ));
@@ -487,7 +493,7 @@ fn spawn_navigation_panels(mut commands: Commands) {
         ))
         .with_children(|panel| {
             panel.spawn((
-                Text::new("FILTRES"),
+                Text::new("FILTRES CARTE"),
                 ui_text_font(12.0),
                 TextColor(Color::srgb(0.78, 0.86, 1.0)),
             ));
@@ -1140,6 +1146,21 @@ fn update_filters_display(
 mod tests {
     use super::*;
     use galactic_domain::UniverseConfig;
+
+    #[test]
+    fn text_input_helper_tracks_search_and_filters() {
+        assert!(!navigation_text_or_filter_is_active(
+            &NavigationUiState::default()
+        ));
+        assert!(navigation_text_or_filter_is_active(&NavigationUiState {
+            search_open: true,
+            ..Default::default()
+        }));
+        assert!(navigation_text_or_filter_is_active(&NavigationUiState {
+            filters_open: true,
+            ..Default::default()
+        }));
+    }
 
     #[test]
     fn search_excludes_undetected_systems_and_includes_probed_ones() {

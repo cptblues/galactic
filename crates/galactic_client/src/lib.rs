@@ -18,8 +18,8 @@ use presentation::colony_management_ui::{
 use presentation::components::{
     ColonyManagementState, DebugOverlayState, HelpUiState, InspectorContent, InspectorSection,
     InspectorTabBarRoot, InspectorTabButton, InspectorTabButtonQuery, InspectorTabLabelQuery,
-    InspectorTabState, InspectorTextQuery, InspectorTextRole, OpenPanel, PointerSelectionState,
-    SelectedMission, StrategicViewEntity, TopBarText, UiPointerBlocker,
+    InspectorTabState, InspectorTextQuery, InspectorTextRole, IntroPitchUiState, OpenPanel,
+    PointerSelectionState, SelectedMission, StrategicViewEntity, TopBarText, UiPointerBlocker,
 };
 use presentation::icons::IconAssets;
 use presentation::input::{
@@ -44,9 +44,10 @@ use presentation::procedural_materials::{
 };
 use presentation::scene::{
     accent_craft_amber, accent_fleet_blue, accent_research_violet, action_button_color,
-    action_button_outline, handle_help_toggle_button, handle_tab_bar_galaxy_button,
-    panel_background, panel_outline, rebuild_strategic_view_if_requested, spawn_scene,
-    spawn_strategic_view, spawn_ui, ui_text_font, update_help_visibility, update_resource_bar,
+    action_button_outline, handle_help_toggle_button, handle_intro_pitch_buttons,
+    handle_tab_bar_galaxy_button, panel_background, panel_outline,
+    rebuild_strategic_view_if_requested, spawn_scene, spawn_strategic_view, spawn_ui, ui_text_font,
+    update_help_visibility, update_intro_pitch_visibility, update_resource_bar,
 };
 use presentation::shortcuts::{apply_simulation_command, apply_ui_action};
 use presentation::strategic_camera::{tick_simulation, update_strategic_camera};
@@ -195,6 +196,7 @@ impl Plugin for ClientPlugin {
         .init_resource::<MemoryDiagnostics>()
         .init_resource::<DebugOverlayState>()
         .init_resource::<HelpUiState>()
+        .init_resource::<IntroPitchUiState>()
         .init_resource::<InspectorTabState>()
         .add_plugins(SimulationBridgePlugin)
         .add_plugins(PresentationPlugin)
@@ -310,6 +312,7 @@ impl Plugin for PresentationPlugin {
                 handle_colony_management_buttons,
                 handle_tab_bar_galaxy_button,
                 handle_help_toggle_button,
+                handle_intro_pitch_buttons,
                 handle_system_body_colonize_buttons,
                 handle_inspector_tab_buttons,
                 toggle_debug_overlay,
@@ -340,6 +343,7 @@ impl Plugin for PresentationPlugin {
                 update_resource_bar,
                 update_ui,
                 update_help_visibility,
+                update_intro_pitch_visibility,
                 update_info_panel,
                 update_debug_overlay_visibility,
             )
@@ -426,6 +430,7 @@ pub(crate) struct VisualAssets {
     system_mesh: Handle<Mesh>,
     planet_mesh: Handle<Mesh>,
     ring_mesh: Handle<Mesh>,
+    colony_ring_mesh: Handle<Mesh>,
     known_star_materials: HashMap<StarClass, Handle<StandardMaterial>>,
     star_halo_materials: HashMap<StarClass, Handle<StandardMaterial>>,
     detected_material: Handle<StandardMaterial>,
@@ -440,12 +445,19 @@ pub(crate) struct VisualAssets {
 impl FromWorld for VisualAssets {
     fn from_world(world: &mut World) -> Self {
         // Low preset: every geometry and material is shared by all matching bodies.
-        let (system_mesh, planet_mesh, ring_mesh) = {
+        let (system_mesh, planet_mesh, ring_mesh, colony_ring_mesh) = {
             let mut meshes = world.resource_mut::<Assets<Mesh>>();
             (
                 meshes.add(Sphere::default().mesh().ico(1).unwrap()),
                 meshes.add(Sphere::default().mesh().uv(32, 18)),
-                meshes.add(Annulus::new(1.55, 2.25)),
+                meshes.add(Annulus::new(
+                    TERRITORY_RING_INNER_RADIUS,
+                    TERRITORY_RING_OUTER_RADIUS,
+                )),
+                meshes.add(Annulus::new(
+                    COLONY_RING_INNER_RADIUS,
+                    COLONY_RING_OUTER_RADIUS,
+                )),
             )
         };
         let planet_textures = {
@@ -518,6 +530,7 @@ impl FromWorld for VisualAssets {
             system_mesh,
             planet_mesh,
             ring_mesh,
+            colony_ring_mesh,
             known_star_materials,
             star_halo_materials,
             detected_material,
@@ -562,6 +575,10 @@ pub(crate) struct UniverseSystemEntry {
 }
 
 const COLONY_MANAGEMENT_Z_INDEX: i32 = 100;
+const TERRITORY_RING_INNER_RADIUS: f32 = 1.55;
+const TERRITORY_RING_OUTER_RADIUS: f32 = 2.25;
+const COLONY_RING_INNER_RADIUS: f32 = 1.72;
+const COLONY_RING_OUTER_RADIUS: f32 = 1.94;
 
 // Bevy `KeyCode` values are physical key positions. These constants name the
 // labels printed on an AZERTY keyboard for the movement cluster.
@@ -989,6 +1006,14 @@ VmSwap:\t      2048 kB
 
         assert_eq!(*z_index, GlobalZIndex(COLONY_MANAGEMENT_Z_INDEX));
         assert!(z_index.0 > 0);
+    }
+
+    #[test]
+    fn colony_ring_is_thinner_than_system_territory_ring() {
+        let territory_width = TERRITORY_RING_OUTER_RADIUS - TERRITORY_RING_INNER_RADIUS;
+        let colony_width = COLONY_RING_OUTER_RADIUS - COLONY_RING_INNER_RADIUS;
+
+        assert!(colony_width < territory_width / 3.0);
     }
 
     #[test]
@@ -1570,8 +1595,16 @@ VmSwap:\t      2048 kB
             galactic_domain::ColonyId::new(0),
         ));
 
-        assert!(message.contains("Sonde Luciole"));
-        assert!(message.contains("chantier orbital"));
+        assert!(message.contains(
+            galactic_sim::craftable_definition(galactic_sim::CraftableId::LIGHT_PROBE).name
+        ));
+        assert!(
+            message.contains(
+                galactic_sim::default_building_catalog()
+                    .definition(galactic_sim::BuildingKind::SHIPYARD)
+                    .name
+            )
+        );
         assert!(!message.contains("ProbeUnavailable"));
     }
 

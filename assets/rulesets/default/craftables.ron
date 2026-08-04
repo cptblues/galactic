@@ -3,8 +3,8 @@
     craftables: [
         (
             id: "light_probe",
-            name: "Sonde Luciole",
-            description: "Un éclaireur automatisé rapide, conçu pour cartographier la frontière.",
+            name: "Sonde — Œil",
+            description: "Première présence de la colonie dans un système inconnu. Observe, enregistre et évite soigneusement de qualifier ses activités d'espionnage.",
             category: Probe,
             cost: (metal: 200, crystal: 150, fuel: 80),
             base_duration_seconds: 45,
@@ -22,8 +22,8 @@
         ),
         (
             id: "cartographer_satellite",
-            name: "Satellite Cartographe",
-            description: "Un observatoire autonome capable de ramener un rapport planétaire complet.",
+            name: "Satellite — Veilleur",
+            description: "Maintient une surveillance permanente depuis l'orbite. Ce qui n'est pas observé ne peut pas être correctement réglementé.",
             category: Probe,
             cost: (metal: 520, crystal: 420, fuel: 260),
             base_duration_seconds: 150,
@@ -41,8 +41,8 @@
         ),
         (
             id: "light_cargo",
-            name: "Caboteur Sillage",
-            description: "Un transport fiable à courte portée, adapté aux premières lignes logistiques.",
+            name: "Caboteur — Relais",
+            description: "Transporte rapidement de petites quantités de ressources entre colonies proches.",
             category: Transport,
             cost: (metal: 400, crystal: 260, fuel: 180),
             base_duration_seconds: 75,
@@ -60,8 +60,8 @@
         ),
         (
             id: "meridian_carrier",
-            name: "Porteur Méridien",
-            description: "Un cargo polyvalent à portée étendue, conçu pour tenir une ligne régulière entre colonies.",
+            name: "Porteur — Navette",
+            description: "Assure les transferts réguliers de matériel conformément aux besoins stratégiques dûment anticipés.",
             category: Transport,
             cost: (metal: 900, crystal: 620, fuel: 420),
             base_duration_seconds: 150,
@@ -79,8 +79,8 @@
         ),
         (
             id: "atlas_cargo",
-            name: "Cargo Atlas",
-            description: "Une coque logistique lente mais massive pour les transferts lourds et les expéditions lointaines.",
+            name: "Cargo — Chargeur",
+            description: "Déplace d'importants volumes de ressources. Son arrivée rappelle à chaque colonie que la prospérité est un effort collectif.",
             category: Transport,
             cost: (metal: 1800, crystal: 1300, fuel: 900),
             base_duration_seconds: 260,
@@ -101,8 +101,8 @@
         ),
         (
             id: "needle_interceptor",
-            name: "Intercepteur Aiguille",
-            description: "Un chasseur rapide spécialisé dans l'élimination des forces légères et dispersées.",
+            name: "Intercepteur — Riposte",
+            description: "Intervient rapidement contre les appareils hostiles et leur offre une dernière occasion de reconsidérer leur trajectoire.",
             category: Military,
             cost: (metal: 260, crystal: 180, fuel: 140),
             base_duration_seconds: 55,
@@ -127,8 +127,8 @@
         ),
         (
             id: "frigate_bulwark",
-            name: "Frégate Rempart",
-            description: "Une escorte robuste conçue pour neutraliser les garnisons et sécuriser une orbite.",
+            name: "Frégate — Garde",
+            description: "Patrouille, escorte et adresse aux forces adverses un rappel suffisamment armé des règles locales.",
             category: Military,
             cost: (metal: 450, crystal: 320, fuel: 180),
             base_duration_seconds: 65,
@@ -153,8 +153,8 @@
         ),
         (
             id: "bastion_cruiser",
-            name: "Croiseur Bastion",
-            description: "Un bâtiment lourd, lent et coûteux, optimisé contre les bunkers et batteries orbitales.",
+            name: "Croiseur — Verdict",
+            description: "Apporte une conclusion claire aux débats orbitaux dont la durée menace la productivité générale.",
             category: Military,
             cost: (metal: 1200, crystal: 900, fuel: 620),
             base_duration_seconds: 220,
@@ -179,8 +179,8 @@
         ),
         (
             id: "colony_ship",
-            name: "Arche Pionnière",
-            description: "Une implantation autonome réunie dans une coque lente et lourdement équipée.",
+            name: "Arche coloniale — Essor",
+            description: "Transporte les citoyens, les équipements et les bureaux nécessaires à la fondation d'une nouvelle société immédiatement fonctionnelle.",
             category: Colony,
             cost: (metal: 2200, crystal: 1600, fuel: 1100),
             base_duration_seconds: 420,

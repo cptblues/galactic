@@ -4,19 +4,19 @@
     factions: [
         (
             id: 0,
-            name: "Expédition Aster",
+            name: "Consortium",
             kind: Player,
             active: true,
         ),
         (
             id: 1,
-            name: "Communes des Confins",
+            name: "Collectifs à Convaincre",
             kind: Neutral,
             active: false,
         ),
         (
             id: 2,
-            name: "Directoire Vesper",
+            name: "Bureau Vesper de l'Oppression",
             kind: FutureAi,
             active: false,
         ),

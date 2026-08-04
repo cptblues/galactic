@@ -222,7 +222,7 @@ Configuration MVP :
 - système natal : `SystemId(0)` ;
 - planète mère : première planète de ce système, `Nacre` ;
 - habitabilité minimale validée : 80 ;
-- faction joueur : `Expédition Aster` ;
+- faction joueur : `Consortium` ;
 - une colonie initiale ;
 - stocks initiaux : 600 métal, 300 cristal, 220 carburant, 80 énergie ;
 - profil planétaire équilibré : 100/100/100/100 ;
@@ -469,7 +469,7 @@ même état.
 
 Règles temporaires centralisées, en attendant le catalogue MVP-013 :
 
-- Fosse sidérurgique niveau 1 : 2,50 unités/s à potentiel 100 ;
+- Mine de métal niveau 1 : 2,50 unités/s à potentiel 100 ;
 - Extracteur cristallin niveau 1 : 1,25 unité/s à potentiel 100 ;
 - Raffinerie niveau 1 : 0,75 unité/s à potentiel 100 ;
 - chaque taux est multiplié par le niveau et le potentiel planétaire ;
@@ -778,23 +778,23 @@ file commune de six projets maximum.
 
 L'arbre minimal contient :
 
-1. Veille sidérale ;
-2. Propulsion à flux ;
-3. Architecture de soute ;
-4. Prospection autonome ;
-5. Spectrométrie planétaire ;
-6. Ingénierie d'implantation.
+1. Détection longue portée ;
+2. Propulsion avancée ;
+3. Soutes agrandies ;
+4. Extraction automatisée ;
+5. Analyse planétaire ;
+6. Colonisation avancée.
 
 Les dépendances sont déterministes :
 
 ```text
-Veille sidérale
-├── Propulsion à flux
-│   └── Architecture de soute
-│       ├── Prospection autonome
-│       └── Ingénierie d'implantation
-└── Spectrométrie planétaire
-    └── Ingénierie d'implantation
+Détection longue portée
+├── Propulsion avancée
+│   └── Soutes agrandies
+│       ├── Extraction automatisée
+│       └── Colonisation avancée
+└── Analyse planétaire
+    └── Colonisation avancée
 ```
 
 Chaque définition possède un nom, une description, un coût en milli-points,
@@ -804,24 +804,24 @@ checkpoints suivants.
 
 ### Production scientifique
 
-L'Institut d'analyse du catalogue produit des milli-points par tick et par niveau.
-La production globale additionne les niveaux actifs d'Institut d'analyse de toutes
+Le Laboratoire du catalogue produit des milli-points par tick et par niveau.
+La production globale additionne les niveaux actifs de Laboratoire de toutes
 les colonies du joueur.
 
-Sans Institut d'analyse actif, aucune technologie ne peut être ajoutée à la file.
-Une amélioration d'Institut d'analyse agit dès le tick stratégique où sa construction
+Sans Laboratoire actif, aucune technologie ne peut être ajoutée à la file.
+Une amélioration de Laboratoire agit dès le tick stratégique où sa construction
 se termine.
 
 La simulation traite production, construction et recherche tick par tick à
 l'intérieur d'un lot de temps. Le résultat reste donc identique quel que soit
-le découpage des frames, y compris lorsqu'un Institut d'analyse termine pendant le
+le découpage des frames, y compris lorsqu'un Laboratoire termine pendant le
 lot.
 
 ### File globale
 
 Une technologie peut être ajoutée lorsque :
 
-- un Institut d'analyse produit des points ;
+- un Laboratoire produit des points ;
 - ses prérequis sont acquis ou placés avant elle dans la file ;
 - elle n'est ni acquise ni déjà planifiée ;
 - la file n'est pas pleine.
@@ -892,7 +892,7 @@ L'ajout d'un ordre valide les bâtiments, les technologies, la capacité de la
 file et les ressources. Le coût est réservé atomiquement dès l'ajout, puis
 consommé uniquement à l'achèvement.
 
-Le Chantier orbital produit des milli-points de travail à chaque tick
+Le Chantier naval produit des milli-points de travail à chaque tick
 stratégique. La durée configurée correspond au niveau minimal requis ; les
 niveaux supplémentaires accélèrent donc la fabrication sans changer le
 contenu du catalogue. Les points excédentaires passent à l'ordre suivant.
@@ -1063,13 +1063,13 @@ Versions après migration :
 ## MVP-022 — Sonde et mission de reconnaissance
 
 La reconnaissance branche le premier effet métier concret sur la phase
-`OnSite`. Une mission `Probe` exige une Sonde Luciole et une cible actuellement
+`OnSite`. Une mission `Probe` exige une Sonde — Œil et une cible actuellement
 `Detected`. Les cibles inconnues, déjà sondées ou sans route accessible sont
 refusées explicitement.
 
 La commande joueur `LaunchProbe` est atomique. Elle réutilise d'abord la flotte
 de sondes inactive de plus petit identifiant qui est amarrée à la colonie
-d'origine. À défaut, elle forme une flotte d'une Sonde Luciole depuis
+d'origine. À défaut, elle forme une flotte d'une Sonde — Œil depuis
 l'inventaire du chantier. Une validation échouée ne retire aucune sonde et ne
 crée aucune flotte orpheline.
 
@@ -1241,7 +1241,7 @@ Ce checkpoint introduit le modèle de rapport planétaire exact : une planète n
 peut être analysée qu'après avoir atteint `Probed` et après le déblocage
 `AnalyzePlanets`. Depuis MVP-030-A5, le chemin joueur n'utilise plus d'action
 instantanée : `MissionKind::Analyze` produit le `PlanetAnalysisReport` au
-retour du Satellite Cartographe, puis élève la connaissance à `Analyzed` et
+retour du Satellite — Veilleur, puis élève la connaissance à `Analyzed` et
 l'ajoute à `GameState::planet_analysis_reports`.
 
 Le rapport est un instantané persistant distinct de la définition réelle de
@@ -1335,7 +1335,7 @@ Versions après ce checkpoint :
 
 `MissionKind::Colonize` exige une cible planétaire analysée, déclarée éligible
 par `assess_planet_colonizability`, et une flotte composée exactement d'une
-Arche Pionnière. Le raccourci joueur forme cette flotte depuis l'inventaire si
+Arche coloniale — Essor. Le raccourci joueur forme cette flotte depuis l'inventaire si
 aucune arche inactive n'est déjà amarrée.
 
 Le carburant et le chargement suivent deux engagements distincts. Le carburant
@@ -1490,7 +1490,7 @@ au dock jusqu'à une nouvelle `FleetComposition`, formée par `FormFleet`.
 
 « Lancer une mission » suit l'ordre flotte -> type de mission -> destination ->
 paramètres -> validation. Le choix de type est filtré par la composition de la
-flotte sélectionnée : une Sonde Luciole lance `Probe`, un Satellite Cartographe
+flotte sélectionnée : une Sonde — Œil lance `Probe`, un Satellite — Veilleur
 lance `Analyze`, les cargos vides lancent `Transport` ou `Harvest`, une Arche
 Pionnière lance `Colonize` et les flottes militaires compatibles lancent
 `Attack`. Les destinations sont ensuite calculées dynamiquement selon les règles
@@ -1564,8 +1564,8 @@ mise en cache.
 
 `MissionKind::Analyze` remplace le bouton d'analyse instantané. Une mission
 d'analyse exige une cible planétaire au niveau exact `Probed`, le déblocage
-`AnalyzePlanets`, une flotte joueur inactive et amarrée composée d'un Satellite
-Cartographe, ainsi qu'une route valide depuis la colonie active. Le ruleset
+`AnalyzePlanets`, une flotte joueur inactive et amarrée composée d'un
+Satellite — Veilleur, ainsi qu'une route valide depuis la colonie active. Le ruleset
 ajoute `cartographer_satellite` dans `craftables.ron` et
 `analysis_duration_seconds` dans `planetary_analysis.ron`.
 
@@ -1580,7 +1580,7 @@ L'interface masque désormais les informations exigeant une analyse : une planè
 `Probed` ne révèle que son existence, sa désignation, son nom, son type général
 et un contact potentiel. Habitabilité, environnement, ressources, site
 d'extraction, occupant, population, forces et défenses restent indisponibles
-jusqu'au rapport du Satellite Cartographe.
+jusqu'au rapport du Satellite — Veilleur.
 
 Versions après ce checkpoint :
 
@@ -1616,6 +1616,45 @@ Versions après ce checkpoint :
 - `SAVE_VERSION = 29` ;
 - `RULESET_SCHEMA_VERSION = 12` ;
 - `content_version` du ruleset `default` = 14.
+
+## MVP-030-A7 — Polish UX et cadrage narratif
+
+Checkpoint de contenu et d'interface avant la persistance. Il ne modifie pas le
+modèle de sauvegarde ni les identifiants techniques du ruleset.
+
+Le HUD de ressources distingue désormais :
+
+- `Stock total` : quantité physiquement stockée dans la colonie ;
+- `Disponible maintenant` : quantité utilisable après réservations ;
+- `Réservé par ordres/missions` : ressources bloquées par files et missions ;
+- la formule `Disponible = Stock - Réservé`.
+
+Les panneaux de recherche distinguent explicitement la recherche technologique
+de la recherche de carte. Les raccourcis globaux ignorent l'entrée clavier tant
+qu'une recherche ou un filtre de navigation est actif, ce qui évite de lancer
+des commandes pendant une saisie.
+
+Le helper permanent devient un briefing léger du Consortium, masquable et
+réouvrable via `?`. Une modal d'introduction séparée affiche le pitch de départ
+au lancement et peut être fermée pour la session.
+
+Le ruleset `default` actualise uniquement les noms et descriptions visibles
+selon `docs/galactic_nomenclature_mvp.md`. Les IDs restent inchangés :
+`light_probe`, `cartographer_satellite`, `research_lab`, `shipyard`, etc.
+Les systèmes des anciennes séries `-2`, `-3` et `-4` reçoivent des noms propres
+uniques ; les planètes dérivent automatiquement de ces noms. Ce changement
+renouvelle le fingerprint d'univers et incrémente `GENERATION_VERSION`.
+
+L'anneau de planète colonisée utilise un mesh dédié plus fin que l'anneau de
+territoire système, tout en conservant la teinte de contrôle joueur.
+
+Versions après ce checkpoint :
+
+- `GAME_STATE_VERSION` reste 28 ;
+- `SAVE_VERSION` reste 29 ;
+- `GENERATION_VERSION = 5` ;
+- `RULESET_SCHEMA_VERSION` reste 12 ;
+- `content_version` du ruleset `default` = 16.
 
 ## Refactor technique — Modularisation interne
 
