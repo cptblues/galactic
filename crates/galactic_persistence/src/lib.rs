@@ -229,10 +229,25 @@ mod tests {
                 .quantity(CraftableId::LIGHT_CARGO),
             1,
         );
+        let composition =
+            FleetComposition::from_stacks([ShipStack::new(CraftableId::LIGHT_CARGO, 1)])
+                .expect("one light cargo is a valid composition");
+        let form_events = simulation.apply_player_action(GameAction::FormFleet {
+            colony_id: origin_colony_id,
+            composition,
+        });
+        let fleet_id = form_events
+            .iter()
+            .find_map(|event| match event.kind {
+                galactic_sim::GameEventKind::FleetCreated(created) => Some(created.fleet_id),
+                _ => None,
+            })
+            .expect("the light cargo fleet forms");
         let cargo = ResourceStock::new(200, 150, 100);
         let events = simulation.apply_player_action(GameAction::LaunchTransport {
             origin_colony_id,
             destination_colony_id,
+            fleet_id,
             cargo,
         });
         let launched = events
@@ -311,8 +326,25 @@ mod tests {
             1,
         );
         let site_id = ExtractionSiteId::for_planet(target);
-        let events =
-            simulation.apply_player_action(GameAction::LaunchHarvest { colony_id, site_id });
+        let composition =
+            FleetComposition::from_stacks([ShipStack::new(CraftableId::LIGHT_CARGO, 1)])
+                .expect("one light cargo is a valid composition");
+        let form_events = simulation.apply_player_action(GameAction::FormFleet {
+            colony_id,
+            composition,
+        });
+        let fleet_id = form_events
+            .iter()
+            .find_map(|event| match event.kind {
+                galactic_sim::GameEventKind::FleetCreated(created) => Some(created.fleet_id),
+                _ => None,
+            })
+            .expect("the light cargo fleet forms");
+        let events = simulation.apply_player_action(GameAction::LaunchHarvest {
+            colony_id,
+            fleet_id,
+            site_id,
+        });
         let launched = events
             .iter()
             .find_map(|event| match event.kind {

@@ -4,7 +4,7 @@ use bevy::prelude::{
     BackgroundColor, Button, Changed, Children, Color, Component, Interaction, Node, Outline,
     Query, Resource, Text, TextColor, Vec2, Vec3, With, Without,
 };
-use galactic_domain::{PlanetId, ResourceStock, SectorId, SystemId, WorldPosition};
+use galactic_domain::{PlanetId, SectorId, SystemId, WorldPosition};
 use galactic_sim::{KnowledgeLevel, SystemVisibility, TimeSpeed};
 
 use crate::UniverseSystemTier;
@@ -193,8 +193,6 @@ pub(crate) struct AmbiguityPanelText;
 #[derive(Resource)]
 pub(crate) struct ColonyManagementState {
     pub(crate) selected_building: galactic_sim::BuildingKind,
-    pub(crate) transport_destination_id: Option<galactic_domain::ColonyId>,
-    pub(crate) transport_cargo: TransportCargoPreset,
     pub(crate) feedback: String,
 }
 
@@ -206,39 +204,7 @@ impl Default for ColonyManagementState {
                 .next()
                 .expect("validated ruleset contains at least one building")
                 .kind,
-            transport_destination_id: None,
-            transport_cargo: TransportCargoPreset::Mixed,
             feedback: String::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TransportCargoPreset {
-    Metal,
-    Crystal,
-    Fuel,
-    Mixed,
-}
-
-impl TransportCargoPreset {
-    pub(crate) const ALL: [Self; 4] = [Self::Metal, Self::Crystal, Self::Fuel, Self::Mixed];
-
-    pub(crate) const fn cargo(self) -> ResourceStock {
-        match self {
-            Self::Metal => ResourceStock::new(400, 0, 0),
-            Self::Crystal => ResourceStock::new(0, 400, 0),
-            Self::Fuel => ResourceStock::new(0, 0, 300),
-            Self::Mixed => ResourceStock::new(200, 150, 100),
-        }
-    }
-
-    pub(crate) const fn short_label(self) -> &'static str {
-        match self {
-            Self::Metal => "M 400",
-            Self::Crystal => "C 400",
-            Self::Fuel => "F 300",
-            Self::Mixed => "Mixte",
         }
     }
 }
@@ -278,10 +244,6 @@ pub(crate) enum ManagementButtonAction {
     Close,
     PreviousColony,
     NextColony,
-    PreviousTransportDestination,
-    NextTransportDestination,
-    SelectTransportCargo(TransportCargoPreset),
-    LaunchTransport,
     SelectBuilding(galactic_sim::BuildingKind),
     UpgradeSelected,
     CancelConstruction,
@@ -303,9 +265,6 @@ pub(crate) enum ManagementTextRole {
     Title,
     Colony,
     ColonyList,
-    TransportDestination,
-    TransportCargo,
-    TransportLaunchLabel,
     Feedback,
     BuildingDetail,
     UpgradeLabel,
@@ -334,40 +293,6 @@ pub(crate) struct ManagementBuildingButtonText {
 
 #[derive(Component)]
 pub(crate) struct ManagementUpgradeButton;
-
-#[derive(Component)]
-pub(crate) struct ManagementTransportLaunchButton;
-
-#[derive(Component)]
-pub(crate) struct ManagementTransportPresetButton {
-    pub(crate) preset: TransportCargoPreset,
-}
-
-pub(crate) type ManagementTransportLaunchStyleQuery<'w, 's> = Query<
-    'w,
-    's,
-    (
-        &'static Interaction,
-        &'static mut BackgroundColor,
-        &'static mut Outline,
-    ),
-    (
-        With<ManagementTransportLaunchButton>,
-        Without<ManagementTransportPresetButton>,
-    ),
->;
-
-pub(crate) type ManagementTransportPresetStyleQuery<'w, 's> = Query<
-    'w,
-    's,
-    (
-        &'static ManagementTransportPresetButton,
-        &'static Interaction,
-        &'static mut BackgroundColor,
-        &'static mut Outline,
-    ),
-    Without<ManagementTransportLaunchButton>,
->;
 
 #[derive(Component)]
 pub(crate) struct ManagementQueueProgressFill;
@@ -500,10 +425,6 @@ pub(crate) enum UiAction {
     FocusSelection,
     EnterSystem,
     ExitSystem,
-    LaunchProbe,
-    LaunchAttack,
-    LaunchHarvest,
-    LaunchColonization,
     AnalyzePlanet,
     ToggleProjection,
     ToggleDebugGraph,

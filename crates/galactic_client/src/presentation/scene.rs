@@ -741,16 +741,7 @@ pub(crate) fn spawn_ui(mut commands: Commands, icon_assets: Res<IconAssets>) {
             spawn_action_button(parent, UiAction::FocusSelection, "Recentrer", "F");
             spawn_action_button(parent, UiAction::EnterSystem, "Entrer système", "Enter");
             spawn_action_button(parent, UiAction::ExitSystem, "Retour univers", "Esc");
-            spawn_action_button(parent, UiAction::LaunchProbe, "Lancer reconnaissance", "K");
             spawn_action_button(parent, UiAction::AnalyzePlanet, "Analyser planète", "L");
-            spawn_action_button(parent, UiAction::LaunchAttack, "Lancer attaque", "M");
-            spawn_action_button(parent, UiAction::LaunchHarvest, "Lancer récolte", "H");
-            spawn_action_button(
-                parent,
-                UiAction::LaunchColonization,
-                "Lancer colonisation",
-                "N",
-            );
             spawn_action_button(
                 parent,
                 UiAction::ToggleProjection,
@@ -1589,132 +1580,7 @@ pub(crate) fn spawn_management_queue(row: &mut ChildSpawnerCommands) {
                     TextColor(Color::srgb(1.0, 0.80, 0.78)),
                 ));
             });
-        queue.spawn((
-            Text::new("LOGISTIQUE INTERCOLONIALE"),
-            ui_text_font(12.0),
-            TextColor(Color::srgb(0.72, 0.88, 0.92)),
-            Node {
-                margin: UiRect::top(Val::Px(10.0)),
-                ..default()
-            },
-        ));
-        queue
-            .spawn((Node {
-                width: Val::Percent(100.0),
-                min_height: Val::Px(34.0),
-                flex_direction: FlexDirection::Row,
-                align_items: AlignItems::Center,
-                column_gap: Val::Px(6.0),
-                ..default()
-            },))
-            .with_children(|row| {
-                spawn_management_small_button(
-                    row,
-                    "<",
-                    ManagementButtonAction::PreviousTransportDestination,
-                    34.0,
-                );
-                row.spawn((
-                    Text::new("Destination"),
-                    ui_text_font(11.0),
-                    TextColor(Color::srgb(0.78, 0.88, 0.92)),
-                    Node {
-                        flex_grow: 1.0,
-                        ..default()
-                    },
-                    ManagementTextRole::TransportDestination,
-                ));
-                spawn_management_small_button(
-                    row,
-                    ">",
-                    ManagementButtonAction::NextTransportDestination,
-                    34.0,
-                );
-            });
-        queue.spawn((
-            Text::new("Cargaison"),
-            ui_text_font(11.0),
-            TextColor(Color::srgb(0.76, 0.84, 0.88)),
-            ManagementTextRole::TransportCargo,
-        ));
-        queue
-            .spawn((Node {
-                width: Val::Percent(100.0),
-                min_height: Val::Px(32.0),
-                flex_direction: FlexDirection::Row,
-                column_gap: Val::Px(5.0),
-                ..default()
-            },))
-            .with_children(|row| {
-                for preset in TransportCargoPreset::ALL {
-                    spawn_management_transport_preset_button(row, preset);
-                }
-            });
-        queue
-            .spawn((
-                Button,
-                Node {
-                    width: Val::Percent(100.0),
-                    min_height: Val::Px(40.0),
-                    padding: UiRect::axes(Val::Px(10.0), Val::Px(7.0)),
-                    border: UiRect::all(Val::Px(1.0)),
-                    border_radius: BorderRadius::all(Val::Px(6.0)),
-                    justify_content: JustifyContent::Center,
-                    align_items: AlignItems::Center,
-                    ..default()
-                },
-                BackgroundColor(Color::srgba(0.08, 0.28, 0.24, 0.98)),
-                Outline::new(
-                    Val::Px(1.0),
-                    Val::ZERO,
-                    Color::srgba(0.30, 0.88, 0.72, 0.70),
-                ),
-                ManagementButtonAction::LaunchTransport,
-                ManagementTransportLaunchButton,
-                UiPointerBlocker,
-            ))
-            .with_children(|button| {
-                button.spawn((
-                    Text::new("LANCER LE TRANSPORT"),
-                    ui_text_font(11.0),
-                    TextColor(Color::srgb(0.86, 0.98, 0.92)),
-                    ManagementTextRole::TransportLaunchLabel,
-                ));
-            });
     });
-}
-
-pub(crate) fn spawn_management_transport_preset_button(
-    parent: &mut ChildSpawnerCommands,
-    preset: TransportCargoPreset,
-) {
-    parent
-        .spawn((
-            Button,
-            Node {
-                flex_grow: 1.0,
-                flex_basis: Val::Px(0.0),
-                min_height: Val::Px(30.0),
-                padding: UiRect::axes(Val::Px(5.0), Val::Px(4.0)),
-                border: UiRect::all(Val::Px(1.0)),
-                border_radius: BorderRadius::all(Val::Px(5.0)),
-                justify_content: JustifyContent::Center,
-                align_items: AlignItems::Center,
-                ..default()
-            },
-            BackgroundColor(Color::srgba(0.04, 0.08, 0.10, 0.96)),
-            Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
-            ManagementButtonAction::SelectTransportCargo(preset),
-            ManagementTransportPresetButton { preset },
-            UiPointerBlocker,
-        ))
-        .with_children(|button| {
-            button.spawn((
-                Text::new(preset.short_label()),
-                ui_text_font(10.0),
-                TextColor(Color::srgb(0.80, 0.88, 0.90)),
-            ));
-        });
 }
 
 /// Fixed pool of inspector tab buttons. Matches the largest section count any

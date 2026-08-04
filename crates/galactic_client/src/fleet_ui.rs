@@ -2,26 +2,23 @@
 use std::collections::BTreeMap;
 
 use bevy::prelude::*;
-use galactic_domain::{ColonyId, ExtractionSiteId, PlanetId, ResourceKind, SystemId};
+use galactic_domain::SystemId;
 use galactic_sim::{
     CraftableId, FleetAssignment, FleetComposition, FleetCompositionError, FleetError,
-    FleetLocation, FleetState, GameAction, GameEventKind, KnowledgeLevel, MissionKind,
-    MissionTarget, PlanetaryOccupancyIntel, ShipStack, Simulation, StrategicDuration,
-    TechnologyUnlock, assess_planet_colonizability, craftable_catalog, craftable_definition,
+    FleetLocation, FleetState, GameAction, GameEventKind, MissionTarget, ShipStack, Simulation,
+    StrategicDuration, craftable_catalog, craftable_definition,
 };
 
 use super::{
-    OpenPanel, PresentationUpdateSet, SelectedMission, SimulationResource, TransportCargoPreset,
-    UiPointerBlocker, accent_fleet_blue, action_button_color, action_button_outline,
-    apply_simulation_command, collect_presentation_events, format_strategic_duration,
-    mission_error_text, mission_kind_label, mission_next_deadline, mission_phase_label,
-    mission_result_text, mission_target_label, panel_background, panel_outline,
-    provisional_planet_label, ui_text_font,
+    OpenPanel, PresentationUpdateSet, SelectedMission, SimulationResource, UiPointerBlocker,
+    accent_fleet_blue, apply_simulation_command, collect_presentation_events,
+    format_strategic_duration, mission_error_text, mission_kind_label, mission_next_deadline,
+    mission_phase_label, mission_result_text, mission_target_label, panel_background,
+    panel_outline, ui_text_font,
 };
 
 const FLEET_Z_INDEX: i32 = 130;
 const MAX_FLEET_ROWS: usize = 16;
-const MAX_TARGET_ROWS: usize = 16;
 const MAX_MISSION_ROWS: usize = 16;
 const MAX_REPORT_ROWS: usize = 14;
 
@@ -44,10 +41,6 @@ impl Plugin for FleetUiPlugin {
                     handle_fleet_tab_buttons,
                     handle_ship_stepper_buttons,
                     handle_form_fleet_button,
-                    handle_launch_kind_buttons,
-                    handle_launch_target_buttons,
-                    handle_transport_cargo_buttons,
-                    handle_launch_button,
                     handle_active_mission_buttons,
                 )
                     .chain()
@@ -59,9 +52,6 @@ impl Plugin for FleetUiPlugin {
                     update_fleet_visibility,
                     update_fleet_list_rows,
                     update_ship_stepper_rows,
-                    update_launch_kind_buttons,
-                    update_launch_target_rows,
-                    update_transport_cargo_buttons,
                     update_active_mission_rows,
                     update_report_rows,
                     update_feedback_text,
@@ -73,30 +63,16 @@ impl Plugin for FleetUiPlugin {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FleetUiTab {
+pub(crate) enum FleetUiTab {
     Fleets,
     Launch,
     Active,
     Reports,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LaunchTarget {
-    System(SystemId),
-    Planet {
-        system_id: SystemId,
-        planet_id: PlanetId,
-    },
-    Colony(ColonyId),
-    Site(ExtractionSiteId),
-}
-
 #[derive(Resource)]
 pub(crate) struct FleetUiState {
-    tab: FleetUiTab,
-    mission_kind: MissionKind,
-    selected_target: Option<LaunchTarget>,
-    transport_cargo: TransportCargoPreset,
+    pub(crate) tab: FleetUiTab,
     pending_composition: BTreeMap<CraftableId, u64>,
     feedback: String,
 }
@@ -105,9 +81,6 @@ impl Default for FleetUiState {
     fn default() -> Self {
         Self {
             tab: FleetUiTab::Fleets,
-            mission_kind: MissionKind::Probe,
-            selected_target: None,
-            transport_cargo: TransportCargoPreset::Mixed,
             pending_composition: BTreeMap::new(),
             feedback: String::new(),
         }
@@ -121,10 +94,6 @@ enum FleetButtonAction {
     SelectTab(FleetUiTab),
     Ship(CraftableId, i64),
     FormFleet,
-    SelectKind(MissionKind),
-    SelectTransportCargo(TransportCargoPreset),
-    LaunchMission,
-    TargetRow(usize),
     CancelMission(usize),
     FocusOrigin(usize),
     FocusTarget(usize),
@@ -148,7 +117,7 @@ enum FleetTextRole {
 }
 
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
-struct TabContent(FleetUiTab);
+pub(crate) struct TabContent(pub(crate) FleetUiTab);
 
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 struct TabButton(FleetUiTab);
@@ -159,18 +128,6 @@ struct FleetListRow(usize);
 #[derive(Component)]
 struct ShipStepperRow {
     craftable: CraftableId,
-}
-
-#[derive(Component)]
-struct LaunchKindButton(MissionKind);
-
-#[derive(Component)]
-struct TransportCargoButton(TransportCargoPreset);
-
-#[derive(Component)]
-struct TargetRow {
-    slot: usize,
-    binding: Option<LaunchTarget>,
 }
 
 #[derive(Component)]
@@ -247,7 +204,7 @@ fn spawn_fleet_screen(mut commands: Commands) {
             spawn_fleet_header(root);
             spawn_tab_bar(root);
             spawn_fleets_tab(root);
-            spawn_launch_tab(root);
+            crate::mission_wizard::spawn_mission_wizard_tab(root);
             spawn_active_tab(root);
             spawn_reports_tab(root);
             root.spawn((
@@ -538,196 +495,6 @@ fn spawn_stepper_button(parent: &mut ChildSpawnerCommands, label: &str, action: 
         });
 }
 
-fn spawn_launch_tab(root: &mut ChildSpawnerCommands) {
-    root.spawn((
-        Node {
-            width: Val::Percent(100.0),
-            flex_grow: 1.0,
-            flex_direction: FlexDirection::Column,
-            row_gap: Val::Px(8.0),
-            ..default()
-        },
-        TabContent(FleetUiTab::Launch),
-    ))
-    .with_children(|column| {
-        column
-            .spawn((Node {
-                width: Val::Percent(100.0),
-                min_height: Val::Px(34.0),
-                flex_direction: FlexDirection::Row,
-                column_gap: Val::Px(6.0),
-                ..default()
-            },))
-            .with_children(|bar| {
-                spawn_kind_button(bar, MissionKind::Probe, "Reconnaissance");
-                spawn_kind_button(bar, MissionKind::Attack, "Attaque");
-                spawn_kind_button(bar, MissionKind::Harvest, "Récolte");
-                spawn_kind_button(bar, MissionKind::Colonize, "Colonisation");
-                spawn_kind_button(bar, MissionKind::Transport, "Transport");
-            });
-        column
-            .spawn((Node {
-                width: Val::Percent(100.0),
-                min_height: Val::Px(30.0),
-                flex_direction: FlexDirection::Row,
-                column_gap: Val::Px(6.0),
-                ..default()
-            },))
-            .with_children(|bar| {
-                for preset in TransportCargoPreset::ALL {
-                    spawn_transport_cargo_button(bar, preset);
-                }
-            });
-        column
-            .spawn((
-                Node {
-                    width: Val::Percent(100.0),
-                    flex_grow: 1.0,
-                    padding: UiRect::all(Val::Px(9.0)),
-                    border: UiRect::all(Val::Px(1.0)),
-                    border_radius: BorderRadius::all(Val::Px(6.0)),
-                    flex_direction: FlexDirection::Column,
-                    row_gap: Val::Px(3.0),
-                    overflow: Overflow::scroll_y(),
-                    ..default()
-                },
-                BackgroundColor(panel_background()),
-                Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
-            ))
-            .with_children(|list| {
-                list.spawn((
-                    Text::new("CIBLES DISPONIBLES"),
-                    ui_text_font(12.0),
-                    TextColor(Color::srgb(0.78, 0.86, 1.0)),
-                ));
-                for slot in 0..MAX_TARGET_ROWS {
-                    spawn_target_row(list, slot);
-                }
-            });
-        column
-            .spawn((
-                Button,
-                Node {
-                    width: Val::Percent(100.0),
-                    min_height: Val::Px(40.0),
-                    justify_content: JustifyContent::Center,
-                    align_items: AlignItems::Center,
-                    border: UiRect::all(Val::Px(1.0)),
-                    border_radius: BorderRadius::all(Val::Px(6.0)),
-                    ..default()
-                },
-                BackgroundColor(Color::srgba(0.08, 0.20, 0.36, 0.98)),
-                Outline::new(
-                    Val::Px(1.0),
-                    Val::ZERO,
-                    Color::srgba(0.40, 0.66, 0.98, 0.78),
-                ),
-                FleetButtonAction::LaunchMission,
-                UiPointerBlocker,
-            ))
-            .with_children(|button| {
-                button.spawn((
-                    Text::new("LANCER LA MISSION"),
-                    ui_text_font(13.0),
-                    TextColor(Color::srgb(0.88, 0.94, 1.0)),
-                ));
-            });
-    });
-}
-
-fn spawn_kind_button(parent: &mut ChildSpawnerCommands, kind: MissionKind, label: &str) {
-    parent
-        .spawn((
-            Button,
-            Node {
-                flex_grow: 1.0,
-                flex_basis: Val::Px(0.0),
-                min_height: Val::Px(34.0),
-                justify_content: JustifyContent::Center,
-                align_items: AlignItems::Center,
-                border: UiRect::all(Val::Px(1.0)),
-                border_radius: BorderRadius::all(Val::Px(5.0)),
-                ..default()
-            },
-            BackgroundColor(Color::srgba(0.05, 0.08, 0.14, 0.98)),
-            Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
-            FleetButtonAction::SelectKind(kind),
-            LaunchKindButton(kind),
-            UiPointerBlocker,
-        ))
-        .with_children(|button| {
-            button.spawn((
-                Text::new(label),
-                ui_text_font(11.0),
-                TextColor(Color::srgb(0.84, 0.90, 0.98)),
-            ));
-        });
-}
-
-fn spawn_transport_cargo_button(parent: &mut ChildSpawnerCommands, preset: TransportCargoPreset) {
-    parent
-        .spawn((
-            Button,
-            Node {
-                flex_grow: 1.0,
-                flex_basis: Val::Px(0.0),
-                min_height: Val::Px(28.0),
-                justify_content: JustifyContent::Center,
-                align_items: AlignItems::Center,
-                border: UiRect::all(Val::Px(1.0)),
-                border_radius: BorderRadius::all(Val::Px(5.0)),
-                ..default()
-            },
-            BackgroundColor(Color::srgba(0.05, 0.08, 0.14, 0.96)),
-            Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
-            FleetButtonAction::SelectTransportCargo(preset),
-            TransportCargoButton(preset),
-            UiPointerBlocker,
-        ))
-        .with_children(|button| {
-            button.spawn((
-                Text::new(preset.short_label()),
-                ui_text_font(10.0),
-                TextColor(Color::srgb(0.80, 0.86, 0.96)),
-            ));
-        });
-}
-
-fn spawn_target_row(parent: &mut ChildSpawnerCommands, slot: usize) {
-    parent
-        .spawn((
-            Button,
-            Node {
-                width: Val::Percent(100.0),
-                min_height: Val::Px(22.0),
-                padding: UiRect::axes(Val::Px(6.0), Val::Px(3.0)),
-                border: UiRect::all(Val::Px(1.0)),
-                border_radius: BorderRadius::all(Val::Px(4.0)),
-                ..default()
-            },
-            BackgroundColor(Color::srgba(0.04, 0.06, 0.10, 0.9)),
-            Outline::new(
-                Val::Px(1.0),
-                Val::ZERO,
-                Color::srgba(0.34, 0.46, 0.62, 0.40),
-            ),
-            Visibility::Hidden,
-            FleetButtonAction::TargetRow(slot),
-            TargetRow {
-                slot,
-                binding: None,
-            },
-            UiPointerBlocker,
-        ))
-        .with_children(|button| {
-            button.spawn((
-                Text::new(""),
-                ui_text_font(10.5),
-                TextColor(Color::srgb(0.86, 0.90, 0.98)),
-            ));
-        });
-}
-
 fn spawn_active_tab(root: &mut ChildSpawnerCommands) {
     root.spawn((
         Node {
@@ -746,11 +513,31 @@ fn spawn_active_tab(root: &mut ChildSpawnerCommands) {
         TabContent(FleetUiTab::Active),
     ))
     .with_children(|list| {
-        list.spawn((
-            Text::new("MISSIONS ACTIVES"),
-            ui_text_font(12.0),
-            TextColor(Color::srgb(0.78, 0.86, 1.0)),
-        ));
+        list.spawn((Node {
+            width: Val::Percent(100.0),
+            min_height: Val::Px(24.0),
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            column_gap: Val::Px(8.0),
+            ..default()
+        },))
+            .with_children(|header| {
+                header.spawn((
+                    Text::new("MISSIONS ACTIVES"),
+                    ui_text_font(12.0),
+                    TextColor(Color::srgb(0.78, 0.86, 1.0)),
+                    Node {
+                        flex_grow: 1.0,
+                        ..default()
+                    },
+                ));
+                spawn_small_button(
+                    header,
+                    "Voir les rapports terminés",
+                    FleetButtonAction::SelectTab(FleetUiTab::Reports),
+                    200.0,
+                );
+            });
         for slot in 0..MAX_MISSION_ROWS {
             spawn_mission_row(list, slot);
         }
@@ -762,7 +549,7 @@ fn spawn_mission_row(parent: &mut ChildSpawnerCommands, slot: usize) {
         .spawn((
             Node {
                 width: Val::Percent(100.0),
-                min_height: Val::Px(24.0),
+                min_height: Val::Px(34.0),
                 flex_direction: FlexDirection::Row,
                 align_items: AlignItems::Center,
                 column_gap: Val::Px(5.0),
@@ -992,69 +779,6 @@ fn handle_form_fleet_button(
     }
 }
 
-fn handle_launch_kind_buttons(
-    mut ui: ResMut<FleetUiState>,
-    interactions: FleetButtonInteractionQuery,
-) {
-    for (interaction, action) in &interactions {
-        if *interaction != Interaction::Pressed {
-            continue;
-        }
-        if let FleetButtonAction::SelectKind(kind) = *action {
-            ui.mission_kind = kind;
-            ui.selected_target = None;
-            ui.feedback.clear();
-        }
-    }
-}
-
-fn handle_launch_target_buttons(
-    mut ui: ResMut<FleetUiState>,
-    interactions: FleetButtonInteractionQuery,
-    rows: Query<&TargetRow>,
-) {
-    for (interaction, action) in &interactions {
-        if *interaction != Interaction::Pressed {
-            continue;
-        }
-        if let FleetButtonAction::TargetRow(slot) = *action
-            && let Some(row) = rows.iter().find(|row| row.slot == slot)
-            && let Some(target) = row.binding
-        {
-            ui.selected_target = Some(target);
-            ui.feedback.clear();
-        }
-    }
-}
-
-fn handle_transport_cargo_buttons(
-    mut ui: ResMut<FleetUiState>,
-    interactions: FleetButtonInteractionQuery,
-) {
-    for (interaction, action) in &interactions {
-        if *interaction != Interaction::Pressed {
-            continue;
-        }
-        if let FleetButtonAction::SelectTransportCargo(preset) = *action {
-            ui.transport_cargo = preset;
-            ui.feedback.clear();
-        }
-    }
-}
-
-fn handle_launch_button(
-    mut simulation: ResMut<SimulationResource>,
-    mut ui: ResMut<FleetUiState>,
-    interactions: FleetButtonInteractionQuery,
-) {
-    for (interaction, action) in &interactions {
-        if *interaction != Interaction::Pressed || *action != FleetButtonAction::LaunchMission {
-            continue;
-        }
-        launch_selected_mission(&mut simulation, &mut ui);
-    }
-}
-
 fn handle_active_mission_buttons(
     mut simulation: ResMut<SimulationResource>,
     mut ui: ResMut<FleetUiState>,
@@ -1137,7 +861,6 @@ fn capture_fleet_feedback(simulation: Res<SimulationResource>, mut ui: ResMut<Fl
                     launched.mission_id.raw(),
                     mission_kind_label(launched.kind),
                 );
-                ui.selected_target = None;
             }
             GameEventKind::MissionLaunchRejected(rejected) => {
                 ui.feedback = format!("Mission refusée : {}", mission_error_text(rejected.error));
@@ -1162,7 +885,7 @@ fn update_fleet_visibility(
     ui: Res<FleetUiState>,
     open_panel: Res<OpenPanel>,
     mut roots: Query<&mut Visibility, (With<FleetRoot>, Without<TabContent>)>,
-    mut tabs: Query<(&TabContent, &mut Visibility), Without<FleetRoot>>,
+    mut tabs: Query<(&TabContent, &mut Visibility, &mut Node), Without<FleetRoot>>,
     mut texts: Query<(&FleetTextRole, &mut Text)>,
 ) {
     let is_open = *open_panel == OpenPanel::Fleet;
@@ -1176,14 +899,19 @@ fn update_fleet_visibility(
             *visibility = next;
         }
     }
-    for (content, mut visibility) in &mut tabs {
-        let next = if is_open && content.0 == ui.tab {
+    for (content, mut visibility, mut node) in &mut tabs {
+        let active = is_open && content.0 == ui.tab;
+        let next = if active {
             Visibility::Visible
         } else {
             Visibility::Hidden
         };
         if *visibility != next {
             *visibility = next;
+        }
+        let next_display = if active { Display::Flex } else { Display::None };
+        if node.display != next_display {
+            node.display = next_display;
         }
     }
     for (role, mut text) in &mut texts {
@@ -1271,82 +999,6 @@ fn update_ship_stepper_rows(
     }
 }
 
-fn update_launch_kind_buttons(
-    ui: Res<FleetUiState>,
-    open_panel: Res<OpenPanel>,
-    mut buttons: Query<(
-        &LaunchKindButton,
-        &Interaction,
-        &mut BackgroundColor,
-        &mut Outline,
-    )>,
-) {
-    if *open_panel != OpenPanel::Fleet || ui.tab != FleetUiTab::Launch {
-        return;
-    }
-    for (button, interaction, mut background, mut outline) in &mut buttons {
-        let selected = button.0 == ui.mission_kind;
-        background.0 = action_button_color(true, selected, interaction);
-        outline.color = action_button_outline(true, selected, interaction);
-    }
-}
-
-fn update_transport_cargo_buttons(
-    ui: Res<FleetUiState>,
-    open_panel: Res<OpenPanel>,
-    mut buttons: Query<(
-        &TransportCargoButton,
-        &mut Visibility,
-        &Interaction,
-        &mut BackgroundColor,
-        &mut Outline,
-    )>,
-) {
-    let show = *open_panel == OpenPanel::Fleet
-        && ui.tab == FleetUiTab::Launch
-        && ui.mission_kind == MissionKind::Transport;
-    for (button, mut visibility, interaction, mut background, mut outline) in &mut buttons {
-        *visibility = if show {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        };
-        let selected = button.0 == ui.transport_cargo;
-        background.0 = action_button_color(true, selected, interaction);
-        outline.color = action_button_outline(true, selected, interaction);
-    }
-}
-
-fn update_launch_target_rows(
-    simulation: Res<SimulationResource>,
-    ui: Res<FleetUiState>,
-    open_panel: Res<OpenPanel>,
-    mut rows: Query<(&mut TargetRow, &mut Visibility, &Children)>,
-    mut texts: Query<&mut Text>,
-) {
-    if *open_panel != OpenPanel::Fleet || ui.tab != FleetUiTab::Launch {
-        return;
-    }
-    let candidates = eligible_launch_targets(simulation.simulation(), ui.mission_kind);
-
-    for (mut row, mut visibility, children) in &mut rows {
-        if let Some((target, label)) = candidates.get(row.slot) {
-            row.binding = Some(*target);
-            *visibility = Visibility::Inherited;
-            for child in children {
-                if let Ok(mut text) = texts.get_mut(*child)
-                    && text.0 != *label
-                {
-                    text.0 = label.clone();
-                }
-            }
-        } else {
-            row.binding = None;
-            *visibility = Visibility::Hidden;
-        }
-    }
-}
-
 fn update_active_mission_rows(
     simulation: Res<SimulationResource>,
     ui: Res<FleetUiState>,
@@ -1380,12 +1032,16 @@ fn update_active_mission_rows(
             let deadline = mission_next_deadline(mission, current_tick);
             let remaining = deadline.value().saturating_sub(current_tick.value());
             let label = format!(
-                "#{} {} — {} • {} • ETA {}",
+                "#{} {} — {} • {} • ETA {}\n{} saut(s) • aller {} • sur place {} • retour {}",
                 mission.id.raw(),
                 mission_kind_label(mission.order.kind),
                 mission_target_label(simulation, mission.order.target),
                 mission_phase_label(mission.phase),
                 format_strategic_duration(StrategicDuration::from_ticks(remaining)),
+                mission.plan.hops,
+                format_strategic_duration(mission.plan.travel_duration),
+                format_strategic_duration(mission.plan.resolution_duration),
+                format_strategic_duration(mission.plan.travel_duration),
             );
             *visibility = Visibility::Inherited;
             for child in children {
@@ -1481,251 +1137,7 @@ fn form_selected_fleet(simulation: &mut SimulationResource, ui: &mut FleetUiStat
     }
 }
 
-fn launch_selected_mission(simulation: &mut SimulationResource, ui: &mut FleetUiState) {
-    let Some(colony_id) = simulation.simulation().state().active_colony_id else {
-        ui.feedback = "Aucune colonie active.".to_string();
-        return;
-    };
-    match ui.mission_kind {
-        MissionKind::Transport => {
-            let Some(LaunchTarget::Colony(destination_colony_id)) = ui.selected_target else {
-                ui.feedback = "Sélectionnez une colonie de destination.".to_string();
-                return;
-            };
-            apply_simulation_command(
-                simulation,
-                GameAction::LaunchTransport {
-                    origin_colony_id: colony_id,
-                    destination_colony_id,
-                    cargo: ui.transport_cargo.cargo(),
-                },
-            );
-        }
-        MissionKind::Harvest => {
-            let Some(LaunchTarget::Site(site_id)) = ui.selected_target else {
-                ui.feedback = "Sélectionnez un site d'extraction.".to_string();
-                return;
-            };
-            apply_simulation_command(simulation, GameAction::LaunchHarvest { colony_id, site_id });
-        }
-        MissionKind::Probe => {
-            let Some(target) = ui
-                .selected_target
-                .and_then(mission_target_from_launch_target)
-            else {
-                ui.feedback = "Sélectionnez une cible à sonder.".to_string();
-                return;
-            };
-            apply_simulation_command(simulation, GameAction::LaunchProbe { colony_id, target });
-        }
-        MissionKind::Attack => {
-            let Some(target) = ui
-                .selected_target
-                .and_then(mission_target_from_launch_target)
-            else {
-                ui.feedback = "Sélectionnez une cible à attaquer.".to_string();
-                return;
-            };
-            apply_simulation_command(simulation, GameAction::LaunchAttack { colony_id, target });
-        }
-        MissionKind::Colonize => {
-            let Some(target) = ui
-                .selected_target
-                .and_then(mission_target_from_launch_target)
-            else {
-                ui.feedback = "Sélectionnez une planète à coloniser.".to_string();
-                return;
-            };
-            apply_simulation_command(
-                simulation,
-                GameAction::LaunchColonization { colony_id, target },
-            );
-        }
-    }
-}
-
-fn mission_target_from_launch_target(target: LaunchTarget) -> Option<MissionTarget> {
-    match target {
-        LaunchTarget::System(system_id) => Some(MissionTarget::System(system_id)),
-        LaunchTarget::Planet {
-            system_id,
-            planet_id,
-        } => Some(MissionTarget::Planet {
-            system_id,
-            planet_id,
-        }),
-        LaunchTarget::Colony(_) | LaunchTarget::Site(_) => None,
-    }
-}
-
-fn eligible_launch_targets(
-    simulation: &Simulation,
-    kind: MissionKind,
-) -> Vec<(LaunchTarget, String)> {
-    let mut candidates = match kind {
-        MissionKind::Probe => probe_candidates(simulation),
-        MissionKind::Attack => attack_candidates(simulation),
-        MissionKind::Colonize => colonize_candidates(simulation),
-        MissionKind::Harvest => harvest_candidates(simulation),
-        MissionKind::Transport => transport_candidates(simulation),
-    };
-    candidates.truncate(MAX_TARGET_ROWS);
-    candidates
-}
-
-fn probe_candidates(simulation: &Simulation) -> Vec<(LaunchTarget, String)> {
-    let state = simulation.state();
-    let universe = simulation.universe_repository();
-    let mut candidates = Vec::new();
-    for system in &universe.definition().systems {
-        if state.system_knowledge_level(system.id) == KnowledgeLevel::Detected {
-            candidates.push((
-                LaunchTarget::System(system.id),
-                format!("Signal {} (système détecté)", system.id.index()),
-            ));
-        }
-        for (orbit_index, planet) in system.planets.iter().enumerate() {
-            if state.planet_knowledge_level(planet.id) == KnowledgeLevel::Detected {
-                candidates.push((
-                    LaunchTarget::Planet {
-                        system_id: system.id,
-                        planet_id: planet.id,
-                    },
-                    format!(
-                        "{} — {}",
-                        provisional_planet_label(&system.name, orbit_index),
-                        system.name,
-                    ),
-                ));
-            }
-        }
-    }
-    candidates
-}
-
-fn attack_candidates(simulation: &Simulation) -> Vec<(LaunchTarget, String)> {
-    let state = simulation.state();
-    let universe = simulation.universe_repository();
-    let mut candidates = Vec::new();
-    for system in &universe.definition().systems {
-        for planet in &system.planets {
-            if state.planet_knowledge_level(planet.id) < KnowledgeLevel::Analyzed {
-                continue;
-            }
-            let Some(report) = state.planetary_intelligence_report(planet.id) else {
-                continue;
-            };
-            let PlanetaryOccupancyIntel::Occupied(occupant) = report.occupancy else {
-                continue;
-            };
-            if occupant == state.player_faction {
-                continue;
-            }
-            candidates.push((
-                LaunchTarget::Planet {
-                    system_id: system.id,
-                    planet_id: planet.id,
-                },
-                format!("{} — {}", planet.name, system.name),
-            ));
-        }
-    }
-    candidates
-}
-
-fn colonize_candidates(simulation: &Simulation) -> Vec<(LaunchTarget, String)> {
-    let state = simulation.state();
-    let universe = simulation.universe_repository();
-    let actor = state.player_faction;
-    let mut candidates = Vec::new();
-    for system in &universe.definition().systems {
-        for planet in &system.planets {
-            if state.planet_knowledge_level(planet.id) < KnowledgeLevel::Analyzed {
-                continue;
-            }
-            if !assess_planet_colonizability(state, universe, actor, planet.id).is_colonizable() {
-                continue;
-            }
-            candidates.push((
-                LaunchTarget::Planet {
-                    system_id: system.id,
-                    planet_id: planet.id,
-                },
-                format!("{} — {}", planet.name, system.name),
-            ));
-        }
-    }
-    candidates
-}
-
-fn harvest_candidates(simulation: &Simulation) -> Vec<(LaunchTarget, String)> {
-    let state = simulation.state();
-    let universe = simulation.universe_repository();
-    let mut candidates = Vec::new();
-    for site in &state.extraction_sites {
-        if site.is_depleted() || site.reserved_by.is_some() {
-            continue;
-        }
-        if state.planet_knowledge_level(site.planet_id) < KnowledgeLevel::Analyzed {
-            continue;
-        }
-        if state.colony_on_planet(site.planet_id).is_some() {
-            continue;
-        }
-        if !state
-            .research
-            .has_unlock(TechnologyUnlock::RemoteExtraction)
-        {
-            continue;
-        }
-        let Some((_, planet)) = universe.planet_location(site.planet_id) else {
-            continue;
-        };
-        let system_name = universe
-            .system(site.system_id)
-            .map(|system| system.name.clone())
-            .unwrap_or_default();
-        candidates.push((
-            LaunchTarget::Site(site.id),
-            format!(
-                "{} — {} ({})",
-                planet.name,
-                system_name,
-                resource_kind_label(site.resource),
-            ),
-        ));
-    }
-    candidates
-}
-
-fn transport_candidates(simulation: &Simulation) -> Vec<(LaunchTarget, String)> {
-    let state = simulation.state();
-    let active = state.active_colony_id;
-    state
-        .player_colony_ids()
-        .into_iter()
-        .filter(|colony_id| Some(*colony_id) != active)
-        .filter_map(|colony_id| {
-            state.colony(colony_id).map(|colony| {
-                (
-                    LaunchTarget::Colony(colony_id),
-                    format!("C{} {}", colony_id.raw(), colony.name),
-                )
-            })
-        })
-        .collect()
-}
-
-fn resource_kind_label(kind: ResourceKind) -> &'static str {
-    match kind {
-        ResourceKind::Metal => "métal",
-        ResourceKind::Crystal => "cristal",
-        ResourceKind::Fuel => "carburant",
-        ResourceKind::Energy => "énergie",
-    }
-}
-
-fn fleet_composition_summary(fleet: &FleetState) -> String {
+pub(crate) fn fleet_composition_summary(fleet: &FleetState) -> String {
     fleet
         .composition
         .entries()
@@ -1740,7 +1152,7 @@ fn fleet_composition_summary(fleet: &FleetState) -> String {
         .join(", ")
 }
 
-fn fleet_location_label(simulation: &Simulation, location: FleetLocation) -> String {
+pub(crate) fn fleet_location_label(simulation: &Simulation, location: FleetLocation) -> String {
     match location {
         FleetLocation::Docked(colony_id) => simulation
             .state()
@@ -1811,168 +1223,16 @@ fn fleet_composition_error_text(error: FleetCompositionError) -> String {
     }
 }
 
-fn active_colony(simulation: &Simulation) -> Option<&galactic_sim::ColonyState> {
+pub(crate) fn active_colony(simulation: &Simulation) -> Option<&galactic_sim::ColonyState> {
     simulation.state().active_player_colony()
 }
 
 #[cfg(test)]
 mod tests {
     use bevy::ecs::system::RunSystemOnce;
-    use galactic_domain::UniverseConfig;
+    use galactic_domain::{ColonyId, UniverseConfig};
 
     use super::*;
-
-    fn other_system_id(simulation: &Simulation) -> SystemId {
-        let home_system = simulation
-            .state()
-            .active_player_colony()
-            .expect("home colony exists")
-            .system_id;
-        simulation
-            .universe_repository()
-            .definition()
-            .systems
-            .iter()
-            .map(|system| system.id)
-            .find(|id| *id != home_system)
-            .expect("universe has more than one system")
-    }
-
-    fn unknown_system_id(simulation: &Simulation) -> SystemId {
-        let state = simulation.state();
-        simulation
-            .universe_repository()
-            .definition()
-            .systems
-            .iter()
-            .map(|system| system.id)
-            .find(|id| state.system_knowledge_level(*id) == KnowledgeLevel::Unknown)
-            .expect("universe has an unexplored system")
-    }
-
-    #[test]
-    fn mission_target_from_launch_target_maps_system_and_planet_only() {
-        let system_id = SystemId::new(0);
-        let planet_id = PlanetId::new(0);
-
-        assert_eq!(
-            mission_target_from_launch_target(LaunchTarget::System(system_id)),
-            Some(MissionTarget::System(system_id))
-        );
-        assert_eq!(
-            mission_target_from_launch_target(LaunchTarget::Planet {
-                system_id,
-                planet_id
-            }),
-            Some(MissionTarget::Planet {
-                system_id,
-                planet_id
-            })
-        );
-        assert_eq!(
-            mission_target_from_launch_target(LaunchTarget::Colony(ColonyId::new(0))),
-            None
-        );
-        assert_eq!(
-            mission_target_from_launch_target(LaunchTarget::Site(ExtractionSiteId::new(0))),
-            None
-        );
-    }
-
-    #[test]
-    fn probe_candidates_never_include_an_unknown_system() {
-        let simulation = Simulation::new(UniverseConfig::mvp());
-
-        let candidates = probe_candidates(&simulation);
-
-        let system_id = unknown_system_id(&simulation);
-        assert!(
-            !candidates
-                .iter()
-                .any(|(target, _)| *target == LaunchTarget::System(system_id))
-        );
-    }
-
-    #[test]
-    fn probe_candidates_include_a_detected_system() {
-        let mut simulation = Simulation::new(UniverseConfig::mvp());
-        let system_id = other_system_id(&simulation);
-        let universe = simulation.universe_repository().clone();
-        simulation.state_mut().advance_system_knowledge(
-            &universe,
-            system_id,
-            KnowledgeLevel::Detected,
-        );
-
-        let candidates = probe_candidates(&simulation);
-
-        assert!(
-            candidates
-                .iter()
-                .any(|(target, _)| *target == LaunchTarget::System(system_id))
-        );
-    }
-
-    #[test]
-    fn attack_candidates_are_empty_without_analyzed_intelligence() {
-        let simulation = Simulation::new(UniverseConfig::mvp());
-
-        assert!(attack_candidates(&simulation).is_empty());
-    }
-
-    #[test]
-    fn colonize_candidates_are_empty_without_analyzed_planets() {
-        let simulation = Simulation::new(UniverseConfig::mvp());
-
-        assert!(colonize_candidates(&simulation).is_empty());
-    }
-
-    #[test]
-    fn harvest_candidates_are_empty_without_remote_extraction_research() {
-        let simulation = Simulation::new(UniverseConfig::mvp());
-
-        assert!(harvest_candidates(&simulation).is_empty());
-    }
-
-    #[test]
-    fn transport_candidates_exclude_the_active_colony() {
-        let simulation = Simulation::new(UniverseConfig::mvp());
-        let active = simulation.state().active_colony_id;
-
-        let candidates = transport_candidates(&simulation);
-
-        assert!(
-            !candidates
-                .iter()
-                .any(|(target, _)| *target == LaunchTarget::Colony(active.unwrap()))
-        );
-        assert!(candidates.is_empty());
-    }
-
-    #[test]
-    fn eligible_launch_targets_dispatches_by_mission_kind_and_truncates() {
-        let mut simulation = Simulation::new(UniverseConfig::mvp());
-        let system_id = other_system_id(&simulation);
-        let universe = simulation.universe_repository().clone();
-        simulation.state_mut().advance_system_knowledge(
-            &universe,
-            system_id,
-            KnowledgeLevel::Detected,
-        );
-
-        let targets = eligible_launch_targets(&simulation, MissionKind::Probe);
-
-        assert_eq!(targets, probe_candidates(&simulation));
-        assert!(targets.len() <= MAX_TARGET_ROWS);
-    }
-
-    #[test]
-    fn resource_kind_label_translates_every_variant_to_french() {
-        assert_eq!(resource_kind_label(ResourceKind::Metal), "métal");
-        assert_eq!(resource_kind_label(ResourceKind::Crystal), "cristal");
-        assert_eq!(resource_kind_label(ResourceKind::Fuel), "carburant");
-        assert_eq!(resource_kind_label(ResourceKind::Energy), "énergie");
-    }
 
     #[test]
     fn fleet_assignment_label_distinguishes_idle_from_mission() {

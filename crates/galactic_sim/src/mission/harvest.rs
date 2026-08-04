@@ -1,13 +1,10 @@
-use galactic_domain::{ColonyId, ExtractionSiteId, FactionId, ResourceStock};
+use galactic_domain::{ColonyId, ExtractionSiteId, FactionId, FleetId, ResourceStock};
 
-use crate::{
-    CraftableId, FleetComposition, FleetCreated, FleetError, GameState, KnowledgeLevel,
-    TechnologyUnlock, UniverseRepository, form_fleet,
-};
+use crate::{GameState, KnowledgeLevel, TechnologyUnlock, UniverseRepository};
 
 use super::{
     MissionError, MissionKind, MissionLaunched, MissionOrder, MissionPhase, MissionResult,
-    MissionState, MissionStateError, MissionTarget, launch_mission_with_payload, plan_mission,
+    MissionState, MissionStateError, MissionTarget, launch_mission_with_payload,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,7 +103,8 @@ pub(crate) fn validate_harvest_launch(
     Ok(())
 }
 
-/// Launches a cargo fleet toward one analyzed extraction site.
+/// Launches a cargo fleet toward one analyzed extraction site, with an
+/// explicit fleet.
 ///
 /// The site is reserved atomically with the mission. Collection occurs only
 /// after the configured on-site duration, is capped by both the remaining
@@ -116,8 +114,9 @@ pub fn launch_harvest_mission(
     universe: &UniverseRepository,
     actor: FactionId,
     origin_colony_id: ColonyId,
+    fleet_id: FleetId,
     site_id: ExtractionSiteId,
-) -> Result<(Option<FleetCreated>, MissionLaunched), MissionError> {
+) -> Result<MissionLaunched, MissionError> {
     let origin_colony = state
         .colony(origin_colony_id)
         .ok_or(MissionError::UnknownOriginColony(origin_colony_id))?;
@@ -135,55 +134,6 @@ pub fn launch_harvest_mission(
     let departure_at = state.clock.current_tick();
     let site_remaining = site.remaining;
     let mut candidate = state.clone();
-    let existing_fleet = candidate
-        .fleets
-        .iter()
-        .filter(|fleet| {
-            candidate.can_manage(actor, fleet.owner)
-                && fleet.is_idle()
-                && fleet.location == crate::FleetLocation::Docked(origin_colony_id)
-                && fleet.cargo.is_zero()
-                && fleet
-                    .capabilities()
-                    .is_ok_and(|capabilities| capabilities.cargo_capacity > 0)
-        })
-        .map(|fleet| fleet.id)
-        .filter(|fleet_id| {
-            plan_mission(
-                &candidate,
-                universe,
-                actor,
-                MissionOrder {
-                    fleet_id: *fleet_id,
-                    origin,
-                    target,
-                    kind: MissionKind::Harvest,
-                    departure_at,
-                },
-            )
-            .is_ok()
-        })
-        .min();
-
-    let (fleet_id, created) = if let Some(fleet_id) = existing_fleet {
-        (fleet_id, None)
-    } else {
-        let available = candidate
-            .colony(origin_colony_id)
-            .expect("the origin colony was validated")
-            .inventory
-            .quantity(CraftableId::LIGHT_CARGO);
-        if available == 0 {
-            return Err(MissionError::HarvestFleetUnavailable(origin_colony_id));
-        }
-        let composition =
-            FleetComposition::from_stacks([crate::ShipStack::new(CraftableId::LIGHT_CARGO, 1)])
-                .map_err(FleetError::InvalidComposition)
-                .map_err(MissionError::Fleet)?;
-        let created = form_fleet(&mut candidate, actor, origin_colony_id, composition)
-            .map_err(MissionError::Fleet)?;
-        (created.fleet_id, Some(created))
-    };
 
     let launched = launch_mission_with_payload(
         &mut candidate,
@@ -205,7 +155,7 @@ pub fn launch_harvest_mission(
         }),
     )?;
     *state = candidate;
-    Ok((created, launched))
+    Ok(launched)
 }
 
 pub(crate) fn validate_harvest_state(mission: &MissionState) -> Result<(), MissionStateError> {

@@ -1,23 +1,25 @@
 mod craft_ui;
 mod fleet_ui;
+mod mission_wizard;
 mod navigation_ui;
 mod presentation;
 mod research_ui;
 
 use craft_ui::CraftUiPlugin;
 use fleet_ui::FleetUiPlugin;
+use mission_wizard::MissionWizardPlugin;
 use navigation_ui::NavigationUiPlugin;
 use presentation::colony_management_ui::{
     capture_colony_management_feedback, cycle_management_colony, handle_colony_management_buttons,
     update_action_buttons, update_colony_management_buildings, update_colony_management_detail,
     update_colony_management_queue, update_colony_management_resources,
-    update_colony_management_transport, update_colony_management_visibility,
+    update_colony_management_visibility,
 };
 use presentation::components::{
     ColonyManagementState, DebugOverlayState, InspectorContent, InspectorSection,
     InspectorTabBarRoot, InspectorTabButton, InspectorTabButtonQuery, InspectorTabLabelQuery,
     InspectorTabState, InspectorTextQuery, InspectorTextRole, OpenPanel, PointerSelectionState,
-    SelectedMission, StrategicViewEntity, TopBarText, TransportCargoPreset, UiPointerBlocker,
+    SelectedMission, StrategicViewEntity, TopBarText, UiPointerBlocker,
 };
 use presentation::icons::IconAssets;
 use presentation::input::{
@@ -198,6 +200,7 @@ impl Plugin for ClientPlugin {
         .add_plugins(ResearchUiPlugin)
         .add_plugins(CraftUiPlugin)
         .add_plugins(FleetUiPlugin)
+        .add_plugins(MissionWizardPlugin)
         .add_plugins(NavigationUiPlugin)
         .add_systems(Startup, log_startup)
         .add_systems(Update, log_memory_diagnostics);
@@ -323,7 +326,6 @@ impl Plugin for PresentationPlugin {
                 update_colony_management_buildings,
                 update_colony_management_detail,
                 update_colony_management_queue,
-                update_colony_management_transport,
                 update_system_body_list_visibility,
                 update_system_body_rows,
             )
@@ -689,14 +691,6 @@ mod tests {
     use bevy::text::{
         LayoutCx, RemSize, ScaleCx, TextIterScratch, TextPipeline, detect_text_needs_rerender,
     };
-
-    #[test]
-    fn transport_management_queries_are_disjoint() {
-        let mut world = World::new();
-        let mut system = IntoSystem::into_system(update_colony_management_transport);
-
-        system.initialize(&mut world);
-    }
 
     #[test]
     fn renderer_favors_bounded_memory_allocations() {
@@ -1494,14 +1488,6 @@ VmSwap:\t      2048 kB
     }
 
     #[test]
-    fn reconnaissance_shortcut_uses_k() {
-        let mut keyboard = ButtonInput::<KeyCode>::default();
-        keyboard.press(KeyCode::KeyK);
-
-        assert_eq!(simulation_shortcut(&keyboard), Some(UiAction::LaunchProbe));
-    }
-
-    #[test]
     fn planetary_analysis_shortcut_uses_l() {
         let mut keyboard = ButtonInput::<KeyCode>::default();
         keyboard.press(KeyCode::KeyL);
@@ -1509,36 +1495,6 @@ VmSwap:\t      2048 kB
         assert_eq!(
             simulation_shortcut(&keyboard),
             Some(UiAction::AnalyzePlanet)
-        );
-    }
-
-    #[test]
-    fn attack_shortcut_uses_m() {
-        let mut keyboard = ButtonInput::<KeyCode>::default();
-        keyboard.press(KeyCode::KeyM);
-
-        assert_eq!(simulation_shortcut(&keyboard), Some(UiAction::LaunchAttack));
-    }
-
-    #[test]
-    fn harvest_shortcut_uses_h() {
-        let mut keyboard = ButtonInput::<KeyCode>::default();
-        keyboard.press(KeyCode::KeyH);
-
-        assert_eq!(
-            simulation_shortcut(&keyboard),
-            Some(UiAction::LaunchHarvest)
-        );
-    }
-
-    #[test]
-    fn colonization_shortcut_uses_n() {
-        let mut keyboard = ButtonInput::<KeyCode>::default();
-        keyboard.press(KeyCode::KeyN);
-
-        assert_eq!(
-            simulation_shortcut(&keyboard),
-            Some(UiAction::LaunchColonization),
         );
     }
 

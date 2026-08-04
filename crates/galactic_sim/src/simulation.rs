@@ -228,6 +228,7 @@ impl Simulation {
             GameAction::LaunchTransport {
                 origin_colony_id,
                 destination_colony_id,
+                fleet_id,
                 cargo,
             } => {
                 match launch_transport_mission(
@@ -236,43 +237,35 @@ impl Simulation {
                     issuer,
                     origin_colony_id,
                     destination_colony_id,
+                    fleet_id,
                     cargo,
                 ) {
-                    Ok((created, launched)) => {
-                        let mut events = Vec::with_capacity(2);
-                        if let Some(created) = created {
-                            events.push(GameEventKind::FleetCreated(created));
-                        }
-                        events.push(GameEventKind::MissionLaunched(launched));
-                        events
-                    }
+                    Ok(launched) => vec![GameEventKind::MissionLaunched(launched)],
                     Err(error) => vec![GameEventKind::MissionLaunchRejected(
                         crate::MissionLaunchRejected {
-                            fleet_id: None,
+                            fleet_id: Some(fleet_id),
                             error,
                         },
                     )],
                 }
             }
-            GameAction::LaunchHarvest { colony_id, site_id } => {
+            GameAction::LaunchHarvest {
+                colony_id,
+                fleet_id,
+                site_id,
+            } => {
                 match launch_harvest_mission(
                     &mut self.state,
                     &self.universe,
                     issuer,
                     colony_id,
+                    fleet_id,
                     site_id,
                 ) {
-                    Ok((created, launched)) => {
-                        let mut events = Vec::with_capacity(2);
-                        if let Some(created) = created {
-                            events.push(GameEventKind::FleetCreated(created));
-                        }
-                        events.push(GameEventKind::MissionLaunched(launched));
-                        events
-                    }
+                    Ok(launched) => vec![GameEventKind::MissionLaunched(launched)],
                     Err(error) => vec![GameEventKind::MissionLaunchRejected(
                         crate::MissionLaunchRejected {
-                            fleet_id: None,
+                            fleet_id: Some(fleet_id),
                             error,
                         },
                     )],

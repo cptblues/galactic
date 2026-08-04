@@ -1,5 +1,5 @@
 use galactic_domain::{
-    ColonyId, ExtractionSiteId, FactionId, MissionId, PlanetId, ResourceStock, SystemId,
+    ColonyId, ExtractionSiteId, FactionId, FleetId, MissionId, PlanetId, ResourceStock, SystemId,
 };
 
 use crate::{
@@ -59,10 +59,12 @@ pub enum GameAction {
     LaunchTransport {
         origin_colony_id: ColonyId,
         destination_colony_id: ColonyId,
+        fleet_id: FleetId,
         cargo: ResourceStock,
     },
     LaunchHarvest {
         colony_id: ColonyId,
+        fleet_id: FleetId,
         site_id: ExtractionSiteId,
     },
     LaunchColonization {

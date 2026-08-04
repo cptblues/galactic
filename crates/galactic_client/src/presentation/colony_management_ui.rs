@@ -1,11 +1,8 @@
 use bevy::prelude::*;
 use galactic_domain::ResourceStock;
-use galactic_sim::{
-    GameAction, GameEventKind, MissionKind, MissionResult, SelectionTarget, Simulation,
-};
+use galactic_sim::{GameAction, GameEventKind, SelectionTarget, Simulation};
 
 use crate::presentation::components::*;
-use crate::presentation::inspector_panel::*;
 use crate::presentation::resource_hud::*;
 use crate::presentation::shortcuts::{action_active, action_available};
 use crate::presentation::strategic_navigation::*;
@@ -41,19 +38,6 @@ pub(crate) fn handle_colony_management_buttons(
             ManagementButtonAction::NextColony => {
                 cycle_management_colony(&mut management, &mut simulation, false);
             }
-            ManagementButtonAction::PreviousTransportDestination => {
-                cycle_transport_destination(&mut management, simulation.simulation(), true);
-            }
-            ManagementButtonAction::NextTransportDestination => {
-                cycle_transport_destination(&mut management, simulation.simulation(), false);
-            }
-            ManagementButtonAction::SelectTransportCargo(preset) => {
-                management.transport_cargo = preset;
-                management.feedback.clear();
-            }
-            ManagementButtonAction::LaunchTransport => {
-                launch_selected_transport(&mut management, &mut simulation);
-            }
             ManagementButtonAction::SelectBuilding(kind) => {
                 management.selected_building = kind;
                 management.feedback.clear();
@@ -82,9 +66,7 @@ pub(crate) fn cancel_active_construction(
 pub(crate) fn capture_colony_management_feedback(
     simulation: Res<SimulationResource>,
     mut management: ResMut<ColonyManagementState>,
-    open_panel: Res<OpenPanel>,
 ) {
-    let is_open = *open_panel == OpenPanel::Colony;
     let active_colony_id = simulation.simulation().state().active_colony_id;
     for event in &simulation.pending_events {
         match event.kind {
@@ -132,35 +114,6 @@ pub(crate) fn capture_colony_management_feedback(
                     construction_error_text(rejected.error),
                 );
             }
-            GameEventKind::MissionLaunched(launched)
-                if is_open && launched.kind == MissionKind::Transport =>
-            {
-                management.feedback = simulation
-                    .simulation()
-                    .state()
-                    .mission(launched.mission_id)
-                    .and_then(|mission| mission.transport)
-                    .map(|transport| {
-                        format!(
-                            "Transport lancé vers C{} : {}.",
-                            transport.destination_colony_id.raw(),
-                            transport_cargo_label(transport.cargo),
-                        )
-                    })
-                    .unwrap_or_else(|| "Transport lancé.".to_string());
-            }
-            GameEventKind::MissionLaunchRejected(rejected) if is_open => {
-                management.feedback =
-                    format!("Transport refusé : {}", mission_error_text(rejected.error));
-            }
-            GameEventKind::MissionResolved(resolution)
-                if matches!(resolution.result, MissionResult::Transport(_)) =>
-            {
-                let MissionResult::Transport(result) = resolution.result else {
-                    unreachable!("the guard selected a transport result");
-                };
-                management.feedback = transport_result_label(result);
-            }
             _ => {}
         }
     }
@@ -168,15 +121,12 @@ pub(crate) fn capture_colony_management_feedback(
 
 pub(crate) fn update_colony_management_visibility(
     simulation: Res<SimulationResource>,
-    mut management: ResMut<ColonyManagementState>,
+    management: Res<ColonyManagementState>,
     open_panel: Res<OpenPanel>,
     mut roots: Query<&mut Visibility, With<ColonyManagementRoot>>,
     mut texts: Query<(&ManagementTextRole, &mut Text)>,
 ) {
     let is_open = *open_panel == OpenPanel::Colony;
-    if is_open {
-        sync_transport_destination(&mut management, simulation.simulation());
-    }
     for mut visibility in &mut roots {
         let next = if is_open {
             Visibility::Visible
@@ -224,10 +174,7 @@ pub(crate) fn update_colony_management_visibility(
             ),
             ManagementTextRole::ColonyList => Some(colony_list_label(simulation.simulation())),
             ManagementTextRole::Feedback => Some(management.feedback.clone()),
-            ManagementTextRole::TransportDestination
-            | ManagementTextRole::TransportCargo
-            | ManagementTextRole::TransportLaunchLabel
-            | ManagementTextRole::BuildingDetail
+            ManagementTextRole::BuildingDetail
             | ManagementTextRole::UpgradeLabel
             | ManagementTextRole::Queue => None,
         };
@@ -405,71 +352,6 @@ pub(crate) fn update_colony_management_queue(
     }
 }
 
-pub(crate) fn update_colony_management_transport(
-    simulation: Res<SimulationResource>,
-    management: Res<ColonyManagementState>,
-    open_panel: Res<OpenPanel>,
-    mut texts: Query<(&ManagementTextRole, &mut Text, &mut TextColor)>,
-    mut launch_buttons: ManagementTransportLaunchStyleQuery,
-    mut preset_buttons: ManagementTransportPresetStyleQuery,
-) {
-    if *open_panel != OpenPanel::Colony {
-        return;
-    }
-    let state = simulation.simulation().state();
-    let destination = management
-        .transport_destination_id
-        .and_then(|colony_id| state.colony(colony_id));
-    let cargo = management.transport_cargo.cargo();
-    let available = state.active_player_colony().is_some_and(|origin| {
-        destination.is_some() && origin.resources.available().can_cover(cargo)
-    });
-    let destination_label = destination
-        .map(|colony| format!("C{} {}", colony.id.raw(), colony.name))
-        .unwrap_or_else(|| "Deux colonies requises".to_string());
-    let cargo_label = transport_cargo_label(cargo);
-    let launch_label = if destination.is_none() {
-        "DEUX COLONIES REQUISES"
-    } else {
-        "LANCER LE TRANSPORT"
-    };
-
-    for (role, mut text, mut color) in &mut texts {
-        match role {
-            ManagementTextRole::TransportDestination => {
-                text.0 = destination_label.clone();
-                color.0 = if destination.is_some() {
-                    Color::srgb(0.78, 0.88, 0.92)
-                } else {
-                    Color::srgb(0.64, 0.66, 0.66)
-                };
-            }
-            ManagementTextRole::TransportCargo => {
-                text.0 = format!("Cargaison : {cargo_label}");
-                color.0 = Color::srgb(0.76, 0.84, 0.88);
-            }
-            ManagementTextRole::TransportLaunchLabel => {
-                text.0 = launch_label.to_string();
-                color.0 = if available {
-                    Color::srgb(0.86, 0.98, 0.92)
-                } else {
-                    Color::srgb(0.64, 0.66, 0.66)
-                };
-            }
-            _ => {}
-        }
-    }
-    for (interaction, mut background, mut outline) in &mut launch_buttons {
-        background.0 = action_button_color(available, false, interaction);
-        outline.color = action_button_outline(available, false, interaction);
-    }
-    for (button, interaction, mut background, mut outline) in &mut preset_buttons {
-        let selected = button.preset == management.transport_cargo;
-        background.0 = action_button_color(true, selected, interaction);
-        outline.color = action_button_outline(true, selected, interaction);
-    }
-}
-
 pub(crate) fn toggle_colony_management(
     management: &mut ColonyManagementState,
     open_panel: &mut OpenPanel,
@@ -536,79 +418,6 @@ pub(crate) fn colony_list_label(simulation: &Simulation) -> String {
     } else {
         format!("COLONIES : {}", entries.join("   "))
     }
-}
-
-pub(crate) fn sync_transport_destination(
-    management: &mut ColonyManagementState,
-    simulation: &Simulation,
-) {
-    let state = simulation.state();
-    let origin = state.active_colony_id;
-    let destinations = state
-        .player_colony_ids()
-        .into_iter()
-        .filter(|colony_id| Some(*colony_id) != origin)
-        .collect::<Vec<_>>();
-    if management
-        .transport_destination_id
-        .is_some_and(|current| destinations.contains(&current))
-    {
-        return;
-    }
-    management.transport_destination_id = destinations.first().copied();
-}
-
-pub(crate) fn cycle_transport_destination(
-    management: &mut ColonyManagementState,
-    simulation: &Simulation,
-    reverse: bool,
-) {
-    sync_transport_destination(management, simulation);
-    let origin = simulation.state().active_colony_id;
-    let destinations = simulation
-        .state()
-        .player_colony_ids()
-        .into_iter()
-        .filter(|colony_id| Some(*colony_id) != origin)
-        .collect::<Vec<_>>();
-    if destinations.is_empty() {
-        management.transport_destination_id = None;
-        return;
-    }
-    let current = management
-        .transport_destination_id
-        .and_then(|active| destinations.iter().position(|id| *id == active))
-        .unwrap_or(0);
-    let next = if reverse {
-        current.checked_sub(1).unwrap_or(destinations.len() - 1)
-    } else {
-        (current + 1) % destinations.len()
-    };
-    management.transport_destination_id = Some(destinations[next]);
-    management.feedback.clear();
-}
-
-pub(crate) fn launch_selected_transport(
-    management: &mut ColonyManagementState,
-    simulation: &mut SimulationResource,
-) {
-    sync_transport_destination(management, simulation.simulation());
-    let Some(origin_colony_id) = simulation.simulation().state().active_colony_id else {
-        management.feedback = "Aucune colonie active.".to_string();
-        return;
-    };
-    let Some(destination_colony_id) = management.transport_destination_id else {
-        management.feedback = "Une deuxième colonie est nécessaire.".to_string();
-        return;
-    };
-    apply_simulation_command(
-        simulation,
-        GameAction::LaunchTransport {
-            origin_colony_id,
-            destination_colony_id,
-            cargo: management.transport_cargo.cargo(),
-        },
-    );
 }
 
 pub(crate) fn transport_cargo_label(cargo: ResourceStock) -> String {

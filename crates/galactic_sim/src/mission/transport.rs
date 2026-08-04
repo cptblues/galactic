@@ -1,13 +1,10 @@
-use galactic_domain::{ColonyId, FactionId, ResourceStock};
+use galactic_domain::{ColonyId, FactionId, FleetId, ResourceStock};
 
-use crate::{
-    CraftableId, FleetComposition, FleetCreated, FleetError, GameState, UniverseRepository,
-    default_ruleset, form_fleet,
-};
+use crate::{GameState, UniverseRepository};
 
 use super::{
     MissionError, MissionKind, MissionLaunched, MissionOrder, MissionPhase, MissionResult,
-    MissionState, MissionStateError, MissionTarget, launch_mission_with_payload, plan_mission,
+    MissionState, MissionStateError, MissionTarget, launch_mission_with_payload,
     resource_stock_total,
 };
 
@@ -92,7 +89,7 @@ pub(crate) fn validate_transport_launch(
     Ok(())
 }
 
-/// Launches an atomic colony-to-colony transport.
+/// Launches an atomic colony-to-colony transport with an explicit fleet.
 ///
 /// Cargo is reserved at order time, committed into the fleet at departure,
 /// delivered up to the destination's free storage, then returned to the
@@ -104,12 +101,12 @@ pub fn launch_transport_mission(
     actor: FactionId,
     origin_colony_id: ColonyId,
     destination_colony_id: ColonyId,
+    fleet_id: FleetId,
     cargo: ResourceStock,
-) -> Result<(Option<FleetCreated>, MissionLaunched), MissionError> {
+) -> Result<MissionLaunched, MissionError> {
     if cargo.is_zero() {
         return Err(MissionError::TransportCargoEmpty);
     }
-    let cargo_total = resource_stock_total(cargo)?;
     let origin_colony = state
         .colony(origin_colony_id)
         .ok_or(MissionError::UnknownOriginColony(origin_colony_id))?;
@@ -136,73 +133,6 @@ pub fn launch_transport_mission(
     };
     let departure_at = state.clock.current_tick();
     let mut candidate = state.clone();
-    let existing_fleet = candidate
-        .fleets
-        .iter()
-        .filter(|fleet| {
-            candidate.can_manage(actor, fleet.owner)
-                && fleet.is_idle()
-                && fleet.location == crate::FleetLocation::Docked(origin_colony_id)
-                && fleet.cargo.is_zero()
-                && fleet
-                    .capabilities()
-                    .is_ok_and(|capabilities| capabilities.cargo_capacity >= cargo_total)
-        })
-        .map(|fleet| fleet.id)
-        .filter(|fleet_id| {
-            plan_mission(
-                &candidate,
-                universe,
-                actor,
-                MissionOrder {
-                    fleet_id: *fleet_id,
-                    origin,
-                    target,
-                    kind: MissionKind::Transport,
-                    departure_at,
-                },
-            )
-            .is_ok()
-        })
-        .min();
-
-    let (fleet_id, created) = if let Some(fleet_id) = existing_fleet {
-        (fleet_id, None)
-    } else {
-        let definition = default_ruleset()
-            .craftables()
-            .get(CraftableId::LIGHT_CARGO)
-            .expect("the default ruleset defines its light cargo");
-        let capacity_per_ship = definition
-            .ship
-            .expect("the light cargo definition is a ship")
-            .cargo_capacity;
-        let required_ships = cargo_total
-            .checked_add(capacity_per_ship.saturating_sub(1))
-            .ok_or(MissionError::TransportCargoAmountOverflow)?
-            / capacity_per_ship;
-        let available_ships = candidate
-            .colony(origin_colony_id)
-            .expect("the origin colony was validated")
-            .inventory
-            .quantity(CraftableId::LIGHT_CARGO);
-        if available_ships < required_ships {
-            return Err(MissionError::TransportFleetUnavailable {
-                colony_id: origin_colony_id,
-                required_capacity: cargo_total,
-                available_capacity: available_ships.saturating_mul(capacity_per_ship),
-            });
-        }
-        let composition = FleetComposition::from_stacks([crate::ShipStack::new(
-            CraftableId::LIGHT_CARGO,
-            required_ships,
-        )])
-        .map_err(FleetError::InvalidComposition)
-        .map_err(MissionError::Fleet)?;
-        let created = form_fleet(&mut candidate, actor, origin_colony_id, composition)
-            .map_err(MissionError::Fleet)?;
-        (created.fleet_id, Some(created))
-    };
 
     let launched = launch_mission_with_payload(
         &mut candidate,
@@ -224,7 +154,7 @@ pub fn launch_transport_mission(
         None,
     )?;
     *state = candidate;
-    Ok((created, launched))
+    Ok(launched)
 }
 
 pub(crate) fn validate_transport_state(mission: &MissionState) -> Result<(), MissionStateError> {

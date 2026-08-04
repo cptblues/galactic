@@ -1,9 +1,8 @@
 use bevy::prelude::*;
-use galactic_domain::{ExtractionSiteId, PlanetId, SystemId};
-use galactic_sim::{
-    GameAction, KnowledgeLevel, MissionTarget, PlanetaryOccupancyIntel, SelectionTarget,
-    Simulation, TechnologyUnlock, TimeSpeed, assess_planet_colonizability,
-};
+use galactic_domain::{PlanetId, SystemId};
+use galactic_sim::{GameAction, KnowledgeLevel, SelectionTarget, Simulation, TimeSpeed};
+#[cfg(test)]
+use galactic_sim::{MissionTarget, PlanetaryOccupancyIntel};
 
 use crate::presentation::components::*;
 use crate::presentation::scene::systems_for_universe_view;
@@ -19,16 +18,8 @@ pub(crate) fn simulation_shortcut(keyboard: &ButtonInput<KeyCode>) -> Option<UiA
         Some(UiAction::SetSpeed(TimeSpeed::X2))
     } else if keyboard.just_pressed(KeyCode::Digit3) {
         Some(UiAction::SetSpeed(TimeSpeed::X4))
-    } else if keyboard.just_pressed(KeyCode::KeyK) {
-        Some(UiAction::LaunchProbe)
     } else if keyboard.just_pressed(KeyCode::KeyL) {
         Some(UiAction::AnalyzePlanet)
-    } else if keyboard.just_pressed(KeyCode::KeyM) {
-        Some(UiAction::LaunchAttack)
-    } else if keyboard.just_pressed(KeyCode::KeyH) {
-        Some(UiAction::LaunchHarvest)
-    } else if keyboard.just_pressed(KeyCode::KeyN) {
-        Some(UiAction::LaunchColonization)
     } else {
         None
     }
@@ -97,40 +88,9 @@ pub(crate) fn apply_ui_action(
             navigation.exit_system();
             rebuild.0 = true;
         }
-        UiAction::LaunchProbe => {
-            if let Some((colony_id, target)) = selected_probe_context(simulation.simulation()) {
-                apply_simulation_command(simulation, GameAction::LaunchProbe { colony_id, target });
-            }
-        }
         UiAction::AnalyzePlanet => {
             if let Some(planet_id) = selected_analysis_target(simulation.simulation()) {
                 apply_simulation_command(simulation, GameAction::AnalyzePlanet { planet_id });
-            }
-        }
-        UiAction::LaunchAttack => {
-            if let Some((colony_id, target)) = selected_attack_context(simulation.simulation()) {
-                apply_simulation_command(
-                    simulation,
-                    GameAction::LaunchAttack { colony_id, target },
-                );
-            }
-        }
-        UiAction::LaunchHarvest => {
-            if let Some((colony_id, site_id)) = selected_harvest_context(simulation.simulation()) {
-                apply_simulation_command(
-                    simulation,
-                    GameAction::LaunchHarvest { colony_id, site_id },
-                );
-            }
-        }
-        UiAction::LaunchColonization => {
-            if let Some((colony_id, target)) =
-                selected_colonization_context(simulation.simulation())
-            {
-                apply_simulation_command(
-                    simulation,
-                    GameAction::LaunchColonization { colony_id, target },
-                );
             }
         }
         UiAction::ToggleProjection => {
@@ -184,12 +144,6 @@ pub(crate) fn action_available(
                 && enterable_selected_system(simulation, navigation.debug_full_graph).is_some()
         }
         UiAction::ExitSystem => matches!(navigation.mode, StrategicViewMode::System(_)),
-        UiAction::LaunchProbe => selected_probe_context(simulation.simulation()).is_some(),
-        UiAction::LaunchAttack => selected_attack_context(simulation.simulation()).is_some(),
-        UiAction::LaunchHarvest => selected_harvest_context(simulation.simulation()).is_some(),
-        UiAction::LaunchColonization => {
-            selected_colonization_context(simulation.simulation()).is_some()
-        }
         UiAction::AnalyzePlanet => selected_analysis_target(simulation.simulation()).is_some(),
     }
 }
@@ -209,32 +163,6 @@ pub(crate) fn action_active(
     }
 }
 
-pub(crate) fn selected_probe_context(
-    simulation: &Simulation,
-) -> Option<(galactic_domain::ColonyId, MissionTarget)> {
-    let state = simulation.state();
-    let target = match state.selected {
-        SelectionTarget::System(system_id)
-            if state.system_knowledge_level(system_id) == KnowledgeLevel::Detected =>
-        {
-            MissionTarget::System(system_id)
-        }
-        SelectionTarget::Planet {
-            system_id,
-            planet_id,
-        } if state.planet_knowledge_level(planet_id) == KnowledgeLevel::Detected => {
-            MissionTarget::Planet {
-                system_id,
-                planet_id,
-            }
-        }
-        SelectionTarget::None | SelectionTarget::System(_) | SelectionTarget::Planet { .. } => {
-            return None;
-        }
-    };
-    Some((state.active_player_colony()?.id, target))
-}
-
 pub(crate) fn selected_analysis_target(simulation: &Simulation) -> Option<PlanetId> {
     let state = simulation.state();
     let SelectionTarget::Planet { planet_id, .. } = state.selected else {
@@ -243,6 +171,7 @@ pub(crate) fn selected_analysis_target(simulation: &Simulation) -> Option<Planet
     (state.planet_knowledge_level(planet_id) == KnowledgeLevel::Probed).then_some(planet_id)
 }
 
+#[cfg(test)]
 pub(crate) fn selected_attack_context(
     simulation: &Simulation,
 ) -> Option<(galactic_domain::ColonyId, MissionTarget)> {
@@ -266,56 +195,6 @@ pub(crate) fn selected_attack_context(
     }
     Some((
         state.active_player_colony()?.id,
-        MissionTarget::Planet {
-            system_id,
-            planet_id,
-        },
-    ))
-}
-
-pub(crate) fn selected_harvest_context(
-    simulation: &Simulation,
-) -> Option<(galactic_domain::ColonyId, ExtractionSiteId)> {
-    let state = simulation.state();
-    let SelectionTarget::Planet { planet_id, .. } = state.selected else {
-        return None;
-    };
-    if state.planet_knowledge_level(planet_id) < KnowledgeLevel::Analyzed
-        || !state
-            .research
-            .has_unlock(TechnologyUnlock::RemoteExtraction)
-        || state.colony_on_planet(planet_id).is_some()
-    {
-        return None;
-    }
-    let site = state.extraction_site_on_planet(planet_id)?;
-    if site.is_depleted() || site.reserved_by.is_some() {
-        return None;
-    }
-    Some((state.active_player_colony()?.id, site.id))
-}
-
-pub(crate) fn selected_colonization_context(
-    simulation: &Simulation,
-) -> Option<(galactic_domain::ColonyId, MissionTarget)> {
-    let state = simulation.state();
-    let SelectionTarget::Planet {
-        system_id,
-        planet_id,
-    } = state.selected
-    else {
-        return None;
-    };
-    let colony_id = state.active_player_colony()?.id;
-    assess_planet_colonizability(
-        state,
-        simulation.universe_repository(),
-        state.player_faction,
-        planet_id,
-    )
-    .is_colonizable()
-    .then_some((
-        colony_id,
         MissionTarget::Planet {
             system_id,
             planet_id,

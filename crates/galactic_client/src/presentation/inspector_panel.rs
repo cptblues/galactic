@@ -1323,13 +1323,6 @@ pub(crate) fn mission_error_text(error: galactic_sim::MissionError) -> String {
         galactic_sim::MissionError::TransportDestinationTargetMismatch { .. } => {
             "la destination ne correspond plus à la colonie choisie".to_string()
         }
-        galactic_sim::MissionError::TransportFleetUnavailable {
-            required_capacity,
-            available_capacity,
-            ..
-        } => format!(
-            "capacité cargo insuffisante : {required_capacity} requise, {available_capacity} disponible ; construisez des Caboteurs Sillage"
-        ),
         galactic_sim::MissionError::TransportFleetHasCargo(_) => {
             "la flotte sélectionnée transporte déjà une cargaison".to_string()
         }
@@ -1359,9 +1352,6 @@ pub(crate) fn mission_error_text(error: galactic_sim::MissionError) -> String {
         }
         galactic_sim::MissionError::ExtractionSiteBusy { .. } => {
             "ce site est déjà réservé par une autre mission".to_string()
-        }
-        galactic_sim::MissionError::HarvestFleetUnavailable(_) => {
-            "aucun Caboteur Sillage disponible ; construisez-en au chantier orbital".to_string()
         }
         galactic_sim::MissionError::HarvestFleetHasCargo(_) => {
             "la flotte de récolte transporte déjà une cargaison".to_string()

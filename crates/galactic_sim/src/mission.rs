@@ -13,7 +13,7 @@ use crate::{
     CombatSnapshotError, CraftableId, FleetAssignment, FleetCompositionError, FleetError,
     FleetLocation, GameState, KnowledgeChange, KnowledgeLevel, KnowledgeTarget,
     PlanetaryIntelPrecision, StrategicDuration, StrategicTick, TechnologyUnlock,
-    UniverseRepository, assess_planet_colonizability, colonization_arrival_blocker,
+    UniverseRepository, assess_planet_colonizability, colonization_arrival_blocker, combat_rules,
     extraction_rules, initialize_colony_from_foundation, planetary_analysis_rules,
     prepare_attack_commitment, refresh_planetary_intelligence, resolve_and_apply_attack, stock_for,
 };
@@ -250,11 +250,6 @@ pub enum MissionError {
         colony_id: ColonyId,
         target: MissionTarget,
     },
-    TransportFleetUnavailable {
-        colony_id: ColonyId,
-        required_capacity: u64,
-        available_capacity: u64,
-    },
     TransportFleetHasCargo(FleetId),
     TransportCargoExceedsCapacity {
         cargo: ResourceStock,
@@ -277,7 +272,6 @@ pub enum MissionError {
         site_id: ExtractionSiteId,
         mission_id: MissionId,
     },
-    HarvestFleetUnavailable(ColonyId),
     HarvestFleetHasCargo(FleetId),
     ColonizationPlanetTargetRequired,
     ColonizationShipUnavailable(ColonyId),
@@ -613,6 +607,107 @@ pub fn plan_mission(
             return_arrival_at,
         },
     ))
+}
+
+/// Lists every fleet the player could explicitly assign to a mission of the
+/// given `kind` from `origin_colony_id` toward `target`.
+///
+/// A fleet is eligible when it is idle, docked at the origin, matches the
+/// capability required by `kind` (a pure probe for [`MissionKind::Probe`], a
+/// combat-capable fleet for [`MissionKind::Attack`], a single configured
+/// colony ship for [`MissionKind::Colonize`], an empty cargo-capable fleet
+/// for [`MissionKind::Transport`]/[`MissionKind::Harvest`]), and would
+/// actually produce a valid [`MissionPlan`] (route, range and fuel all
+/// checked via [`plan_mission`]). The result is never auto-picked or
+/// auto-formed: it is only ever a list for the player to choose from.
+pub fn eligible_fleets_for_mission(
+    state: &GameState,
+    universe: &UniverseRepository,
+    actor: FactionId,
+    origin_colony_id: ColonyId,
+    target: MissionTarget,
+    kind: MissionKind,
+) -> Vec<FleetId> {
+    let Some(origin_colony) = state.colony(origin_colony_id) else {
+        return Vec::new();
+    };
+    let origin = origin_colony.system_id;
+    let departure_at = state.clock.current_tick();
+    let colony_ship = planetary_analysis_rules().colony_ship();
+
+    let mut eligible: Vec<FleetId> = state
+        .fleets
+        .iter()
+        .filter(|fleet| {
+            state.can_manage(actor, fleet.owner)
+                && fleet.is_idle()
+                && fleet.location == FleetLocation::Docked(origin_colony_id)
+                && match kind {
+                    MissionKind::Probe => {
+                        fleet.composition.total_ships()
+                            == fleet.composition.quantity(CraftableId::LIGHT_PROBE)
+                    }
+                    MissionKind::Attack => combat_rules().is_combat_fleet(fleet),
+                    MissionKind::Colonize => {
+                        fleet.composition.total_ships() == 1
+                            && fleet.composition.quantity(colony_ship) == 1
+                    }
+                    MissionKind::Transport | MissionKind::Harvest => {
+                        fleet.cargo.is_zero()
+                            && fleet
+                                .capabilities()
+                                .is_ok_and(|capabilities| capabilities.cargo_capacity > 0)
+                    }
+                }
+        })
+        .map(|fleet| fleet.id)
+        .filter(|fleet_id| {
+            plan_mission(
+                state,
+                universe,
+                actor,
+                MissionOrder {
+                    fleet_id: *fleet_id,
+                    origin,
+                    target,
+                    kind,
+                    departure_at,
+                },
+            )
+            .is_ok()
+        })
+        .collect();
+    eligible.sort();
+    eligible
+}
+
+/// Computes how many units of a site's resource a fleet could recover if a
+/// harvest mission launched now, capped by the site's remaining reserve, the
+/// extraction rule's per-mission maximum, and the fleet's cargo capacity.
+///
+/// Mirrors the formula applied at collection time when a harvest mission
+/// actually returns, so the wizard can show the exact recoverable quantity
+/// before launch.
+pub fn harvest_recoverable_quantity(
+    state: &GameState,
+    universe: &UniverseRepository,
+    site_id: ExtractionSiteId,
+    fleet_id: FleetId,
+) -> Result<u64, MissionError> {
+    let site = state
+        .extraction_site(site_id)
+        .ok_or(MissionError::UnknownExtractionSite(site_id))?;
+    let planet = universe
+        .planet(site.planet_id)
+        .ok_or(MissionError::UnknownPlanetTarget(site.planet_id))?;
+    let rule = extraction_rules().rule_for(planet.kind);
+    let capacity = state
+        .fleet(fleet_id)
+        .ok_or(MissionError::UnknownFleet(fleet_id))?
+        .capabilities()
+        .map_err(MissionError::InvalidFleetComposition)?
+        .cargo_capacity;
+    Ok(site.remaining.min(rule.maximum_harvest()).min(capacity))
 }
 
 fn validate_mission_target(
@@ -1391,20 +1486,13 @@ pub(crate) fn advance_missions(
                 MissionPhase::Returning => {
                     if kind == MissionKind::Harvest {
                         let mut updated = harvest.expect("a validated harvest has a harvest state");
-                        let site = state
-                            .extraction_site(updated.site_id)
-                            .expect("a validated harvest site exists");
-                        let planet = universe
-                            .planet(site.planet_id)
-                            .expect("a validated harvest planet exists");
-                        let rule = extraction_rules().rule_for(planet.kind);
-                        let capacity = state
-                            .fleet(fleet_id)
-                            .expect("validated mission fleet exists")
-                            .capabilities()
-                            .expect("validated mission fleet has valid capabilities")
-                            .cargo_capacity;
-                        let amount = site.remaining.min(rule.maximum_harvest()).min(capacity);
+                        let amount = harvest_recoverable_quantity(
+                            state,
+                            universe,
+                            updated.site_id,
+                            fleet_id,
+                        )
+                        .expect("a validated harvest mission has a valid site and fleet");
                         let site = state
                             .extraction_site_mut(updated.site_id)
                             .expect("a validated harvest site exists");
@@ -1818,7 +1906,7 @@ mod tests {
         (simulation, target)
     }
 
-    fn simulation_with_two_colonies() -> Simulation {
+    fn simulation_with_two_colonies() -> (Simulation, FleetId) {
         let (mut simulation, target) = simulation_with_colonization_target();
         let origin_colony_id = simulation.state().colonies[0].id;
         simulation.apply_player_action(GameAction::LaunchColonization {
@@ -1833,10 +1921,16 @@ mod tests {
         simulation.state_mut().colonies[0]
             .inventory
             .add(CraftableId::LIGHT_CARGO, 1);
-        simulation
+        let actor = simulation.state().player_faction;
+        let composition =
+            FleetComposition::from_stacks([crate::ShipStack::new(CraftableId::LIGHT_CARGO, 1)])
+                .expect("one light cargo is a valid composition");
+        let created = form_fleet(simulation.state_mut(), actor, origin_colony_id, composition)
+            .expect("the origin colony has one light cargo docked");
+        (simulation, created.fleet_id)
     }
 
-    fn simulation_with_harvest_site() -> (Simulation, ExtractionSiteId) {
+    fn simulation_with_harvest_site() -> (Simulation, ExtractionSiteId, FleetId) {
         let mut simulation = Simulation::new(UniverseConfig::mvp());
         let actor = simulation.state().player_faction;
         let origin = simulation.state().colonies[0].system_id;
@@ -1871,7 +1965,17 @@ mod tests {
             .inventory
             .add(CraftableId::LIGHT_CARGO, 2);
         assert_eq!(simulation.state().colonies[0].system_id, origin);
-        (simulation, ExtractionSiteId::for_planet(target))
+        let origin_colony_id = simulation.state().colonies[0].id;
+        let composition =
+            FleetComposition::from_stacks([ShipStack::new(CraftableId::LIGHT_CARGO, 1)])
+                .expect("one light cargo is a valid composition");
+        let created = form_fleet(simulation.state_mut(), actor, origin_colony_id, composition)
+            .expect("the origin colony has light cargo docked");
+        (
+            simulation,
+            ExtractionSiteId::for_planet(target),
+            created.fleet_id,
+        )
     }
 
     fn detected_planets_in_origin(simulation: &Simulation) -> Vec<(usize, PlanetId)> {
@@ -2760,7 +2864,7 @@ mod tests {
 
     #[test]
     fn transport_requires_stock_and_capacity_without_partial_mutation() {
-        let mut simulation = simulation_with_two_colonies();
+        let (mut simulation, fleet_id) = simulation_with_two_colonies();
         let actor = simulation.state().player_faction;
         let origin = simulation.state().colonies[0].id;
         let destination = simulation.state().colonies[1].id;
@@ -2775,12 +2879,12 @@ mod tests {
                 actor,
                 origin,
                 destination,
+                fleet_id,
                 oversized,
             ),
-            Err(MissionError::TransportFleetUnavailable {
-                colony_id: origin,
-                required_capacity: 801,
-                available_capacity: 800,
+            Err(MissionError::TransportCargoExceedsCapacity {
+                cargo: oversized,
+                capacity: 800,
             }),
         );
         assert_eq!(simulation.state(), &before);
@@ -2796,6 +2900,7 @@ mod tests {
                 actor,
                 origin,
                 destination,
+                fleet_id,
                 cargo,
             ),
             Err(MissionError::Resources(
@@ -2807,19 +2912,20 @@ mod tests {
 
     #[test]
     fn transport_cancellation_releases_every_reservation_without_loss() {
-        let mut simulation = simulation_with_two_colonies();
+        let (mut simulation, fleet_id) = simulation_with_two_colonies();
         let actor = simulation.state().player_faction;
         let origin = simulation.state().colonies[0].id;
         let destination = simulation.state().colonies[1].id;
         let origin_before = simulation.state().colony(origin).unwrap().resources.stock();
         let cargo = ResourceStock::new(275, 125, 20);
         let repository = simulation.universe_repository().clone();
-        let (_, launched) = launch_transport_mission(
+        let launched = launch_transport_mission(
             simulation.state_mut(),
             &repository,
             actor,
             origin,
             destination,
+            fleet_id,
             cargo,
         )
         .expect("one light cargo can reserve the transport");
@@ -2857,7 +2963,7 @@ mod tests {
 
     #[test]
     fn transport_delivers_once_and_accounts_for_every_resource() {
-        let mut simulation = simulation_with_two_colonies();
+        let (mut simulation, fleet_id) = simulation_with_two_colonies();
         let actor = simulation.state().player_faction;
         let origin = simulation.state().colonies[0].id;
         let destination = simulation.state().colonies[1].id;
@@ -2871,12 +2977,13 @@ mod tests {
         let cargo = ResourceStock::new(120, 80, 20);
         let repository = simulation.universe_repository().clone();
 
-        let (_, launched) = launch_transport_mission(
+        let launched = launch_transport_mission(
             simulation.state_mut(),
             &repository,
             actor,
             origin,
             destination,
+            fleet_id,
             cargo,
         )
         .expect("one light cargo can carry the requested resources");
@@ -2949,7 +3056,7 @@ mod tests {
 
     #[test]
     fn full_destination_storage_returns_every_resource_to_the_origin() {
-        let mut simulation = simulation_with_two_colonies();
+        let (mut simulation, fleet_id) = simulation_with_two_colonies();
         let actor = simulation.state().player_faction;
         let origin = simulation.state().colonies[0].id;
         let destination = simulation.state().colonies[1].id;
@@ -2970,12 +3077,13 @@ mod tests {
             .stock();
         let repository = simulation.universe_repository().clone();
 
-        let (_, launched) = launch_transport_mission(
+        let launched = launch_transport_mission(
             simulation.state_mut(),
             &repository,
             actor,
             origin,
             destination,
+            fleet_id,
             cargo,
         )
         .expect("one light cargo can carry the requested resources");
@@ -3019,19 +3127,20 @@ mod tests {
 
     #[test]
     fn invalid_transport_destination_returns_the_cargo_and_reports_failure() {
-        let mut simulation = simulation_with_two_colonies();
+        let (mut simulation, fleet_id) = simulation_with_two_colonies();
         let actor = simulation.state().player_faction;
         let origin = simulation.state().colonies[0].id;
         let destination = simulation.state().colonies[1].id;
         let cargo = ResourceStock::new(90, 60, 10);
         let origin_before = simulation.state().colony(origin).unwrap().resources.stock();
         let repository = simulation.universe_repository().clone();
-        let (_, launched) = launch_transport_mission(
+        let launched = launch_transport_mission(
             simulation.state_mut(),
             &repository,
             actor,
             origin,
             destination,
+            fleet_id,
             cargo,
         )
         .expect("the transport initially has a valid destination");
@@ -3081,7 +3190,7 @@ mod tests {
 
     #[test]
     fn harvest_requires_analysis_technology_and_an_unreserved_site_atomically() {
-        let (mut simulation, site_id) = simulation_with_harvest_site();
+        let (mut simulation, site_id, fleet_id) = simulation_with_harvest_site();
         let actor = simulation.state().player_faction;
         let colony_id = simulation.state().colonies[0].id;
         let repository = simulation.universe_repository().clone();
@@ -3099,6 +3208,7 @@ mod tests {
                 &repository,
                 actor,
                 colony_id,
+                fleet_id,
                 site_id,
             ),
             Err(MissionError::MissingHarvestTechnology(
@@ -3114,11 +3224,12 @@ mod tests {
             TechnologyId::REMOTE_EXTRACTION,
             TechnologyId::PLANETARY_ANALYSIS,
         ]);
-        let (_, launched) = launch_harvest_mission(
+        let launched = launch_harvest_mission(
             simulation.state_mut(),
             &repository,
             actor,
             colony_id,
+            fleet_id,
             site_id,
         )
         .expect("an analyzed remote site accepts a cargo mission");
@@ -3131,6 +3242,11 @@ mod tests {
             Some(launched.mission_id),
         );
 
+        let composition =
+            FleetComposition::from_stacks([ShipStack::new(CraftableId::LIGHT_CARGO, 1)])
+                .expect("one light cargo is a valid composition");
+        let second_fleet = form_fleet(simulation.state_mut(), actor, colony_id, composition)
+            .expect("the origin colony still has one spare light cargo docked");
         let before_busy = simulation.state().clone();
         assert!(matches!(
             launch_harvest_mission(
@@ -3138,6 +3254,7 @@ mod tests {
                 &repository,
                 actor,
                 colony_id,
+                second_fleet.fleet_id,
                 site_id,
             ),
             Err(MissionError::ExtractionSiteBusy {
@@ -3150,7 +3267,7 @@ mod tests {
 
     #[test]
     fn harvest_cancellation_releases_site_without_extracting() {
-        let (mut simulation, site_id) = simulation_with_harvest_site();
+        let (mut simulation, site_id, fleet_id) = simulation_with_harvest_site();
         let actor = simulation.state().player_faction;
         let colony_id = simulation.state().colonies[0].id;
         let repository = simulation.universe_repository().clone();
@@ -3159,11 +3276,12 @@ mod tests {
             .extraction_site(site_id)
             .expect("the site exists")
             .remaining;
-        let (_, launched) = launch_harvest_mission(
+        let launched = launch_harvest_mission(
             simulation.state_mut(),
             &repository,
             actor,
             colony_id,
+            fleet_id,
             site_id,
         )
         .expect("the harvest launches");
@@ -3187,7 +3305,7 @@ mod tests {
 
     #[test]
     fn harvest_debits_the_site_once_and_delivers_the_exact_cargo() {
-        let (mut simulation, site_id) = simulation_with_harvest_site();
+        let (mut simulation, site_id, fleet_id) = simulation_with_harvest_site();
         let actor = simulation.state().player_faction;
         let colony_id = simulation.state().colonies[0].id;
         let repository = simulation.universe_repository().clone();
@@ -3200,11 +3318,12 @@ mod tests {
             .planet(site_before.planet_id)
             .expect("the site planet exists");
         let rule = extraction_rules().rule_for(planet.kind);
-        let (_, launched) = launch_harvest_mission(
+        let launched = launch_harvest_mission(
             simulation.state_mut(),
             &repository,
             actor,
             colony_id,
+            fleet_id,
             site_id,
         )
         .expect("the harvest launches");
@@ -3294,7 +3413,7 @@ mod tests {
 
     #[test]
     fn depleted_site_cannot_create_more_resources() {
-        let (mut simulation, site_id) = simulation_with_harvest_site();
+        let (mut simulation, site_id, fleet_id) = simulation_with_harvest_site();
         let actor = simulation.state().player_faction;
         let colony_id = simulation.state().colonies[0].id;
         let repository = simulation.universe_repository().clone();
@@ -3303,11 +3422,12 @@ mod tests {
             .extraction_site_mut(site_id)
             .expect("the site exists")
             .remaining = 75;
-        let (_, launched) = launch_harvest_mission(
+        let launched = launch_harvest_mission(
             simulation.state_mut(),
             &repository,
             actor,
             colony_id,
+            fleet_id,
             site_id,
         )
         .expect("the last harvest launches");
@@ -3352,11 +3472,217 @@ mod tests {
                 &repository,
                 actor,
                 colony_id,
+                fleet_id,
                 site_id,
             ),
             Err(MissionError::ExtractionSiteDepleted(site_id)),
         );
         assert_eq!(simulation.state(), &before);
+    }
+
+    #[test]
+    fn eligible_fleets_for_mission_lists_only_matching_idle_docked_fleets() {
+        let (mut simulation, fleet_id) = simulation_with_two_colonies();
+        let actor = simulation.state().player_faction;
+        let origin = simulation.state().colonies[0].id;
+        let destination = simulation.state().colonies[1].id;
+        let repository = simulation.universe_repository().clone();
+        let destination_colony = simulation.state().colony(destination).unwrap();
+        let target = MissionTarget::Planet {
+            system_id: destination_colony.system_id,
+            planet_id: destination_colony.planet_id,
+        };
+
+        assert_eq!(
+            eligible_fleets_for_mission(
+                simulation.state(),
+                &repository,
+                actor,
+                origin,
+                target,
+                MissionKind::Transport,
+            ),
+            vec![fleet_id],
+        );
+        assert!(
+            eligible_fleets_for_mission(
+                simulation.state(),
+                &repository,
+                actor,
+                origin,
+                target,
+                MissionKind::Attack,
+            )
+            .is_empty(),
+            "a light cargo fleet is not a combat fleet",
+        );
+
+        let cargo = ResourceStock::new(50, 0, 0);
+        launch_transport_mission(
+            simulation.state_mut(),
+            &repository,
+            actor,
+            origin,
+            destination,
+            fleet_id,
+            cargo,
+        )
+        .expect("the light cargo can carry a small transport");
+
+        assert!(
+            eligible_fleets_for_mission(
+                simulation.state(),
+                &repository,
+                actor,
+                origin,
+                target,
+                MissionKind::Transport,
+            )
+            .is_empty(),
+            "a fleet away on a mission is never listed as eligible",
+        );
+    }
+
+    #[test]
+    fn harvest_recoverable_quantity_matches_the_amount_collected_at_resolution() {
+        let (mut simulation, site_id, fleet_id) = simulation_with_harvest_site();
+        let actor = simulation.state().player_faction;
+        let colony_id = simulation.state().colonies[0].id;
+        let repository = simulation.universe_repository().clone();
+
+        let expected =
+            harvest_recoverable_quantity(simulation.state(), &repository, site_id, fleet_id)
+                .expect("the site and fleet are valid before launch");
+        assert!(expected > 0);
+
+        let launched = launch_harvest_mission(
+            simulation.state_mut(),
+            &repository,
+            actor,
+            colony_id,
+            fleet_id,
+            site_id,
+        )
+        .expect("the harvest launches");
+        let return_arrival = simulation
+            .state()
+            .mission(launched.mission_id)
+            .expect("the harvest mission exists")
+            .plan
+            .return_arrival_at;
+        advance_missions(simulation.state_mut(), &repository, return_arrival);
+
+        assert!(matches!(
+            simulation
+                .state()
+                .mission(launched.mission_id)
+                .expect("the harvest mission exists")
+                .result,
+            Some(MissionResult::Harvest(HarvestMissionResult { collected, .. }))
+                if collected
+                    == stock_for(
+                        simulation
+                            .state()
+                            .extraction_site(site_id)
+                            .expect("the site remains")
+                            .resource,
+                        expected,
+                    )
+        ));
+    }
+
+    #[test]
+    fn transport_and_harvest_never_auto_form_and_reject_an_unknown_fleet() {
+        let (mut simulation, _fleet_id) = simulation_with_two_colonies();
+        let actor = simulation.state().player_faction;
+        let origin = simulation.state().colonies[0].id;
+        let destination = simulation.state().colonies[1].id;
+        let repository = simulation.universe_repository().clone();
+        let fleet_count_before = simulation.state().fleets.len();
+        let unknown_fleet = FleetId::new(999_999);
+
+        assert_eq!(
+            launch_transport_mission(
+                simulation.state_mut(),
+                &repository,
+                actor,
+                origin,
+                destination,
+                unknown_fleet,
+                ResourceStock::new(10, 0, 0),
+            ),
+            Err(MissionError::UnknownFleet(unknown_fleet)),
+        );
+        assert_eq!(simulation.state().fleets.len(), fleet_count_before);
+
+        let (mut harvest_simulation, site_id, _harvest_fleet_id) = simulation_with_harvest_site();
+        let harvest_colony_id = harvest_simulation.state().colonies[0].id;
+        let harvest_repository = harvest_simulation.universe_repository().clone();
+        let harvest_fleet_count_before = harvest_simulation.state().fleets.len();
+
+        assert_eq!(
+            launch_harvest_mission(
+                harvest_simulation.state_mut(),
+                &harvest_repository,
+                actor,
+                harvest_colony_id,
+                unknown_fleet,
+                site_id,
+            ),
+            Err(MissionError::UnknownFleet(unknown_fleet)),
+        );
+        assert_eq!(
+            harvest_simulation.state().fleets.len(),
+            harvest_fleet_count_before,
+        );
+    }
+
+    #[test]
+    fn transport_and_harvest_reject_a_fleet_already_carrying_cargo() {
+        let (mut simulation, fleet_id) = simulation_with_two_colonies();
+        let actor = simulation.state().player_faction;
+        let origin = simulation.state().colonies[0].id;
+        let destination = simulation.state().colonies[1].id;
+        let repository = simulation.universe_repository().clone();
+        simulation
+            .state_mut()
+            .fleet_mut(fleet_id)
+            .expect("the fleet exists")
+            .cargo = ResourceStock::new(1, 0, 0);
+
+        assert_eq!(
+            launch_transport_mission(
+                simulation.state_mut(),
+                &repository,
+                actor,
+                origin,
+                destination,
+                fleet_id,
+                ResourceStock::new(10, 0, 0),
+            ),
+            Err(MissionError::TransportFleetHasCargo(fleet_id)),
+        );
+
+        let (mut harvest_simulation, site_id, harvest_fleet_id) = simulation_with_harvest_site();
+        let harvest_colony_id = harvest_simulation.state().colonies[0].id;
+        let harvest_repository = harvest_simulation.universe_repository().clone();
+        harvest_simulation
+            .state_mut()
+            .fleet_mut(harvest_fleet_id)
+            .expect("the fleet exists")
+            .cargo = ResourceStock::new(1, 0, 0);
+
+        assert_eq!(
+            launch_harvest_mission(
+                harvest_simulation.state_mut(),
+                &harvest_repository,
+                actor,
+                harvest_colony_id,
+                harvest_fleet_id,
+                site_id,
+            ),
+            Err(MissionError::HarvestFleetHasCargo(harvest_fleet_id)),
+        );
     }
 
     #[test]
