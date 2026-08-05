@@ -1723,15 +1723,19 @@ commandement` et se valide uniquement après ouverture volontaire du panneau
 défaut, puis restent réouvrables par les boutons existants.
 
 Le panneau Objectifs abandonne sa hauteur minimale rigide pour laisser la liste
-et le détail scroller dans l'espace disponible sur petit écran. Le détail de
-ressources conserve `Stock total`, `Disponible maintenant` et `Réservé par
-ordres/missions`, sans afficher la formule explicative. Le bloc `ACTIONS` ne
-montre plus `Cible suivante` ni `Retour univers`; les raccourcis correspondants
-restent actifs et `Tab cible suivante` est documenté dans le helper `?`.
+et le détail scroller dans l'espace disponible sur petit écran. La modale
+d'introduction utilise aussi une zone de texte flexible et scrollable pour
+garder son bouton visible sur petite hauteur. Le détail de ressources conserve
+`Stock total`, `Disponible maintenant` et `Réservé par ordres/missions`, sans
+afficher la formule explicative. Le bloc `ACTIONS` est retiré de l'UI active ;
+les raccourcis correspondants restent actifs et `Tab cible suivante` est
+documenté dans le helper `?`.
 
 Le panneau `Corps du système` est retiré de l'UI active du MVP. Le module reste
 dans le code avec ses tests pour une future refonte informative centrée sur la
 connaissance, l'habitabilité, la présence, les ressources et les actions utiles.
+L'anneau de territoire affiché en vue galaxie réutilise le mesh fin de colonie
+pour ne plus écraser visuellement les systèmes contrôlés.
 
 Versions après ce checkpoint :
 

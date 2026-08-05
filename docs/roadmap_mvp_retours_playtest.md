@@ -879,21 +879,26 @@ au lancement.
 
 Les conseils démarrent masqués par défaut, dans le panneau Objectifs comme dans
 le briefing `?`. Le panneau Objectifs accepte les petites hauteurs en laissant
-scroller sa liste et son détail au lieu de forcer une hauteur minimale. Le
-détail de ressources ne montre plus la formule `Disponible = Stock - Réservé`.
+scroller sa liste et son détail au lieu de forcer une hauteur minimale. La
+modale d'introduction garde aussi son bouton accessible avec un texte scrollable
+sur petite hauteur. Le détail de ressources ne montre plus la formule
+`Disponible = Stock - Réservé`.
 
-Le bloc `ACTIONS` est simplifié : `Cible suivante` et `Retour univers` ne sont
-plus affichés. Les raccourcis restent actifs, et `Tab cible suivante` est
-documenté dans le helper `?`. Le panneau `Corps du système` est retiré de l'UI
-active du MVP en attendant une refonte informative dédiée.
+Le bloc `ACTIONS` est retiré de l'UI active. Les raccourcis restent actifs, et
+`Tab cible suivante` est documenté dans le helper `?`. Le panneau `Corps du
+système` est retiré de l'UI active du MVP en attendant une refonte informative
+dédiée. L'anneau de territoire visible en galaxie reprend le mesh fin de
+colonie.
 
 Critères d'acceptation ajoutés :
 
 - [x] Le premier mandat demande une action volontaire du joueur.
 - [x] Les conseils et le helper démarrent masqués.
 - [x] Le panneau Objectifs reste utilisable sur petite hauteur.
-- [x] Les actions redondantes ne sont plus affichées dans le bloc `ACTIONS`.
+- [x] La modale d'introduction reste lisible sur petite hauteur.
+- [x] Le bloc `ACTIONS` n'est plus affiché.
 - [x] Le panneau `Corps du système` n'est plus branché dans l'UI active.
+- [x] L'anneau de territoire en galaxie utilise le mesh fin de colonie.
 
 ---
 

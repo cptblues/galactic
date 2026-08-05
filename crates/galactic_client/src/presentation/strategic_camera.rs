@@ -19,6 +19,7 @@ pub(crate) struct StrategicCameraInput<'w> {
     mouse_motion: Res<'w, AccumulatedMouseMotion>,
     mouse_scroll: Res<'w, AccumulatedMouseScroll>,
     open_panel: Res<'w, OpenPanel>,
+    intro_pitch: Res<'w, IntroPitchUiState>,
 }
 
 pub(crate) fn update_strategic_camera(
@@ -32,14 +33,16 @@ pub(crate) fn update_strategic_camera(
     // Preserves the pre-refactor asymmetry: the Fleet panel never blocked the
     // camera, unlike Colony/Research/Craft/Navigation. Not touched here — this
     // pass moves the open-state mechanism, it does not change camera behavior.
-    if matches!(
-        *input.open_panel,
-        OpenPanel::Colony
-            | OpenPanel::Research
-            | OpenPanel::Craft
-            | OpenPanel::Navigation
-            | OpenPanel::Objectives
-    ) {
+    if input.intro_pitch.visible
+        || matches!(
+            *input.open_panel,
+            OpenPanel::Colony
+                | OpenPanel::Research
+                | OpenPanel::Craft
+                | OpenPanel::Navigation
+                | OpenPanel::Objectives
+        )
+    {
         return;
     }
 

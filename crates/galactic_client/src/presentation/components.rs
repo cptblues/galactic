@@ -147,6 +147,30 @@ pub(crate) struct IntroPitchRoot;
 #[derive(Component)]
 pub(crate) struct IntroPitchCloseButton;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScrollIndicatorId {
+    IntroPitch,
+    ObjectiveList,
+    ObjectiveDetail,
+    MissionReportList,
+    MissionReportDetail,
+}
+
+#[derive(Component, Debug, Clone, Copy)]
+pub(crate) struct ScrollIndicatorArea {
+    pub(crate) id: ScrollIndicatorId,
+}
+
+#[derive(Component, Debug, Clone, Copy)]
+pub(crate) struct ScrollIndicatorTrack {
+    pub(crate) id: ScrollIndicatorId,
+}
+
+#[derive(Component, Debug, Clone, Copy)]
+pub(crate) struct ScrollIndicatorThumb {
+    pub(crate) id: ScrollIndicatorId,
+}
+
 #[derive(Component)]
 pub(crate) struct HelpToggleText;
 

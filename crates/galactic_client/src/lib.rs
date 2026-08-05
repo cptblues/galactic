@@ -47,9 +47,10 @@ use presentation::procedural_materials::{
 use presentation::scene::{
     accent_craft_amber, accent_fleet_blue, accent_research_violet, action_button_color,
     action_button_outline, handle_help_toggle_button, handle_intro_pitch_buttons,
-    handle_tab_bar_galaxy_button, panel_background, panel_outline,
+    handle_scroll_areas, handle_tab_bar_galaxy_button, panel_background, panel_outline,
     rebuild_strategic_view_if_requested, spawn_scene, spawn_strategic_view, spawn_ui, ui_text_font,
     update_help_visibility, update_intro_pitch_visibility, update_resource_bar,
+    update_scroll_indicators,
 };
 use presentation::shortcuts::{apply_simulation_command, apply_ui_action};
 use presentation::strategic_camera::{tick_simulation, update_strategic_camera};
@@ -337,6 +338,8 @@ impl Plugin for PresentationPlugin {
             (
                 update_resource_bar,
                 update_ui,
+                handle_scroll_areas,
+                update_scroll_indicators,
                 update_help_visibility,
                 update_intro_pitch_visibility,
                 update_info_panel,
@@ -445,10 +448,7 @@ impl FromWorld for VisualAssets {
             (
                 meshes.add(Sphere::default().mesh().ico(1).unwrap()),
                 meshes.add(Sphere::default().mesh().uv(32, 18)),
-                meshes.add(Annulus::new(
-                    TERRITORY_RING_INNER_RADIUS,
-                    TERRITORY_RING_OUTER_RADIUS,
-                )),
+                meshes.add(Annulus::new(WIDE_RING_INNER_RADIUS, WIDE_RING_OUTER_RADIUS)),
                 meshes.add(Annulus::new(
                     COLONY_RING_INNER_RADIUS,
                     COLONY_RING_OUTER_RADIUS,
@@ -570,8 +570,8 @@ pub(crate) struct UniverseSystemEntry {
 }
 
 const COLONY_MANAGEMENT_Z_INDEX: i32 = 100;
-const TERRITORY_RING_INNER_RADIUS: f32 = 1.55;
-const TERRITORY_RING_OUTER_RADIUS: f32 = 2.25;
+const WIDE_RING_INNER_RADIUS: f32 = 1.55;
+const WIDE_RING_OUTER_RADIUS: f32 = 2.25;
 const COLONY_RING_INNER_RADIUS: f32 = 1.72;
 const COLONY_RING_OUTER_RADIUS: f32 = 1.94;
 
@@ -1004,11 +1004,11 @@ VmSwap:\t      2048 kB
     }
 
     #[test]
-    fn colony_ring_is_thinner_than_system_territory_ring() {
-        let territory_width = TERRITORY_RING_OUTER_RADIUS - TERRITORY_RING_INNER_RADIUS;
+    fn colony_ring_is_thinner_than_wide_visual_ring() {
+        let wide_width = WIDE_RING_OUTER_RADIUS - WIDE_RING_INNER_RADIUS;
         let colony_width = COLONY_RING_OUTER_RADIUS - COLONY_RING_INNER_RADIUS;
 
-        assert!(colony_width < territory_width / 3.0);
+        assert!(colony_width < wide_width / 3.0);
     }
 
     #[test]

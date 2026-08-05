@@ -1,7 +1,9 @@
 use bevy::camera::Hdr;
 use bevy::core_pipeline::tonemapping::Tonemapping;
+use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
+use bevy::ui::{FocusPolicy, RelativeCursorPosition};
 use galactic_domain::{PlanetId, PlanetKind, StarClass, SystemId, WorldPosition};
 use galactic_sim::{KnowledgeLevel, MVP_HOME_SYSTEM_ID, Simulation, SystemVisibility, TimeSpeed};
 
@@ -377,7 +379,7 @@ pub(crate) fn spawn_territory_ring(
         .expect("territory material exists")
         .clone();
     commands.spawn((
-        Mesh3d(assets.ring_mesh.clone()),
+        Mesh3d(assets.colony_ring_mesh.clone()),
         MeshMaterial3d(material),
         Transform::from_translation(position)
             .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2))
@@ -565,8 +567,8 @@ pub(crate) fn spawn_system_view(
         }
 
         // MVP-030-A1: a colonized planet must be identifiable without being selected.
-        // The marker keeps the self-owned tint but uses a thinner mesh than system territory
-        // rings so it does not visually swallow the planet.
+        // The marker keeps the self-owned tint but uses the same thin mesh as system
+        // territory rings so it does not visually swallow the planet.
         if colony.is_some() {
             let ring_orbit = OrbitingVisual {
                 vertical_offset: -0.03,
@@ -713,39 +715,6 @@ pub(crate) fn spawn_ui(mut commands: Commands, icon_assets: Res<IconAssets>) {
         DebugOverlayRoot,
         Visibility::Hidden,
     ));
-
-    commands
-        .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                left: Val::Px(14.0),
-                top: Val::Px(72.0),
-                width: Val::Px(268.0),
-                max_height: Val::Px(340.0),
-                padding: UiRect::all(Val::Px(12.0)),
-                border: UiRect::all(Val::Px(1.0)),
-                border_radius: BorderRadius::all(Val::Px(6.0)),
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(8.0),
-                overflow: Overflow::scroll_y(),
-                ..default()
-            },
-            BackgroundColor(panel_background()),
-            Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
-            Interaction::None,
-            UiPointerBlocker,
-        ))
-        .with_children(|parent| {
-            spawn_panel_heading(parent, "ACTIONS");
-            spawn_action_button(parent, UiAction::FocusSelection, "Recentrer", "F");
-            spawn_action_button(parent, UiAction::EnterSystem, "Entrer système", "Enter");
-            spawn_action_button(
-                parent,
-                UiAction::ToggleProjection,
-                "Projection 3D / 2,5D",
-                "P",
-            );
-        });
 
     commands
         .spawn((
@@ -949,7 +918,7 @@ fn spawn_intro_pitch_modal(commands: &mut Commands) {
                 right: Val::Px(0.0),
                 top: Val::Px(0.0),
                 bottom: Val::Px(0.0),
-                padding: UiRect::all(Val::Px(28.0)),
+                padding: UiRect::all(Val::Px(14.0)),
                 justify_content: JustifyContent::Center,
                 align_items: AlignItems::Center,
                 ..default()
@@ -966,7 +935,9 @@ fn spawn_intro_pitch_modal(commands: &mut Commands) {
                 .spawn((
                     Node {
                         width: Val::Px(690.0),
-                        max_height: Val::Percent(86.0),
+                        max_width: Val::Percent(96.0),
+                        max_height: Val::Percent(94.0),
+                        min_height: Val::Px(0.0),
                         padding: UiRect::all(Val::Px(22.0)),
                         border: UiRect::all(Val::Px(1.0)),
                         border_radius: BorderRadius::all(Val::Px(7.0)),
@@ -997,20 +968,40 @@ fn spawn_intro_pitch_modal(commands: &mut Commands) {
                     panel
                         .spawn(Node {
                             width: Val::Percent(100.0),
-                            max_height: Val::Px(430.0),
-                            overflow: Overflow::scroll_y(),
+                            flex_grow: 1.0,
+                            min_height: Val::Px(0.0),
+                            position_type: PositionType::Relative,
                             ..default()
                         })
-                        .with_children(|scroll| {
-                            scroll.spawn((
-                                Text::new(intro_pitch_text()),
-                                ui_text_font(14.0),
-                                TextColor(Color::srgb(0.78, 0.86, 0.92)),
-                                Node {
-                                    width: Val::Percent(100.0),
-                                    ..default()
-                                },
-                            ));
+                        .with_children(|frame| {
+                            frame
+                                .spawn((
+                                    Node {
+                                        width: Val::Percent(100.0),
+                                        height: Val::Percent(100.0),
+                                        min_height: Val::Px(0.0),
+                                        padding: UiRect::right(Val::Px(12.0)),
+                                        overflow: Overflow::scroll_y(),
+                                        ..default()
+                                    },
+                                    ScrollPosition::default(),
+                                    RelativeCursorPosition::default(),
+                                    ScrollIndicatorArea {
+                                        id: ScrollIndicatorId::IntroPitch,
+                                    },
+                                ))
+                                .with_children(|scroll| {
+                                    scroll.spawn((
+                                        Text::new(intro_pitch_text()),
+                                        ui_text_font(14.0),
+                                        TextColor(Color::srgb(0.78, 0.86, 0.92)),
+                                        Node {
+                                            width: Val::Percent(100.0),
+                                            ..default()
+                                        },
+                                    ));
+                                });
+                            spawn_scroll_indicator(frame, ScrollIndicatorId::IntroPitch);
                         });
 
                     panel
@@ -1044,6 +1035,42 @@ fn spawn_intro_pitch_modal(commands: &mut Commands) {
                             ));
                         });
                 });
+        });
+}
+
+pub(crate) fn spawn_scroll_indicator(parent: &mut ChildSpawnerCommands, id: ScrollIndicatorId) {
+    parent
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                right: Val::Px(3.0),
+                top: Val::Px(4.0),
+                bottom: Val::Px(4.0),
+                width: Val::Px(4.0),
+                border_radius: BorderRadius::all(Val::Px(3.0)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.58, 0.70, 0.76, 0.20)),
+            Visibility::Hidden,
+            FocusPolicy::Pass,
+            ScrollIndicatorTrack { id },
+        ))
+        .with_children(|track| {
+            track.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(0.0),
+                    right: Val::Px(0.0),
+                    top: Val::Percent(0.0),
+                    height: Val::Percent(100.0),
+                    min_height: Val::Px(18.0),
+                    border_radius: BorderRadius::all(Val::Px(3.0)),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.82, 0.96, 1.0, 0.70)),
+                FocusPolicy::Pass,
+                ScrollIndicatorThumb { id },
+            ));
         });
 }
 
@@ -1209,6 +1236,140 @@ pub(crate) fn handle_intro_pitch_buttons(
     }
 }
 
+pub(crate) fn handle_scroll_areas(
+    mut mouse_wheel: MessageReader<MouseWheel>,
+    mut scrolls: Query<(
+        &ScrollIndicatorArea,
+        &mut ScrollPosition,
+        &ComputedNode,
+        Option<&InheritedVisibility>,
+        Option<&RelativeCursorPosition>,
+    )>,
+) {
+    for wheel in mouse_wheel.read() {
+        let mut applied = false;
+        for (_area, mut position, computed, visibility, cursor) in &mut scrolls {
+            if !scroll_area_can_scroll(computed, visibility) {
+                continue;
+            }
+            if !cursor.is_some_and(RelativeCursorPosition::cursor_over) {
+                continue;
+            }
+            position.y =
+                scroll_position_y(position.y, wheel.y, wheel.unit, scroll_max_offset(computed));
+            applied = true;
+            break;
+        }
+        if applied {
+            continue;
+        }
+
+        let mut fallback = None;
+        let mut candidate_count = 0;
+        for (area, _position, computed, visibility, _cursor) in &mut scrolls {
+            if scroll_area_can_scroll(computed, visibility) {
+                candidate_count += 1;
+                fallback = Some(area.id);
+            }
+        }
+        if candidate_count != 1 {
+            continue;
+        }
+        let Some(target) = fallback else {
+            continue;
+        };
+        for (area, mut position, computed, visibility, _cursor) in &mut scrolls {
+            if area.id == target && scroll_area_can_scroll(computed, visibility) {
+                position.y =
+                    scroll_position_y(position.y, wheel.y, wheel.unit, scroll_max_offset(computed));
+                break;
+            }
+        }
+    }
+}
+
+pub(crate) fn update_scroll_indicators(
+    areas: Query<(
+        &ScrollIndicatorArea,
+        &ScrollPosition,
+        &ComputedNode,
+        Option<&InheritedVisibility>,
+    )>,
+    mut tracks: Query<(&ScrollIndicatorTrack, &mut Visibility)>,
+    mut thumbs: Query<(&ScrollIndicatorThumb, &mut Node)>,
+) {
+    for (track, mut visibility) in &mut tracks {
+        let visible = areas
+            .iter()
+            .any(|(area, _position, computed, area_visibility)| {
+                area.id == track.id && scroll_area_can_scroll(computed, area_visibility)
+            });
+        let next = if visible {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        if *visibility != next {
+            *visibility = next;
+        }
+    }
+
+    for (thumb, mut node) in &mut thumbs {
+        let metrics = areas
+            .iter()
+            .find(|(area, _position, computed, visibility)| {
+                area.id == thumb.id && scroll_area_can_scroll(computed, *visibility)
+            })
+            .and_then(|(_area, position, computed, _visibility)| {
+                scroll_indicator_metrics(position.y, computed)
+            });
+        let Some((top_percent, height_percent)) = metrics else {
+            continue;
+        };
+        node.top = Val::Percent(top_percent);
+        node.height = Val::Percent(height_percent);
+    }
+}
+
+fn scroll_area_can_scroll(
+    computed: &ComputedNode,
+    visibility: Option<&InheritedVisibility>,
+) -> bool {
+    let visible = visibility
+        .map(|visibility| visibility.get())
+        .unwrap_or(true);
+    visible && scroll_max_offset(computed) > 1.0
+}
+
+fn scroll_max_offset(computed: &ComputedNode) -> f32 {
+    (computed.content_size().y - computed.size().y).max(0.0) * computed.inverse_scale_factor()
+}
+
+fn scroll_indicator_metrics(position_y: f32, computed: &ComputedNode) -> Option<(f32, f32)> {
+    let viewport_height = computed.size().y;
+    let content_height = computed.content_size().y;
+    if viewport_height <= 0.0 || content_height <= viewport_height + 1.0 {
+        return None;
+    }
+    let height_percent = ((viewport_height / content_height) * 100.0).clamp(12.0, 100.0);
+    let max_offset = scroll_max_offset(computed);
+    let progress = if max_offset <= 0.0 {
+        0.0
+    } else {
+        (position_y / max_offset).clamp(0.0, 1.0)
+    };
+    let top_percent = progress * (100.0 - height_percent);
+    Some((top_percent, height_percent))
+}
+
+fn scroll_position_y(current: f32, wheel_y: f32, unit: MouseScrollUnit, max_offset: f32) -> f32 {
+    let dy = match unit {
+        MouseScrollUnit::Line => wheel_y * 24.0,
+        MouseScrollUnit::Pixel => wheel_y,
+    };
+    (current - dy).clamp(0.0, max_offset)
+}
+
 pub(crate) fn update_help_visibility(
     help: Res<HelpUiState>,
     mut texts: Query<&mut Visibility, With<HelpText>>,
@@ -1327,6 +1488,22 @@ mod tests {
         assert!(text.contains("Le monde d’avant était à bout de souffle"));
         assert!(text.contains("formèrent le Consortium"));
         assert!(text.contains("Vous venez d’être promu Amiral"));
+    }
+
+    #[test]
+    fn scroll_position_y_moves_down_and_clamps() {
+        assert_eq!(
+            scroll_position_y(0.0, -2.0, MouseScrollUnit::Line, 100.0),
+            48.0,
+        );
+        assert_eq!(
+            scroll_position_y(96.0, -2.0, MouseScrollUnit::Line, 100.0),
+            100.0,
+        );
+        assert_eq!(
+            scroll_position_y(12.0, 120.0, MouseScrollUnit::Pixel, 100.0),
+            0.0,
+        );
     }
 }
 

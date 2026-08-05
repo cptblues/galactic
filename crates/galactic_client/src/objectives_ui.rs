@@ -3,12 +3,18 @@
 use std::collections::BTreeSet;
 
 use bevy::prelude::*;
+use bevy::ui::RelativeCursorPosition;
 use galactic_domain::ResourceStock;
 use galactic_sim::{
     AttackMissionOutcome, BuildingKind, ColonizationBlocker, CombatOutcome, CraftableId, GameState,
     KnowledgeLevel, MissionKind, MissionReportOutcome, MissionResult, PlanetaryOccupancyIntel,
     TechnologyId, UniverseRepository, assess_planet_colonizability, combat_rules,
     craftable_definition, storage_capacity, technology_definition,
+};
+
+use crate::presentation::{
+    components::{ScrollIndicatorArea, ScrollIndicatorId},
+    scene::spawn_scroll_indicator,
 };
 
 use super::{
@@ -370,39 +376,63 @@ fn spawn_objective_list(row: &mut ChildSpawnerCommands) {
     row.spawn((
         Node {
             width: Val::Px(420.0),
+            align_self: AlignSelf::Stretch,
             min_height: Val::Px(0.0),
-            padding: UiRect::all(Val::Px(9.0)),
+            position_type: PositionType::Relative,
             border: UiRect::all(Val::Px(1.0)),
             border_radius: BorderRadius::all(Val::Px(6.0)),
-            flex_direction: FlexDirection::Column,
-            row_gap: Val::Px(7.0),
-            overflow: Overflow::scroll_y(),
             ..default()
         },
         BackgroundColor(panel_background()),
         Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
     ))
-    .with_children(|list| {
-        list.spawn((
-            Text::new("MANDAT PRINCIPAL"),
-            ui_text_font(12.0),
-            TextColor(Color::srgb(0.78, 0.94, 0.82)),
-        ));
-        for id in CAMPAIGN_OBJECTIVES {
-            spawn_objective_row(list, id);
-        }
-        list.spawn((
-            Text::new("MANDATS FACULTATIFS"),
-            ui_text_font(12.0),
-            TextColor(Color::srgb(0.94, 0.86, 0.62)),
-            Node {
-                margin: UiRect::top(Val::Px(8.0)),
-                ..default()
-            },
-        ));
-        for id in OPTIONAL_OBJECTIVES {
-            spawn_objective_row(list, id);
-        }
+    .with_children(|frame| {
+        frame
+            .spawn((
+                Node {
+                    width: Val::Percent(100.0),
+                    height: Val::Percent(100.0),
+                    min_height: Val::Px(0.0),
+                    padding: UiRect {
+                        left: Val::Px(9.0),
+                        right: Val::Px(16.0),
+                        top: Val::Px(9.0),
+                        bottom: Val::Px(9.0),
+                    },
+                    flex_direction: FlexDirection::Column,
+                    row_gap: Val::Px(7.0),
+                    overflow: Overflow::scroll_y(),
+                    ..default()
+                },
+                ScrollPosition::default(),
+                RelativeCursorPosition::default(),
+                ScrollIndicatorArea {
+                    id: ScrollIndicatorId::ObjectiveList,
+                },
+            ))
+            .with_children(|list| {
+                list.spawn((
+                    Text::new("MANDAT PRINCIPAL"),
+                    ui_text_font(12.0),
+                    TextColor(Color::srgb(0.78, 0.94, 0.82)),
+                ));
+                for id in CAMPAIGN_OBJECTIVES {
+                    spawn_objective_row(list, id);
+                }
+                list.spawn((
+                    Text::new("MANDATS FACULTATIFS"),
+                    ui_text_font(12.0),
+                    TextColor(Color::srgb(0.94, 0.86, 0.62)),
+                    Node {
+                        margin: UiRect::top(Val::Px(8.0)),
+                        ..default()
+                    },
+                ));
+                for id in OPTIONAL_OBJECTIVES {
+                    spawn_objective_row(list, id);
+                }
+            });
+        spawn_scroll_indicator(frame, ScrollIndicatorId::ObjectiveList);
     });
 }
 
@@ -471,20 +501,39 @@ fn spawn_objective_detail(row: &mut ChildSpawnerCommands) {
                 width: Val::Percent(100.0),
                 flex_grow: 1.0,
                 min_height: Val::Px(0.0),
-                overflow: Overflow::scroll_y(),
+                position_type: PositionType::Relative,
                 ..default()
             })
-            .with_children(|scroll| {
-                scroll.spawn((
-                    Text::new(""),
-                    ui_text_font(12.0),
-                    TextColor(Color::srgb(0.78, 0.88, 0.82)),
-                    Node {
-                        width: Val::Percent(100.0),
-                        ..default()
-                    },
-                    ObjectiveTextRole::Detail,
-                ));
+            .with_children(|frame| {
+                frame
+                    .spawn((
+                        Node {
+                            width: Val::Percent(100.0),
+                            height: Val::Percent(100.0),
+                            min_height: Val::Px(0.0),
+                            padding: UiRect::right(Val::Px(12.0)),
+                            overflow: Overflow::scroll_y(),
+                            ..default()
+                        },
+                        ScrollPosition::default(),
+                        RelativeCursorPosition::default(),
+                        ScrollIndicatorArea {
+                            id: ScrollIndicatorId::ObjectiveDetail,
+                        },
+                    ))
+                    .with_children(|scroll| {
+                        scroll.spawn((
+                            Text::new(""),
+                            ui_text_font(12.0),
+                            TextColor(Color::srgb(0.78, 0.88, 0.82)),
+                            Node {
+                                width: Val::Percent(100.0),
+                                ..default()
+                            },
+                            ObjectiveTextRole::Detail,
+                        ));
+                    });
+                spawn_scroll_indicator(frame, ScrollIndicatorId::ObjectiveDetail);
             });
         detail.spawn((
             Text::new(""),

@@ -3,11 +3,17 @@ use std::collections::BTreeMap;
 
 use bevy::input::{ButtonState, keyboard::KeyboardInput};
 use bevy::prelude::*;
+use bevy::ui::RelativeCursorPosition;
 use galactic_domain::{FleetId, MissionId, SystemId};
 use galactic_sim::{
     CraftableId, FleetAssignment, FleetComposition, FleetCompositionError, FleetError,
     FleetLocation, FleetState, GameAction, GameEventKind, MAX_FLEET_NAME_CHARS, MissionTarget,
     ShipStack, Simulation, StrategicDuration, craftable_catalog, craftable_definition,
+};
+
+use crate::presentation::{
+    components::{ScrollIndicatorArea, ScrollIndicatorId},
+    scene::spawn_scroll_indicator,
 };
 
 use super::{
@@ -779,6 +785,7 @@ fn spawn_reports_tab(root: &mut ChildSpawnerCommands) {
         Node {
             width: Val::Percent(100.0),
             flex_grow: 1.0,
+            min_height: Val::Px(0.0),
             flex_direction: FlexDirection::Row,
             column_gap: Val::Px(8.0),
             ..default()
@@ -790,48 +797,98 @@ fn spawn_reports_tab(root: &mut ChildSpawnerCommands) {
             Node {
                 flex_grow: 1.0,
                 flex_basis: Val::Px(0.0),
-                padding: UiRect::all(Val::Px(9.0)),
+                align_self: AlignSelf::Stretch,
+                min_height: Val::Px(0.0),
+                position_type: PositionType::Relative,
                 border: UiRect::all(Val::Px(1.0)),
                 border_radius: BorderRadius::all(Val::Px(6.0)),
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(4.0),
-                overflow: Overflow::scroll_y(),
                 ..default()
             },
             BackgroundColor(panel_background()),
             Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
         ))
-        .with_children(|list| {
-            list.spawn((
-                Text::new("RAPPORTS DE MISSION"),
-                ui_text_font(12.0),
-                TextColor(Color::srgb(0.78, 0.86, 1.0)),
-            ));
-            for slot in 0..MAX_REPORT_ROWS {
-                spawn_report_row(list, slot);
-            }
+        .with_children(|frame| {
+            frame
+                .spawn((
+                    Node {
+                        width: Val::Percent(100.0),
+                        height: Val::Percent(100.0),
+                        min_height: Val::Px(0.0),
+                        padding: UiRect {
+                            left: Val::Px(9.0),
+                            right: Val::Px(16.0),
+                            top: Val::Px(9.0),
+                            bottom: Val::Px(9.0),
+                        },
+                        flex_direction: FlexDirection::Column,
+                        row_gap: Val::Px(4.0),
+                        overflow: Overflow::scroll_y(),
+                        ..default()
+                    },
+                    ScrollPosition::default(),
+                    RelativeCursorPosition::default(),
+                    ScrollIndicatorArea {
+                        id: ScrollIndicatorId::MissionReportList,
+                    },
+                ))
+                .with_children(|list| {
+                    list.spawn((
+                        Text::new("RAPPORTS DE MISSION"),
+                        ui_text_font(12.0),
+                        TextColor(Color::srgb(0.78, 0.86, 1.0)),
+                    ));
+                    for slot in 0..MAX_REPORT_ROWS {
+                        spawn_report_row(list, slot);
+                    }
+                });
+            spawn_scroll_indicator(frame, ScrollIndicatorId::MissionReportList);
         });
 
         row.spawn((
             Node {
                 flex_grow: 1.2,
                 flex_basis: Val::Px(0.0),
-                padding: UiRect::all(Val::Px(9.0)),
+                align_self: AlignSelf::Stretch,
+                min_height: Val::Px(0.0),
+                position_type: PositionType::Relative,
                 border: UiRect::all(Val::Px(1.0)),
                 border_radius: BorderRadius::all(Val::Px(6.0)),
-                overflow: Overflow::scroll_y(),
                 ..default()
             },
             BackgroundColor(panel_background()),
             Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
         ))
-        .with_children(|detail| {
-            detail.spawn((
-                Text::new("Aucun rapport sélectionné."),
-                ui_text_font(10.5),
-                TextColor(Color::srgb(0.86, 0.90, 0.98)),
-                ReportDetailText,
-            ));
+        .with_children(|frame| {
+            frame
+                .spawn((
+                    Node {
+                        width: Val::Percent(100.0),
+                        height: Val::Percent(100.0),
+                        min_height: Val::Px(0.0),
+                        padding: UiRect {
+                            left: Val::Px(9.0),
+                            right: Val::Px(16.0),
+                            top: Val::Px(9.0),
+                            bottom: Val::Px(9.0),
+                        },
+                        overflow: Overflow::scroll_y(),
+                        ..default()
+                    },
+                    ScrollPosition::default(),
+                    RelativeCursorPosition::default(),
+                    ScrollIndicatorArea {
+                        id: ScrollIndicatorId::MissionReportDetail,
+                    },
+                ))
+                .with_children(|detail| {
+                    detail.spawn((
+                        Text::new("Aucun rapport sélectionné."),
+                        ui_text_font(10.5),
+                        TextColor(Color::srgb(0.86, 0.90, 0.98)),
+                        ReportDetailText,
+                    ));
+                });
+            spawn_scroll_indicator(frame, ScrollIndicatorId::MissionReportDetail);
         });
     });
 }
