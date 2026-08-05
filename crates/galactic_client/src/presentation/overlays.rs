@@ -6,7 +6,6 @@ use std::time::Duration;
 
 use crate::presentation::components::*;
 use crate::presentation::graphics_settings::{GraphicsPreset, GraphicsSettings};
-use crate::presentation::procedural_materials::procedural_nebula_texture;
 use crate::presentation::scene::planet_orbit;
 use crate::presentation::shortcuts::selected_system;
 use crate::presentation::strategic_navigation::*;
@@ -879,113 +878,6 @@ pub(crate) fn advance_fleet_trail_particles(
     }
 }
 
-struct NebulaSettings {
-    patch_count: usize,
-    peak_alpha: f32,
-}
-
-const fn nebula_settings_for_preset(preset: GraphicsPreset) -> NebulaSettings {
-    match preset {
-        GraphicsPreset::Low => NebulaSettings {
-            patch_count: 0,
-            peak_alpha: 0.0,
-        },
-        GraphicsPreset::Medium => NebulaSettings {
-            patch_count: 2,
-            peak_alpha: 0.12,
-        },
-        GraphicsPreset::High => NebulaSettings {
-            patch_count: 5,
-            peak_alpha: 0.18,
-        },
-    }
-}
-
-const NEBULA_TINTS: [Color; 3] = [
-    Color::srgb(0.42, 0.30, 0.72),
-    Color::srgb(0.22, 0.46, 0.70),
-    Color::srgb(0.62, 0.28, 0.46),
-];
-
-/// Despawns and respawns every nebula patch on a preset change — cheap (at
-/// most 5 entities) and simpler than trying to grow/shrink the patch count in
-/// place. Deliberately not tied to `ViewRebuildRequest`: that request's
-/// contract is "despawn/respawn every `StrategicViewEntity`" for a fresh
-/// system/universe view, and nebulae must survive ordinary navigation, not
-/// disappear every time the player enters or exits a system.
-pub(crate) fn update_nebula_backdrop(
-    graphics: Res<GraphicsSettings>,
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mut images: ResMut<Assets<Image>>,
-    existing: Query<Entity, With<NebulaBackdrop>>,
-) {
-    if !graphics.is_changed() {
-        return;
-    }
-    for entity in &existing {
-        commands.entity(entity).despawn();
-    }
-
-    let settings = nebula_settings_for_preset(graphics.preset);
-    if settings.patch_count == 0 {
-        return;
-    }
-    let plane_mesh = meshes.add(Rectangle::new(340.0, 340.0));
-    for index in 0..settings.patch_count {
-        let tint = NEBULA_TINTS[index % NEBULA_TINTS.len()];
-        let texture = images.add(procedural_nebula_texture(
-            index as u32 * 41 + 7,
-            tint,
-            settings.peak_alpha,
-        ));
-        let material = materials.add(StandardMaterial {
-            base_color: Color::WHITE,
-            base_color_texture: Some(texture),
-            unlit: true,
-            alpha_mode: AlphaMode::Add,
-            double_sided: true,
-            cull_mode: None,
-            ..default()
-        });
-        let angle = index as f32 * 2.4;
-        let radius = 90.0 + (index as f32 * 37.0) % 60.0;
-        let position = Vec3::new(
-            angle.cos() * radius,
-            -30.0 - index as f32 * 6.0,
-            angle.sin() * radius,
-        );
-        commands.spawn((
-            Mesh3d(plane_mesh.clone()),
-            MeshMaterial3d(material),
-            Transform::from_translation(position)
-                .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
-            Visibility::Inherited,
-            NebulaBackdrop,
-        ));
-    }
-}
-
-/// Nebulae read as a galaxy-scale backdrop, so they're hidden while zoomed
-/// into a single system rather than always rendering behind everything.
-pub(crate) fn update_nebula_visibility(
-    navigation: Res<StrategicNavigation>,
-    mut query: Query<&mut Visibility, With<NebulaBackdrop>>,
-) {
-    let visible = matches!(navigation.mode, StrategicViewMode::Universe);
-    for mut visibility in &mut query {
-        let next = if visible {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        };
-        if *visibility != next {
-            *visibility = next;
-        }
-    }
-}
-
 pub(crate) fn draw_probe_marker(gizmos: &mut Gizmos, position: Vec3, radius: f32) {
     let color = Color::srgba(0.42, 0.96, 1.0, 0.96);
     gizmos.line(
@@ -1008,19 +900,6 @@ pub(crate) fn draw_probe_marker(gizmos: &mut Gizmos, position: Vec3, radius: f32
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn nebulae_are_absent_on_low_and_more_numerous_on_high_than_medium() {
-        let low = nebula_settings_for_preset(GraphicsPreset::Low);
-        assert_eq!(low.patch_count, 0);
-
-        let medium = nebula_settings_for_preset(GraphicsPreset::Medium);
-        assert!(medium.patch_count > 0);
-
-        let high = nebula_settings_for_preset(GraphicsPreset::High);
-        assert!(high.patch_count > medium.patch_count);
-        assert!(high.peak_alpha > medium.peak_alpha);
-    }
 
     #[test]
     fn fleet_trails_are_disabled_on_low_and_denser_on_high_than_medium() {

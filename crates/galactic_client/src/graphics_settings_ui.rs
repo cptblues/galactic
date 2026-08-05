@@ -137,8 +137,8 @@ fn spawn_graphics_settings_screen(mut commands: Commands) {
             spawn_preset_row(root);
             root.spawn((
                 Text::new(
-                    "Bloom, HDR, ombres, particules, nébuleuses, labels et qualité des textures \
-suivent le preset choisi. Faible et Élevé redimensionnent aussi la fenêtre \
+                    "Bloom, HDR, ombres, particules, labels et qualité des textures suivent le \
+preset choisi. Faible et Élevé redimensionnent aussi la fenêtre \
 (960×540 / 1280×720 / 1600×900).",
                 ),
                 ui_text_font(10.5),

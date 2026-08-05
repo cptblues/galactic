@@ -257,50 +257,6 @@ pub(crate) fn visual_hash(x: u32, y: u32, seed: u32) -> u8 {
     (value >> 24) as u8
 }
 
-pub(crate) const NEBULA_TEXTURE_SIZE: u32 = 128;
-
-/// A soft, radially-fading noise cloud — reuses `layered_noise` the same way
-/// `procedural_planet_texture` does, but with a circular falloff toward the
-/// edges (instead of the planet textures' hard biome bands) so it reads as a
-/// diffuse gas cloud rather than a tiled pattern. `peak_alpha` bakes the
-/// preset's overall nebula opacity directly into the texture, so the
-/// material itself can stay a plain opaque-white base color.
-pub(crate) fn procedural_nebula_texture(seed: u32, tint: Color, peak_alpha: f32) -> Image {
-    let size = NEBULA_TEXTURE_SIZE;
-    let tint = tint.to_srgba();
-    let center = size as f32 / 2.0;
-    let mut data = Vec::with_capacity((size * size * 4) as usize);
-    for y in 0..size {
-        for x in 0..size {
-            let noise = f32::from(layered_noise(x, y, seed)) / 255.0;
-            let dx = x as f32 - center;
-            let dy = y as f32 - center;
-            let radial = (dx * dx + dy * dy).sqrt() / center;
-            let falloff = (1.0 - radial).clamp(0.0, 1.0).powf(1.6);
-            let density = (noise * 0.7 + 0.3) * falloff;
-            let alpha = (density * peak_alpha * 255.0).clamp(0.0, 255.0) as u8;
-            data.extend_from_slice(&[
-                (tint.red * 255.0) as u8,
-                (tint.green * 255.0) as u8,
-                (tint.blue * 255.0) as u8,
-                alpha,
-            ]);
-        }
-    }
-
-    Image::new_fill(
-        Extent3d {
-            width: size,
-            height: size,
-            depth_or_array_layers: 1,
-        },
-        TextureDimension::D2,
-        &data,
-        TextureFormat::Rgba8UnormSrgb,
-        RenderAssetUsages::RENDER_WORLD,
-    )
-}
-
 pub(crate) const fn planet_kind_seed(kind: PlanetKind) -> u32 {
     match kind {
         PlanetKind::Rocky => 1,
@@ -536,46 +492,5 @@ pub(crate) fn colonization_arrival_failure_label(blocker: ColonizationBlocker) -
         ColonizationBlocker::InsufficientFoundationResources { .. } => {
             "chargement de fondation indisponible"
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn nebula_texture_is_correctly_sized_and_denser_at_the_center_than_the_edge() {
-        let image = procedural_nebula_texture(11, Color::srgb(0.4, 0.3, 0.7), 0.2);
-        let data = image.data.expect("generated texture keeps its source data");
-        assert_eq!(
-            data.len(),
-            (NEBULA_TEXTURE_SIZE * NEBULA_TEXTURE_SIZE * 4) as usize
-        );
-
-        let pixel_alpha = |x: u32, y: u32| -> u8 {
-            let index = ((y * NEBULA_TEXTURE_SIZE + x) * 4 + 3) as usize;
-            data[index]
-        };
-        let center = NEBULA_TEXTURE_SIZE / 2;
-        let corner_alpha = pixel_alpha(1, 1);
-        let center_alpha = pixel_alpha(center, center);
-        assert!(
-            center_alpha > corner_alpha,
-            "center ({center_alpha}) should be denser than the corner ({corner_alpha})"
-        );
-    }
-
-    #[test]
-    fn nebula_texture_alpha_scales_with_peak_alpha() {
-        let dim = procedural_nebula_texture(11, Color::WHITE, 0.05);
-        let bright = procedural_nebula_texture(11, Color::WHITE, 0.5);
-        let dim_data = dim.data.expect("generated texture keeps its source data");
-        let bright_data = bright
-            .data
-            .expect("generated texture keeps its source data");
-
-        let center = (NEBULA_TEXTURE_SIZE / 2) as usize;
-        let index = (center * NEBULA_TEXTURE_SIZE as usize + center) * 4 + 3;
-        assert!(bright_data[index] > dim_data[index]);
     }
 }

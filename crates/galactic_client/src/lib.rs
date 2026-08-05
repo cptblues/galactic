@@ -41,10 +41,9 @@ use presentation::inspector_panel::{
 };
 use presentation::overlays::{
     FleetTrailSpawnTimer, advance_fleet_trail_particles, compute_label_budget,
-    draw_strategic_overlays, spawn_fleet_trail_particles, update_nebula_backdrop,
-    update_nebula_visibility, update_orbiting_visuals, update_planet_spins,
-    update_pointer_halo_positions, update_projection_transition, update_sector_labels,
-    update_system_labels, update_system_visuals,
+    draw_strategic_overlays, spawn_fleet_trail_particles, update_orbiting_visuals,
+    update_planet_spins, update_pointer_halo_positions, update_projection_transition,
+    update_sector_labels, update_system_labels, update_system_visuals,
 };
 use presentation::procedural_materials::{
     atmosphere_material, planet_material, procedural_planet_texture, star_halo_material,
@@ -309,8 +308,6 @@ impl Plugin for PresentationPlugin {
                     update_planet_texture_quality,
                     spawn_fleet_trail_particles,
                     advance_fleet_trail_particles,
-                    update_nebula_backdrop,
-                    update_nebula_visibility,
                     update_projection_transition,
                     update_system_visuals,
                     update_orbiting_visuals,
