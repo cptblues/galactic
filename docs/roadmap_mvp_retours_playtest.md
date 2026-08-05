@@ -10,19 +10,19 @@
 
 | Issue | Intitulé | Priorité | Taille estimée | Statut proposé |
 |---|---|---:|---:|---|
-| MVP-030-A1 | Stabiliser l’interface stratégique | P0 | 5 pts | À faire |
-| MVP-030-A2 | Clarifier l’économie planétaire et la recherche | P1 | 8 pts | À faire |
-| MVP-030-A3 | Ajouter les fabrications par lot et l’annulation des files | P1 | 8 pts | À faire |
-| MVP-030-A4 | Créer un planificateur de missions complet | P0 | 13 pts | À faire |
+| MVP-030-A1 | Stabiliser l’interface stratégique | P0 | 5 pts | Implémenté |
+| MVP-030-A2 | Clarifier l’économie planétaire et la recherche | P1 | 8 pts | Implémenté |
+| MVP-030-A3 | Ajouter les fabrications par lot et l’annulation des files | P1 | 8 pts | Implémenté |
+| MVP-030-A4 | Créer un planificateur de missions complet | P0 | 13 pts | Implémenté |
 | MVP-030-A5 | Transformer l’analyse planétaire en mission satellite | P1 | 8 pts | Implémenté |
 | MVP-030-A6 | Diversifier les vaisseaux et les rôles de combat | P1 | 13 pts | Implémenté |
 | MVP-030-A7 | Polir l’UX flotte, ressources et cadrage narratif | P1 | 5 pts | Implémenté |
-| MVP-031 | Finaliser sauvegarde, chargement et migrations V1 | P0 | 8 pts | Reporté après MVP-033 |
-| MVP-032 | Ajouter onboarding et objectifs contextuels | P1 | 5 pts | MVP-032-C implémenté |
+| MVP-031 | Finaliser sauvegarde, chargement et migrations V1 | P0 | 8 pts | Implémenté |
+| MVP-032 | Ajouter onboarding et objectifs contextuels | P1 | 5 pts | Implémenté |
 | MVP-033 | Implémenter la condition de réussite du MVP | P1 | 3 pts | Implémenté |
-| MVP-034 | Ajouter les presets graphiques | P2 | 5 pts | À faire |
-| MVP-035 | Intégrer diagnostics et benchmark reproductible | P2 | 5 pts | À faire |
-| MVP-036 | Auditer et compléter les tests métier | P0 | 8 pts | À faire |
+| MVP-034 | Ajouter les presets graphiques | P2 | 5 pts | Implémenté |
+| MVP-035 | Intégrer diagnostics et benchmark reproductible | P2 | 5 pts | Implémenté |
+| MVP-036 | Auditer et compléter les tests métier | P0 | 8 pts | Implémenté |
 | MVP-037 | Ajouter un smoke test de la boucle complète | P0 | 8 pts | À faire |
 | MVP-038 | Équilibrer, polir et packager le MVP de playtest | P1 | 8 pts | À faire |
 | MVP-039 | Ajouter les attaques ennemies et les défenses planétaires | P2 | 13 pts | Après MVP |
@@ -228,7 +228,7 @@ Détection longue portée
 |---|---|
 | Priorité | P1 |
 | Estimation | 8 points |
-| Statut | À faire |
+| Statut | Implémenté |
 | Dépendances | MVP-030-A1, MVP-030-A2 |
 
 ### Objectif
@@ -317,7 +317,7 @@ CraftBatch
 |---|---|
 | Priorité | P0 |
 | Estimation | 13 points |
-| Statut | À faire |
+| Statut | Implémenté |
 | Dépendances | MVP-030-A1, MVP-030-A3, moteur de missions existant |
 
 ### Objectif
@@ -699,7 +699,7 @@ narratif encore trop neutre.
 |---|---|
 | Priorité | P0 |
 | Estimation | 8 points |
-| Statut | À faire |
+| Statut | Implémenté |
 | Dépendances | MVP-030-A3 à MVP-030-A7 |
 
 ### Objectif
@@ -768,7 +768,7 @@ Permettre au joueur de sauvegarder une partie sur disque, la recharger et contin
 |---|---|
 | Priorité | P1 |
 | Estimation | 5 points |
-| Statut | MVP-032-C implémenté |
+| Statut | Implémenté |
 | Dépendances | MVP-030-A1 à MVP-030-A7 ; MVP-031 reporté |
 
 ### Objectif
@@ -993,7 +993,7 @@ Critères d'acceptation :
 |---|---|
 | Priorité | P2 |
 | Estimation | 5 points |
-| Statut | À faire |
+| Statut | Implémenté |
 | Dépendances | Interface stabilisée |
 
 ### Périmètre
@@ -1030,7 +1030,7 @@ Critères d'acceptation :
 |---|---|
 | Priorité | P2 |
 | Estimation | 5 points |
-| Statut | À faire |
+| Statut | Implémenté |
 | Dépendances | MVP-034 |
 
 ### Périmètre
@@ -1068,7 +1068,7 @@ Critères d'acceptation :
 |---|---|
 | Priorité | P0 |
 | Estimation | 8 points |
-| Statut | À faire |
+| Statut | Implémenté |
 | Dépendances | MVP-030-A2 à MVP-031 |
 
 ### Périmètre

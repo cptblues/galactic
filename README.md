@@ -17,6 +17,15 @@ cargo run --release -- --scale stress  # 128 systèmes
 
 Sans option, le client utilise le preset jouable **MVP 64 systèmes**.
 
+Mode benchmark reproductible (voir `## MVP-035`) :
+
+```bash
+cargo run --release -- --benchmark                                    # matrice complète : 2 résolutions x 3 presets
+cargo run --release -- --benchmark --benchmark-resolution 720p        # restreint la résolution
+cargo run --release -- --benchmark --benchmark-preset high            # restreint le preset
+cargo run --release -- --benchmark --benchmark-export ~/mes-benchmarks # dossier de sortie personnalisé
+```
+
 ## Commandes Qualite
 
 ```bash
@@ -274,3 +283,79 @@ pour rester lisible, et regroupe les missions lointaines par secteur au lieu
 d'un point par mission. Le bouton « Surligner » d'une mission active dans le
 HUD flottes met en évidence sa route complète ainsi que son origine et sa
 destination sur la carte.
+
+## MVP-031 — Sauvegarde, chargement et migrations V1
+
+Un écran dédié (panneau Sauvegardes) permet de nommer et lister des
+sauvegardes manuelles, en plus d'une sauvegarde rapide et d'une rotation
+automatique sur trois emplacements. Le format sur disque est une enveloppe
+RON versionnée : chaque évolution future du format de sauvegarde ajoute une
+nouvelle variante plutôt que de modifier l'existante, pour rester capable de
+lire d'anciennes parties après une mise à jour du jeu.
+
+L'écriture est atomique (fichier temporaire puis renommage) pour ne jamais
+laisser une sauvegarde à moitié écrite en cas d'interruption. Une mission en
+cours (sonde, analyse, attaque, transport, récolte ou colonisation) reprend
+exactement à l'identique après un chargement, sans perdre ni dupliquer de
+ressources ni de progression — vérifié par des tests dédiés qui comparent
+l'état simulé et l'état restauré tick par tick.
+
+## MVP-032 — Onboarding et objectifs contextuels
+
+Le panneau `Objectifs du Consortium` (`O`) sert de fil directeur immersif dès
+le début de partie : la campagne principale guide Port-Sillage depuis la
+production initiale jusqu'à la fondation d'une deuxième colonie, avec des
+objectifs facultatifs pour l'exploration lointaine, les planètes occupées,
+les récoltes importantes, les flottes mixtes et les colonies à risque.
+Chaque objectif se valide uniquement depuis l'état réel de simulation, jamais
+depuis une donnée dédiée à l'UI.
+
+Le ruleset reprend les factions de `docs/galactic_factions_lore.md` (la
+Ligue des Confins pour les mondes neutres, les Sylves pour les mondes
+hostiles) pour que les présences planétaires et les libellés d'attaque
+correspondent à la fiction. Une passe d'ergonomie a ensuite ajusté le premier
+mandat, le scroll des panneaux sur petit écran et les valeurs par défaut de
+visibilité des conseils et du briefing.
+
+## MVP-033 — Directive de réussite du MVP
+
+La vertical slice a désormais une condition de réussite mesurable, une
+directive régionale du Consortium configurée dans
+`assets/rulesets/default/victory.ron` : trois colonies, huit systèmes sondés,
+la technologie de colonisation, une récolte distante livrée, un rapport
+d'analyse Sylve et une victoire militaire contre une présence Sylve.
+
+L'évaluation de la victoire reste pure — elle ne lit que l'état courant,
+l'univers et le ruleset, sans dépendre de l'UI. Une modale globale s'affiche
+une seule fois au passage en réussite complète ; la fermer ne modifie pas la
+simulation, la partie reste jouable normalement.
+
+## MVP-034 — Presets graphiques (Low/Medium/High)
+
+Le panneau Options (`K`) propose trois presets qui pilotent à chaud le bloom,
+le HDR, les ombres (nouvelle lumière directionnelle avec carte d'ombre
+configurable), les traînées de particules des flottes en mission, le budget
+de labels de la carte, la résolution des textures procédurales des planètes
+et la résolution de la fenêtre. Le choix est sauvegardé et rechargé au
+démarrage suivant.
+
+La résolution interne « vraie » (rendu à échelle réduite puis upscale) a été
+évaluée puis écartée au profit d'un redimensionnement direct de la fenêtre :
+la première aurait désynchronisé le picking souris de l'affichage. Un axe
+initialement prévu, les nébuleuses procédurales, a été implémenté puis
+retiré après plusieurs itérations visuelles jugées insatisfaisantes — les
+sept autres axes sont fonctionnels.
+
+## MVP-035 — Diagnostics et benchmark reproductible
+
+Un mode benchmark scriptable (voir `## Lancement`) exécute une séquence de
+caméra fixe et reproductible (vue Système puis vue Univers, à travers les
+trois paliers de niveau de détail) pendant que le jeu enregistre FPS, temps
+de frame, nombre d'entités/meshes/matériaux/images et mémoire, avec le même
+seed d'univers à chaque exécution. `--benchmark` seul balaie automatiquement
+les deux résolutions (720p/1080p) et les trois presets graphiques.
+
+Chaque combinaison exporte un rapport texte, CSV et JSON dans
+`benchmark-results/`, puis le jeu se ferme tout seul — pensé comme un outil
+manuel à lancer avant une release pour repérer une régression de
+performance, pas comme une porte de CI (aucun runner de ce dépôt n'a de GPU).

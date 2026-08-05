@@ -5,6 +5,10 @@
 **Moteur :** Rust + Bevy  
 **Backlog associé :** 38 issues numérotées `MVP-001` à `MVP-038`
 
+> **Document de cadrage initial, non maintenu comme suivi de statut vivant.**
+> Pour savoir où en est chaque issue aujourd'hui, se référer à
+> `docs/roadmap_mvp_retours_playtest.md`.
+
 ## 1. Résumé exécutif
 
 Le MVP doit valider une boucle solo complète : développer une planète mère, produire des ressources, débloquer une sonde, découvrir des systèmes reliés par des routes, exploiter des ressources distantes, débloquer la colonisation et créer de nouvelles colonies.

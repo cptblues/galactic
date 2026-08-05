@@ -296,3 +296,135 @@ pub fn validate_colony_foundations(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use galactic_domain::{FleetId, UniverseConfig};
+
+    use crate::{
+        MVP_HOME_COLONY_ID, MVP_HOME_SYSTEM_ID, MVP_PLAYER_FACTION_ID, MissionOrder, MissionPlan,
+        MissionState, MissionTarget, Simulation, StrategicDuration,
+    };
+
+    use super::*;
+
+    fn fixture() -> (GameState, UniverseRepository) {
+        let simulation = Simulation::new(UniverseConfig::mvp());
+        (
+            simulation.state().clone(),
+            simulation.universe_repository().clone(),
+        )
+    }
+
+    fn foundation(mission_id: MissionId, planet_id: PlanetId) -> ColonyFoundation {
+        ColonyFoundation {
+            mission_id,
+            owner: MVP_PLAYER_FACTION_ID,
+            source_colony_id: MVP_HOME_COLONY_ID,
+            system_id: MVP_HOME_SYSTEM_ID,
+            planet_id,
+            payload: ResourceStock::new(650, 420, 260),
+            prepared_at: StrategicTick::ZERO,
+        }
+    }
+
+    /// A `MissionState` that exactly matches `foundation` per the
+    /// `mission_matches` predicate in `validate_colony_foundations` — the
+    /// baseline a test then perturbs to isolate one specific mismatch.
+    fn matching_mission(foundation: &ColonyFoundation) -> MissionState {
+        MissionState {
+            id: foundation.mission_id,
+            owner: Owner::Faction(foundation.owner),
+            order: MissionOrder {
+                fleet_id: FleetId::new(1),
+                origin: foundation.system_id,
+                target: MissionTarget::Planet {
+                    system_id: foundation.system_id,
+                    planet_id: foundation.planet_id,
+                },
+                kind: MissionKind::Colonize,
+                departure_at: StrategicTick::ZERO,
+            },
+            origin_colony_id: foundation.source_colony_id,
+            plan: MissionPlan {
+                route: vec![foundation.system_id],
+                hops: 0,
+                travel_duration: StrategicDuration::ZERO,
+                resolution_duration: StrategicDuration::ZERO,
+                fuel_cost: ResourceCost::ZERO,
+                outbound_arrival_at: StrategicTick::ZERO,
+                return_departure_at: StrategicTick::ZERO,
+                return_arrival_at: StrategicTick::ZERO,
+            },
+            phase: MissionPhase::Completed,
+            phase_started_at: StrategicTick::ZERO,
+            fuel_reservation: None,
+            foundation_reservation: None,
+            cargo_reservation: None,
+            attack: None,
+            colonization: None,
+            transport: None,
+            harvest: None,
+            result: Some(MissionResult::Colonize(ColonizationMissionResult {
+                target: foundation.planet_id,
+                outcome: ColonizationMissionOutcome::FoundationPrepared,
+                colony_ship_consumed: true,
+            })),
+        }
+    }
+
+    #[test]
+    fn rejects_a_foundation_whose_mission_does_not_exist() {
+        let (mut state, universe) = fixture();
+        let missing_mission = MissionId::new(9_002);
+        state.colony_foundations = vec![foundation(
+            missing_mission,
+            PlanetId::from_system_index(MVP_HOME_SYSTEM_ID, 1),
+        )];
+
+        assert_eq!(
+            validate_colony_foundations(&state, &universe),
+            Err(ColonyFoundationStateError::UnknownMission(missing_mission))
+        );
+    }
+
+    #[test]
+    fn rejects_a_foundation_whose_mission_is_not_actually_completed() {
+        let (mut state, universe) = fixture();
+        let mission_id = MissionId::new(9_003);
+        let foundation = foundation(
+            mission_id,
+            PlanetId::from_system_index(MVP_HOME_SYSTEM_ID, 1),
+        );
+        let mut mission = matching_mission(&foundation);
+        mission.phase = MissionPhase::Returning;
+        mission.result = None;
+        state.colony_foundations = vec![foundation];
+        state.missions = vec![mission];
+
+        assert_eq!(
+            validate_colony_foundations(&state, &universe),
+            Err(ColonyFoundationStateError::MissionMismatch(mission_id))
+        );
+    }
+
+    #[test]
+    fn rejects_a_foundation_owned_by_an_unknown_faction() {
+        let (mut state, universe) = fixture();
+        let mission_id = MissionId::new(9_004);
+        let unknown_owner = FactionId::new(999);
+        let mut foundation = foundation(
+            mission_id,
+            PlanetId::from_system_index(MVP_HOME_SYSTEM_ID, 1),
+        );
+        foundation.owner = unknown_owner;
+        let mission = matching_mission(&foundation);
+        state.colony_foundations = vec![foundation];
+        state.missions = vec![mission];
+
+        assert_eq!(
+            validate_colony_foundations(&state, &universe),
+            Err(ColonyFoundationStateError::UnknownOwner(unknown_owner))
+        );
+    }
+}

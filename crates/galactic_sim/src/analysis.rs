@@ -906,6 +906,45 @@ mod tests {
     }
 
     #[test]
+    fn from_config_rejects_a_new_colony_building_set_in_energy_deficit() {
+        // Same shape as `assets/rulesets/default/planetary_analysis.ron`, but
+        // `power_plant` (the only energy producer) is dropped from
+        // `new_colony.buildings` while the consuming buildings stay — a
+        // structural energy deficit at colony foundation.
+        let source = r#"(
+            version: 4,
+            minimum_habitability: 50,
+            maximum_colonies: 3,
+            analysis_duration_seconds: 30,
+            foundation_cost: (metal: 650, crystal: 420, fuel: 260),
+            colony_ship_id: "colony_ship",
+            new_colony: (
+                population: 1200,
+                buildings: [
+                    (id: "metal_mine", level: 1),
+                    (id: "crystal_extractor", level: 1),
+                    (id: "fuel_refinery", level: 1),
+                    (id: "construction_center", level: 1),
+                ],
+            ),
+            kinds: [],
+        )"#;
+        let config: PlanetaryAnalysisRulesConfig =
+            ron::de::from_str(source).expect("test ruleset RON is valid");
+
+        let result = PlanetaryAnalysisRules::from_config(
+            config,
+            crate::craftable_catalog(),
+            crate::default_building_catalog(),
+        );
+
+        assert_eq!(
+            result,
+            Err(PlanetaryAnalysisRulesError::InvalidNewColonyEnergy)
+        );
+    }
+
+    #[test]
     fn analysis_requires_probe_and_planetary_spectrometry() {
         let mut simulation = Simulation::new(UniverseConfig::mvp());
         let actor = simulation.state().player_faction;

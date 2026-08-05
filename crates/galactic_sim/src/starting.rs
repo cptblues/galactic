@@ -326,4 +326,16 @@ mod tests {
         assert_eq!(scenario.validate(&universe), Ok(()));
         assert_eq!(universe.definition().generation_fingerprint, fingerprint);
     }
+
+    #[test]
+    fn a_home_colony_in_energy_deficit_is_rejected() {
+        let universe = UniverseRepository::generate(UniverseConfig::mvp());
+        let mut scenario = StartingScenario::mvp();
+        scenario.home_colony.initial_energy = EnergyGrid::new(10, 30);
+
+        assert_eq!(
+            scenario.validate(&universe),
+            Err(StartingScenarioError::InitialEnergyDeficit)
+        );
+    }
 }

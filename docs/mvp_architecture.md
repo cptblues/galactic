@@ -1843,3 +1843,106 @@ Chaque étape a été vérifiée indépendamment par les quatre commandes qualit
 --all-features -- -D warnings`, `cargo test --workspace`, `cargo build
 --release`) avec un compte de tests strictement inchangé par crate, complété
 par un lancement manuel en `--scale stress`.
+
+## MVP-031 — Sauvegarde, chargement et migrations V1
+
+Nouveau crate-adjacent `galactic_persistence::file` : une enveloppe RON
+externally-tagged par variante (`SaveFileEnvelope::V29(...)`) porte l'en-tête
+(nom, horodatage) et la charge utile de sauvegarde. Chaque migration future
+fige la variante existante sous son propre nom et ajoute la suivante, sans
+jamais modifier une variante déjà publiée — le mécanisme est déjà éprouvé par
+MVP-034 (`SettingsFileEnvelope::V1`), qui réutilise exactement le même
+patron. L'écriture passe par un fichier `.tmp` puis un `fs::rename` atomique ;
+le chargement ne panique jamais sur un fichier absent, corrompu ou d'une
+version incompatible — il retourne une erreur structurée (`SaveFileError`).
+
+Côté client, `galactic_client::save_load_ui` ajoute un panneau Sauvegardes :
+sauvegardes nommées manuelles, sauvegarde rapide (`quicksave`/`quickload`) et
+autosave à rotation sur trois emplacements (le plus ancien, déterminé par
+l'horodatage porté dans l'en-tête de sauvegarde elle-même, jamais par le
+mtime du fichier). Une mission en cours au moment de la sauvegarde (sonde,
+analyse, attaque, transport, récolte ou colonisation) porte sa phase et ses
+réservations dans l'enveloppe et reprend à l'identique après restauration —
+vérifié par des tests qui comparent l'état simulé et l'état restauré à
+chaque tick suivant, pas seulement à l'instant du chargement.
+
+Versions après ce checkpoint :
+
+- `GAME_STATE_VERSION` reste 28 ;
+- `SAVE_VERSION = 29` (première définition, format de sauvegarde introduit
+  par ce checkpoint) ;
+- `GENERATION_VERSION` reste 5 ;
+- `RULESET_SCHEMA_VERSION` reste 13 ;
+- `content_version` du ruleset `default` reste 18.
+
+## MVP-034 — Presets graphiques (Low/Medium/High)
+
+`GraphicsPreset` (3 valeurs, Medium par défaut) est défini dans
+`galactic_persistence` plutôt que dans `galactic_client`, uniquement pour
+pouvoir y dériver `Serialize`/`Deserialize` sans dépendance circulaire vers
+le crate client ; celui-ci l'importe et le réexporte. Une nouvelle ressource
+`GraphicsSettings` (Bevy) porte le preset actif, lu à chaque frame par les
+systèmes de rendu concernés, tous gardés par `graphics.is_changed()` pour ne
+recalculer que lors d'un changement réel.
+
+Sept axes pilotés par le preset : bloom et HDR (`Bloom` doit être retiré
+avant `Hdr`, `Bloom` le requiert via `#[require(Hdr)]`), ombres (nouvelle
+`DirectionalLight` avec `DirectionalLightShadowMap.size` configurable),
+traînées de particules des flottes en mission, budget de labels de la carte,
+résolution des textures procédurales des planètes, et résolution de la
+fenêtre. Ce dernier axe est un repli assumé : un vrai rendu à résolution
+interne réduite désynchroniserait `Camera::world_to_viewport` (donc le
+picking souris) de la fenêtre réelle — redimensionner directement la fenêtre
+obtient le même gain sans toucher au picking. Un huitième axe, les
+nébuleuses procédurales, a été implémenté (billboards plats, puis
+repositionnés, puis un unique `Cylinder` englobant) puis entièrement retiré
+après trois itérations visuelles jugées insatisfaisantes.
+
+Nouveau module `galactic_persistence::settings` : même patron que `file.rs`
+(enveloppe RON versionnée, écriture atomique), mais `dirs::config_dir()`
+plutôt que `dirs::data_dir()` — préférence applicative, pas donnée de partie,
+première utilisation de cette distinction dans le crate.
+
+Versions après ce checkpoint :
+
+- `GAME_STATE_VERSION` reste 28 ;
+- `SAVE_VERSION` reste 29 ;
+- `GENERATION_VERSION` reste 5 ;
+- `RULESET_SCHEMA_VERSION` reste 13 ;
+- `content_version` du ruleset `default` reste 18.
+
+## MVP-035 — Diagnostics et benchmark reproductible
+
+Nouveau module `galactic_client::benchmark`, activé par `--benchmark` (et
+`--benchmark-resolution`/`--benchmark-preset`/`--benchmark-export`) sans
+dépendance à `clap` — le parsing CLI reste fait main, dans le même esprit que
+`--scale`. Sans restriction, la matrice complète (2 résolutions × 3 presets)
+s'exécute séquentiellement dans un seul processus.
+
+Une séquence de caméra scriptée (6 étapes fixes, vue Système puis vue
+Univers à travers les trois paliers de LOD) écrit directement les champs de
+`StrategicNavigation` avant que `update_strategic_camera` ne calcule le
+`Transform` — ce dernier système n'a nécessité aucune modification, il
+recalcule déjà la caméra depuis ces champs à chaque frame indépendamment de
+toute entrée réelle. Les métriques (temps de frame, FPS, entités, meshes,
+matériaux, images, mémoire) sont accumulées frame par frame dans une
+ressource `BenchmarkState`, en réutilisant `MemoryDiagnosticSources` et
+`process_memory_snapshot` déjà introduits par le système de diagnostics
+mémoire existant plutôt que de dupliquer ces compteurs.
+
+Chaque combinaison exporte un rapport texte, CSV (un enregistrement par
+frame) et JSON (agrégats moyenne/minimum/p95) dans `./benchmark-results/` —
+un dossier relatif au répertoire de lancement, volontairement pas
+`dirs::data_dir()` : c'est un artefact de dev/QA comparable d'une exécution à
+l'autre, pas une donnée utilisateur. Le processus se termine de lui-même
+(`MessageWriter<AppExit>`) une fois la matrice épuisée. Pensé comme un outil
+manuel lancé localement avant une release plutôt qu'une porte de CI : aucun
+runner de ce dépôt ne dispose d'un GPU.
+
+Versions après ce checkpoint :
+
+- `GAME_STATE_VERSION` reste 28 ;
+- `SAVE_VERSION` reste 29 ;
+- `GENERATION_VERSION` reste 5 ;
+- `RULESET_SCHEMA_VERSION` reste 13 ;
+- `content_version` du ruleset `default` reste 18.

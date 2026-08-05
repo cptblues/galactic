@@ -3,6 +3,10 @@
 > Document généré depuis l’export JSON Cadylo fourni le 27 juillet 2026.
 > Statuts resynchronisés manuellement le 31 juillet 2026 avec `docs/mvp_architecture.md`
 > et l'état réel du code (MVP-017 à MVP-023-C étaient marquées à tort « À faire »).
+>
+> **Document historique, non maintenu au-delà de cette date.** Pour le statut
+> vivant des issues à partir de MVP-030, se référer à
+> `docs/roadmap_mvp_retours_playtest.md`.
 
 ## Vue d’ensemble
 

@@ -503,4 +503,39 @@ mod tests {
         assert_eq!(snapshot.nominal_rate.fuel_milli_per_tick, 37);
         assert_eq!(snapshot.effective_energy_production, 40);
     }
+
+    #[test]
+    fn energy_efficiency_per_mille_scales_down_under_partial_deficit() {
+        assert_eq!(energy_efficiency_per_mille(15, 30), 500);
+        assert_eq!(energy_efficiency_per_mille(30, 30), PRODUCTION_SCALE as u16);
+        assert_eq!(energy_efficiency_per_mille(45, 30), PRODUCTION_SCALE as u16);
+    }
+
+    #[test]
+    fn energy_efficiency_per_mille_is_zero_under_total_deficit() {
+        assert_eq!(energy_efficiency_per_mille(0, 30), 0);
+    }
+
+    #[test]
+    fn energy_efficiency_per_mille_ignores_zero_consumption() {
+        assert_eq!(energy_efficiency_per_mille(0, 0), PRODUCTION_SCALE as u16);
+    }
+
+    #[test]
+    fn energy_deficit_throttles_effective_production_rate() {
+        let mut colony = home_colony();
+        // Nominal energy production is 80 (see `starting_colony_uses_catalog_rates_and_capacity`);
+        // consumption is 30. A 20% energy modifier drops effective production
+        // to 16, below consumption — a real deficit, not just a reduction.
+        colony.resource_profile = PlanetResourceProfile::new(100, 100, 100, 20);
+        let snapshot = colony_production_snapshot(&colony);
+
+        assert_eq!(snapshot.effective_energy_production, 16);
+        assert_eq!(snapshot.energy_consumption, 30);
+        assert!(snapshot.energy_efficiency_per_mille < PRODUCTION_SCALE as u16);
+        assert!(
+            snapshot.effective_rate.metal_milli_per_tick
+                < snapshot.nominal_rate.metal_milli_per_tick
+        );
+    }
 }

@@ -1123,17 +1123,23 @@ mod tests {
         };
         let mut ui = SaveLoadUiState::default();
 
-        // Fill all 3 slots with strictly increasing timestamps so slot 0 is
-        // the provably oldest once the pool is full.
-        for _ in 0..AUTOSAVE_SLOT_COUNT {
-            run_autosave(&source, &mut ui);
-            std::thread::sleep(std::time::Duration::from_millis(1100));
+        // `oldest_autosave_slot` compares `SaveFileHeader::saved_at_unix_seconds`,
+        // not filesystem mtimes (see its doc comment) — fill all 3 slots with
+        // explicit, strictly increasing fake timestamps directly, instead of
+        // sleeping in real time between autosaves to let a real clock advance.
+        let save = snapshot_from_simulation(source.simulation());
+        for (slot, saved_at_unix_seconds) in (0..AUTOSAVE_SLOT_COUNT).zip([1_000, 2_000, 3_000]) {
+            let header = SaveFileHeader {
+                display_name: format!("Sauvegarde automatique {}", slot + 1),
+                saved_at_unix_seconds,
+            };
+            save_to_path(&autosave_path(slot), header, &save).expect("save succeeds");
         }
 
         assert_eq!(
             oldest_autosave_slot(),
             0,
-            "slot 0 was written first, so it is oldest"
+            "slot 0 has the smallest saved_at_unix_seconds, so it is oldest"
         );
         run_autosave(&source, &mut ui);
         assert_eq!(
