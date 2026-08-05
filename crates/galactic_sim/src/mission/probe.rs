@@ -10,7 +10,7 @@ use super::{
     MissionState, MissionStateError, MissionTarget, launch_mission, validate_mission_target,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ProbeMissionResult {
     pub target: MissionTarget,
     pub previous: KnowledgeLevel,

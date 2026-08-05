@@ -12,7 +12,7 @@ use crate::{
     ResearchQueued, ResearchRejected, StrategicDuration, StrategicTick, TimeSpeed,
 };
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SelectionTarget {
     #[default]
     None,

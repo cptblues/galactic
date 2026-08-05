@@ -1,7 +1,9 @@
 use crate::FactionId;
 
 /// Stable ownership reference shared by every possessable domain object.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub enum Owner {
     Unowned,
     Faction(FactionId),

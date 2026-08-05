@@ -14,27 +14,27 @@ use crate::{
     refresh_planetary_intelligence,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ColonizationMissionCommitment {
     pub planet_id: PlanetId,
     pub colony_ship: CraftableId,
     pub foundation_cost: ResourceCost,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ColonizationMissionOutcome {
     FoundationPrepared,
     TargetInvalid(ColonizationBlocker),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ColonizationMissionResult {
     pub target: PlanetId,
     pub outcome: ColonizationMissionOutcome,
     pub colony_ship_consumed: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ColonyFoundation {
     pub mission_id: MissionId,
     pub owner: FactionId,

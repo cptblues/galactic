@@ -5,6 +5,7 @@ mod navigation_ui;
 mod objectives_ui;
 mod presentation;
 mod research_ui;
+mod save_load_ui;
 
 use craft_ui::CraftUiPlugin;
 use fleet_ui::FleetUiPlugin;
@@ -54,7 +55,7 @@ use presentation::scene::{
     update_intro_pitch_visibility, update_resource_bar, update_scroll_indicators,
     update_victory_modal, update_victory_state,
 };
-use presentation::shortcuts::{apply_simulation_command, apply_ui_action};
+use presentation::shortcuts::{apply_simulation_command, apply_ui_action, replace_simulation};
 use presentation::strategic_camera::{tick_simulation, update_strategic_camera};
 use presentation::strategic_navigation::{
     BreadcrumbKind, NavigationHistory, StrategicNavigation, ViewRebuildRequest,
@@ -62,6 +63,7 @@ use presentation::strategic_navigation::{
 };
 use presentation::universe_labels::LabelBudgetState;
 use research_ui::ResearchUiPlugin;
+use save_load_ui::SaveLoadUiPlugin;
 use std::collections::HashMap;
 
 use bevy::ecs::system::SystemParam;
@@ -208,6 +210,7 @@ impl Plugin for ClientPlugin {
         .add_plugins(MissionWizardPlugin)
         .add_plugins(NavigationUiPlugin)
         .add_plugins(ObjectivesUiPlugin)
+        .add_plugins(SaveLoadUiPlugin)
         .add_systems(Startup, log_startup)
         .add_systems(Update, log_memory_diagnostics);
     }

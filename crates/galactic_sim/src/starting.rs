@@ -26,7 +26,7 @@ pub const MVP_INITIAL_PLANET_KNOWLEDGE: [InitialPlanetKnowledge; 1] = [InitialPl
     level: KnowledgeLevel::Colonized,
 }];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PlanetResourceProfile {
     /// Relative production potential, where 100 is the balanced baseline.
     pub metal: u16,

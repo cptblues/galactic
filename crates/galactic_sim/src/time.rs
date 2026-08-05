@@ -8,7 +8,19 @@ use std::time::Duration;
 pub const STRATEGIC_TICKS_PER_SECOND: u32 = 10;
 pub const STRATEGIC_TICK_NANOS: u64 = 1_000_000_000_u64 / STRATEGIC_TICKS_PER_SECOND as u64;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct StrategicTick(u64);
 
 impl StrategicTick {
@@ -37,7 +49,19 @@ impl fmt::Display for StrategicTick {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct StrategicDuration {
     ticks: u64,
 }
@@ -62,7 +86,7 @@ impl StrategicDuration {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TimeSpeed {
     Paused,
     #[default]

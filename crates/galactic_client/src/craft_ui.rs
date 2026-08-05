@@ -570,9 +570,11 @@ fn handle_craft_shortcuts(
     mut open_panel: ResMut<OpenPanel>,
     mut navigation_ui: ResMut<super::navigation_ui::NavigationUiState>,
     fleet_ui: Res<crate::fleet_ui::FleetUiState>,
+    save_load_ui: Res<crate::save_load_ui::SaveLoadUiState>,
 ) {
     if super::navigation_ui::navigation_text_or_filter_is_active(&navigation_ui)
         || crate::fleet_ui::fleet_name_is_editing(&fleet_ui)
+        || crate::save_load_ui::save_name_is_editing(&save_load_ui)
     {
         return;
     }

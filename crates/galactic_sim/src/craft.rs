@@ -5,7 +5,7 @@ use std::fmt;
 use galactic_domain::{
     ColonyId, FactionId, ReservationId, ResourceCost, ResourceLedgerError, ResourceStock,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     AuthorizationError, BuildingCatalog, BuildingEffect, BuildingKind, ColonyState, GameState,
@@ -54,6 +54,22 @@ impl fmt::Debug for CraftableId {
 impl fmt::Display for CraftableId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.0)
+    }
+}
+
+impl serde::Serialize for CraftableId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.key())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for CraftableId {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let key = String::deserialize(deserializer)?;
+        default_ruleset()
+            .craftables()
+            .id_by_key(&key)
+            .ok_or_else(|| serde::de::Error::custom(format!("unknown craftable id: {key}")))
     }
 }
 
@@ -147,7 +163,7 @@ impl ShipClass {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum CombatTargetClass {
     Light,
     Medium,
@@ -174,7 +190,7 @@ impl CombatTargetClass {
 
 pub const NEUTRAL_COMBAT_BONUS_PER_MILLE: u32 = 1_000;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CombatTargetBonuses {
     pub light_per_mille: u32,
     pub medium_per_mille: u32,
@@ -587,7 +603,7 @@ pub const MAX_CRAFT_BATCH_QUANTITY: u64 = 999;
 /// not-yet-completed unit holds its own reservation so completed units can be credited (and
 /// their reservation committed) independently of the rest of the batch, and a cancellation can
 /// refund exactly the untouched units without disturbing already-produced ones.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CraftOrder {
     pub craftable: CraftableId,
     pub unit_cost: ResourceCost,
@@ -612,7 +628,7 @@ impl CraftOrder {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CraftQueue {
     orders: VecDeque<CraftOrder>,
 }
@@ -645,7 +661,7 @@ impl CraftQueue {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CraftInventory {
     quantities: BTreeMap<CraftableId, u64>,
 }
@@ -1505,6 +1521,12 @@ mod tests {
     use crate::{BuildingKind, Simulation, TechnologyId, default_building_catalog};
 
     use super::*;
+
+    #[test]
+    fn unknown_craftable_id_key_fails_deserialization_cleanly() {
+        let result = ron::de::from_str::<CraftableId>("\"not_a_real_craftable\"");
+        assert!(result.is_err());
+    }
 
     fn ready_simulation() -> Simulation {
         let mut simulation = Simulation::new(UniverseConfig::mvp());

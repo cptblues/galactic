@@ -54,7 +54,7 @@ pub const MISSION_LOCAL_TRAVEL_WORK_BASE: u64 = 2_400;
 pub const MISSION_LOCAL_TRAVEL_WORK_PER_ORBIT: u64 = 1_200;
 pub const MISSION_RESOLUTION_TICKS: u64 = 1;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MissionKind {
     Probe,
     Analyze,
@@ -64,7 +64,7 @@ pub enum MissionKind {
     Colonize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MissionPhase {
     Preparation,
     Outbound,
@@ -81,7 +81,7 @@ impl MissionPhase {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum MissionTarget {
     System(SystemId),
     Planet {
@@ -105,7 +105,7 @@ impl MissionTarget {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MissionOrder {
     pub fleet_id: FleetId,
     pub origin: SystemId,
@@ -114,7 +114,7 @@ pub struct MissionOrder {
     pub departure_at: StrategicTick,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MissionPlan {
     pub route: Vec<SystemId>,
     pub hops: u16,
@@ -126,7 +126,7 @@ pub struct MissionPlan {
     pub return_arrival_at: StrategicTick,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MissionState {
     pub id: MissionId,
     pub owner: Owner,
@@ -170,14 +170,14 @@ pub struct MissionTransition {
     pub transitioned_at: StrategicTick,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MissionReportOutcome {
     Completed,
     Cancelled,
     Failed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MissionResult {
     Probe(ProbeMissionResult),
     Analyze(AnalyzeMissionResult),
@@ -194,7 +194,7 @@ pub struct MissionResolution {
     pub occurred_at: StrategicTick,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MissionReport {
     pub mission_id: MissionId,
     pub fleet_id: FleetId,

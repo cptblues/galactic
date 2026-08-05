@@ -936,9 +936,11 @@ fn handle_fleet_shortcuts(
     mut ui: ResMut<FleetUiState>,
     mut open_panel: ResMut<OpenPanel>,
     mut navigation_ui: ResMut<super::navigation_ui::NavigationUiState>,
+    save_load_ui: Res<crate::save_load_ui::SaveLoadUiState>,
 ) {
     if super::navigation_ui::navigation_text_or_filter_is_active(&navigation_ui)
         || ui.rename_editing
+        || crate::save_load_ui::save_name_is_editing(&save_load_ui)
     {
         return;
     }
@@ -2038,6 +2040,7 @@ mod tests {
         world.insert_resource(OpenPanel::Craft);
         world.insert_resource(FleetUiState::default());
         world.insert_resource(super::super::navigation_ui::NavigationUiState::default());
+        world.insert_resource(super::super::save_load_ui::SaveLoadUiState::default());
         let mut keyboard = ButtonInput::<KeyCode>::default();
         keyboard.press(KeyCode::KeyV);
         world.insert_resource(keyboard);
@@ -2058,6 +2061,7 @@ mod tests {
             ..default()
         });
         world.insert_resource(super::super::navigation_ui::NavigationUiState::default());
+        world.insert_resource(super::super::save_load_ui::SaveLoadUiState::default());
         let mut keyboard = ButtonInput::<KeyCode>::default();
         keyboard.press(KeyCode::KeyV);
         world.insert_resource(keyboard);
@@ -2147,6 +2151,7 @@ mod tests {
         world.insert_resource(OpenPanel::Fleet);
         world.insert_resource(FleetUiState::default());
         world.insert_resource(super::super::navigation_ui::NavigationUiState::default());
+        world.insert_resource(super::super::save_load_ui::SaveLoadUiState::default());
         let mut keyboard = ButtonInput::<KeyCode>::default();
         keyboard.press(KeyCode::Escape);
         world.insert_resource(keyboard);

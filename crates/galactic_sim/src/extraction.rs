@@ -121,7 +121,7 @@ impl ExtractionRules {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ExtractionSiteState {
     pub id: ExtractionSiteId,
     pub system_id: SystemId,

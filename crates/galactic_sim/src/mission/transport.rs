@@ -8,7 +8,7 @@ use super::{
     resource_stock_total,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TransportDeliveryStatus {
     Pending,
     Delivered,
@@ -16,7 +16,7 @@ pub enum TransportDeliveryStatus {
     DestinationInvalid,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TransportMissionState {
     pub destination_colony_id: ColonyId,
     pub cargo: ResourceStock,
@@ -24,7 +24,7 @@ pub struct TransportMissionState {
     pub status: TransportDeliveryStatus,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TransportMissionResult {
     pub destination_colony_id: ColonyId,
     pub requested: ResourceStock,

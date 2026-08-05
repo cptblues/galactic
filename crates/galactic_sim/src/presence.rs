@@ -46,6 +46,21 @@ impl fmt::Display for PlanetaryForceId {
     }
 }
 
+impl serde::Serialize for PlanetaryForceId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.key())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for PlanetaryForceId {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let key = String::deserialize(deserializer)?;
+        planetary_presence_rules()
+            .id_by_key(&key)
+            .ok_or_else(|| serde::de::Error::custom(format!("unknown planetary force id: {key}")))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
 pub enum PlanetaryForceDomain {
     Ground,
@@ -520,13 +535,13 @@ impl PlanetaryPresenceRules {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PlanetaryForceStack {
     pub definition_id: PlanetaryForceId,
     pub quantity: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PlanetaryPresence {
     pub planet_id: PlanetId,
     pub occupant: Owner,
@@ -535,21 +550,23 @@ pub struct PlanetaryPresence {
     pub revision: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub enum PlanetaryIntelPrecision {
     Contact,
     Surveyed,
     Exact,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PlanetaryOccupancyIntel {
     Unoccupied,
     OccupiedUnknown,
     Occupied(FactionId),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EstimateRange {
     pub minimum: u64,
     pub maximum: u64,
@@ -591,13 +608,13 @@ impl EstimateRange {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PlanetaryForceEstimate {
     pub definition_id: PlanetaryForceId,
     pub quantity: EstimateRange,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PlanetaryIntelligenceReport {
     pub planet_id: PlanetId,
     pub observed_at: StrategicTick,
@@ -609,7 +626,7 @@ pub struct PlanetaryIntelligenceReport {
     pub forces: Vec<PlanetaryForceEstimate>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PlanetaryForceLoss {
     pub definition_id: PlanetaryForceId,
     pub quantity: u32,
@@ -1188,6 +1205,12 @@ mod tests {
     use crate::{GameAction, Simulation};
 
     use super::*;
+
+    #[test]
+    fn unknown_planetary_force_id_key_fails_deserialization_cleanly() {
+        let result = ron::de::from_str::<PlanetaryForceId>("\"not_a_real_force\"");
+        assert!(result.is_err());
+    }
 
     #[test]
     fn default_presence_is_seeded_deterministically() {

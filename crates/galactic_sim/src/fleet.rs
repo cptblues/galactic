@@ -28,7 +28,7 @@ impl ShipStack {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FleetComposition {
     ships: BTreeMap<CraftableId, u64>,
 }
@@ -97,13 +97,13 @@ pub struct FleetCapabilities {
     pub fuel_per_hop: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum FleetLocation {
     Docked(ColonyId),
     InSystem(SystemId),
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum FleetAssignment {
     #[default]
     Idle,

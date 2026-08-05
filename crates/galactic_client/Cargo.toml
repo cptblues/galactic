@@ -6,4 +6,7 @@ edition.workspace = true
 [dependencies]
 bevy.workspace = true
 galactic_domain = { path = "../galactic_domain" }
+galactic_persistence = { path = "../galactic_persistence" }
 galactic_sim = { path = "../galactic_sim" }
+ron.workspace = true
+serde.workspace = true

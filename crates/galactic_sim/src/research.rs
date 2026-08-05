@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 
 use galactic_domain::{FactionId, Owner};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     AuthorizationError, BuildingCatalog, BuildingEffect, BuildingKind, GameState,
@@ -52,7 +52,22 @@ impl fmt::Display for TechnologyId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+impl serde::Serialize for TechnologyId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.key())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for TechnologyId {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let key = String::deserialize(deserializer)?;
+        technology_catalog()
+            .id_by_key(&key)
+            .ok_or_else(|| serde::de::Error::custom(format!("unknown technology id: {key}")))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TechnologyUnlock {
     DetectUnknownSystems,
     InterstellarTravel,
@@ -285,7 +300,7 @@ pub fn max_research_queue() -> usize {
     default_ruleset().economy().research_queue_limit
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ResearchProject {
     pub technology: TechnologyId,
     pub required_milli_points: u64,
@@ -299,7 +314,7 @@ impl ResearchProject {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ResearchState {
     completed: BTreeSet<TechnologyId>,
     queue: VecDeque<ResearchProject>,
@@ -807,6 +822,12 @@ mod tests {
     use crate::{BuildingKind, Simulation, default_building_catalog};
 
     use super::*;
+
+    #[test]
+    fn unknown_technology_id_key_fails_deserialization_cleanly() {
+        let result = ron::de::from_str::<TechnologyId>("\"not_a_real_technology\"");
+        assert!(result.is_err());
+    }
 
     fn simulation_with_lab() -> Simulation {
         let mut simulation = Simulation::new(UniverseConfig::mvp());

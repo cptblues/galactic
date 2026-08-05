@@ -4,7 +4,7 @@ use crate::{KnowledgeLevel, MissionTarget, PlanetAnalysisReport};
 
 use super::{MissionPhase, MissionResult, MissionState, MissionStateError};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AnalyzeMissionResult {
     pub planet_id: PlanetId,
     pub previous: KnowledgeLevel,

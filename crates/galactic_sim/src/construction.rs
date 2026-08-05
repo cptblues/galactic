@@ -16,7 +16,7 @@ pub fn max_construction_queue() -> usize {
     default_ruleset().economy().construction_queue_limit
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ConstructionOrder {
     pub kind: BuildingKind,
     pub target_level: u8,
@@ -26,7 +26,7 @@ pub struct ConstructionOrder {
     pub remaining_ticks: u64,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ConstructionQueue {
     orders: VecDeque<ConstructionOrder>,
 }

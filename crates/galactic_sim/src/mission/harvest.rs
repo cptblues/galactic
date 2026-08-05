@@ -7,14 +7,14 @@ use super::{
     MissionState, MissionStateError, MissionTarget, launch_mission_with_payload,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum HarvestCollectionStatus {
     Pending,
     Collected,
     SiteDepleted,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HarvestMissionState {
     pub site_id: ExtractionSiteId,
     pub collected: ResourceStock,
@@ -22,7 +22,7 @@ pub struct HarvestMissionState {
     pub status: HarvestCollectionStatus,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HarvestMissionResult {
     pub site_id: ExtractionSiteId,
     pub collected: ResourceStock,

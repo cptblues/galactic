@@ -104,6 +104,19 @@ pub(crate) fn apply_simulation_command(simulation: &mut SimulationResource, acti
     simulation.pending_events.extend(events);
 }
 
+/// Atomically swaps in a freshly loaded `Simulation` (MVP-031 save/load) and
+/// requests a full view rebuild, the same mechanism `R` already uses to
+/// despawn and recreate every view entity from `GameState`.
+pub(crate) fn replace_simulation(
+    simulation: &mut SimulationResource,
+    loaded: Simulation,
+    rebuild: &mut ViewRebuildRequest,
+) {
+    simulation.simulation = loaded;
+    simulation.pending_events.clear();
+    rebuild.0 = true;
+}
+
 pub(crate) fn action_available(
     action: UiAction,
     simulation: &SimulationResource,

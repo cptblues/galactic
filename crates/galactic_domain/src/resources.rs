@@ -2,7 +2,7 @@
 use std::collections::BTreeSet;
 use std::ops::Add;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ResourceKind {
     Metal,
     Crystal,
@@ -20,7 +20,7 @@ impl ResourceKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ResourceStock {
     pub metal: u64,
     pub crystal: u64,
@@ -114,7 +114,7 @@ impl Add for ResourceStock {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ResourceCost {
     pub metal: u64,
     pub crystal: u64,
@@ -147,7 +147,9 @@ impl From<ResourceStock> for ResourceCost {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct ReservationId(u64);
 
 impl ReservationId {
@@ -160,7 +162,7 @@ impl ReservationId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ResourceReservation {
     pub id: ReservationId,
     pub cost: ResourceCost,

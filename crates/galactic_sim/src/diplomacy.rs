@@ -1,6 +1,8 @@
 use galactic_domain::FactionId;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum DiplomaticRelation {
     #[default]
     Unknown,
@@ -9,7 +11,7 @@ pub enum DiplomaticRelation {
     Allied,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FactionRelation {
     pub first: FactionId,
     pub second: FactionId,
@@ -38,7 +40,7 @@ impl FactionRelation {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DiplomacyState {
     default_relation: DiplomaticRelation,
     relations: Vec<FactionRelation>,

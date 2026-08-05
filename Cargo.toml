@@ -27,6 +27,7 @@ bevy = { version = "0.19", default-features = false, features = [
     "x11",
     "wayland",
 ] }
+dirs = "6"
 rand = "0.9"
 rand_chacha = "0.9"
 ron = "0.10"

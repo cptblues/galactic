@@ -14,6 +14,7 @@ use crate::presentation::shortcuts::{
 use crate::presentation::strategic_navigation::*;
 use crate::*;
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_simulation_input(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut simulation: ResMut<SimulationResource>,
@@ -22,9 +23,11 @@ pub(crate) fn handle_simulation_input(
     mut history: ResMut<NavigationHistory>,
     navigation_ui: Res<navigation_ui::NavigationUiState>,
     fleet_ui: Res<crate::fleet_ui::FleetUiState>,
+    save_load_ui: Res<crate::save_load_ui::SaveLoadUiState>,
 ) {
     if navigation_ui::navigation_text_or_filter_is_active(&navigation_ui)
         || crate::fleet_ui::fleet_name_is_editing(&fleet_ui)
+        || crate::save_load_ui::save_name_is_editing(&save_load_ui)
     {
         return;
     }
@@ -44,9 +47,11 @@ pub(crate) fn toggle_debug_overlay(
     mut debug_overlay: ResMut<DebugOverlayState>,
     navigation_ui: Res<navigation_ui::NavigationUiState>,
     fleet_ui: Res<crate::fleet_ui::FleetUiState>,
+    save_load_ui: Res<crate::save_load_ui::SaveLoadUiState>,
 ) {
     if navigation_ui::navigation_text_or_filter_is_active(&navigation_ui)
         || crate::fleet_ui::fleet_name_is_editing(&fleet_ui)
+        || crate::save_load_ui::save_name_is_editing(&save_load_ui)
     {
         return;
     }

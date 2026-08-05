@@ -235,7 +235,7 @@ pub enum CombatSnapshotError {
     FriendlyTarget(PlanetId),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CombatShipStack {
     pub craftable: CraftableId,
     pub quantity: u64,
@@ -246,7 +246,7 @@ pub struct CombatShipStack {
     pub bonuses: CombatTargetBonuses,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CombatFleetSnapshot {
     pub fleet_id: FleetId,
     pub owner: Owner,
@@ -265,7 +265,7 @@ pub struct CombatFleetPower {
     pub heavy_ships: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PlanetDefenseSnapshot {
     pub planet_id: PlanetId,
     pub occupant: Owner,
@@ -274,7 +274,7 @@ pub struct PlanetDefenseSnapshot {
     pub revision: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AttackMissionCommitment {
     pub seed: u64,
     pub attacker: CombatFleetSnapshot,
@@ -307,7 +307,7 @@ pub fn prepare_attack_commitment(
     })
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CombatOutcome {
     AttackerVictory,
     DefenderVictory,
@@ -315,19 +315,19 @@ pub enum CombatOutcome {
     MutualDestruction,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CombatControlChange {
     Unchanged,
     Secured { previous: Owner, current: Owner },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CombatShipLoss {
     pub craftable: CraftableId,
     pub quantity: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CombatResolution {
     pub outcome: CombatOutcome,
     pub rounds: u16,
@@ -342,20 +342,20 @@ pub struct CombatResolution {
     pub control: CombatControlChange,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AttackInvalidReason {
     TargetOwnerChanged,
     TargetPresenceChanged,
     AttackerFleetChanged,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CombatReportStatus {
     Resolved(CombatResolution),
     TargetInvalid(AttackInvalidReason),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CombatReport {
     pub mission_id: MissionId,
     pub planet_id: PlanetId,
@@ -367,13 +367,13 @@ pub struct CombatReport {
     pub status: CombatReportStatus,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AttackMissionOutcome {
     Resolved(CombatOutcome),
     TargetInvalid(AttackInvalidReason),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AttackMissionResult {
     pub target: PlanetId,
     pub outcome: AttackMissionOutcome,

@@ -5,7 +5,19 @@ use galactic_domain::{PlanetId, Route, SystemId};
 /// Progressive information available to the player.
 ///
 /// Knowledge is monotone: simulation code may only keep or increase a level.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 #[repr(u8)]
 pub enum KnowledgeLevel {
     #[default]
@@ -58,13 +70,13 @@ impl fmt::Display for KnowledgeLevel {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SystemKnowledge {
     pub system_id: SystemId,
     pub level: KnowledgeLevel,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct PlanetKnowledge {
     pub planet_id: PlanetId,
     pub level: KnowledgeLevel,

@@ -2,7 +2,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use galactic_domain::{FactionId, Owner, Planet, PlanetId, PlanetKind, ResourceCost, SystemId};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     AuthorizationError, BuildingCatalog, BuildingCatalogError, BuildingLevels, CraftableCatalog,
@@ -12,7 +12,7 @@ use crate::{
     refresh_planetary_intelligence,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PlanetEnvironment {
     Temperate,
     Oceanic,
@@ -45,7 +45,7 @@ impl InstallationConstraint {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct InstallationConstraints(u16);
 
 impl InstallationConstraints {
@@ -337,7 +337,7 @@ impl PlanetaryAnalysisRules {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PlanetAnalysisReport {
     pub planet_id: PlanetId,
     pub system_id: SystemId,
@@ -372,7 +372,7 @@ pub struct PlanetAnalysisRejected {
     pub error: PlanetAnalysisError,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ColonizationBlocker {
     UnknownPlanet(PlanetId),
     NotAnalyzed {

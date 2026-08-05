@@ -14,7 +14,7 @@ use galactic_sim::{
 /// Version 29 persists A6 combat roles and per-ship combat snapshots.
 pub const SAVE_VERSION: u32 = 29;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SaveGame {
     pub version: u32,
     pub ruleset_id: String,
@@ -25,7 +25,7 @@ pub struct SaveGame {
     pub state: MutableGameSave,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct UniverseReference {
     pub id: UniverseId,
     pub seed: u64,
@@ -34,7 +34,7 @@ pub struct UniverseReference {
     pub generation_fingerprint: u64,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MutableGameSave {
     pub version: u32,
     pub factions: Vec<FactionSave>,
@@ -61,7 +61,7 @@ pub struct MutableGameSave {
     pub research: ResearchState,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FactionSave {
     pub id: FactionId,
     pub name: String,
@@ -69,7 +69,7 @@ pub struct FactionSave {
     pub active: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StrategicClockSave {
     pub current_tick: StrategicTick,
     pub remainder_nanos: u64,
@@ -77,7 +77,7 @@ pub struct StrategicClockSave {
     pub resume_speed: TimeSpeed,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ColonySave {
     pub id: ColonyId,
     pub name: String,
@@ -101,7 +101,7 @@ pub struct ColonySave {
     pub resource_profile: PlanetResourceProfile,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FleetSave {
     pub id: FleetId,
     pub name: String,

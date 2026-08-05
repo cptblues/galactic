@@ -2,10 +2,15 @@
 #[cfg(test)]
 use galactic_sim::Simulation;
 
+mod file;
 mod restore;
 mod save;
 mod snapshot;
 
+pub use file::{
+    SaveFileError, SaveFileHeader, SaveSlotMetadata, default_save_directory, list_save_slots,
+    load_from_path, save_to_path,
+};
 pub use restore::restore_from_snapshot;
 pub use save::{
     ColonySave, FactionSave, FleetSave, MutableGameSave, SAVE_VERSION, SaveError, SaveGame,
@@ -14,7 +19,7 @@ pub use save::{
 pub use snapshot::snapshot_from_simulation;
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::time::Duration;
 
     use galactic_domain::{
@@ -282,7 +287,7 @@ mod tests {
         (simulation, launched.mission_id, cargo)
     }
 
-    fn simulation_with_launched_harvest() -> (Simulation, MissionId, ExtractionSiteId) {
+    pub(crate) fn simulation_with_launched_harvest() -> (Simulation, MissionId, ExtractionSiteId) {
         let mut simulation = Simulation::new(UniverseConfig::mvp());
         let actor = simulation.state().player_faction;
         let colony_id = simulation.state().colonies[0].id;

@@ -51,7 +51,22 @@ impl fmt::Display for BuildingKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+impl serde::Serialize for BuildingKind {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.key())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for BuildingKind {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let key = String::deserialize(deserializer)?;
+        default_building_catalog()
+            .kind_by_key(&key)
+            .ok_or_else(|| serde::de::Error::custom(format!("unknown building kind: {key}")))
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct BuildingLevel {
     kind: BuildingKind,
     level: u8,
@@ -61,6 +76,25 @@ struct BuildingLevel {
 pub struct BuildingLevels {
     entries: [BuildingLevel; MAX_RULESET_BUILDINGS],
     len: u8,
+}
+
+/// Serde only implements `[T; N]` for a handful of small `N`, so `entries` is
+/// serialized as the variable-length `(kind, level)` list it logically is.
+impl serde::Serialize for BuildingLevels {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.iter().collect::<Vec<_>>().serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for BuildingLevels {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let entries = Vec::<(BuildingKind, u8)>::deserialize(deserializer)?;
+        let mut levels = Self::EMPTY;
+        for (kind, level) in entries {
+            levels.set_level(kind, level);
+        }
+        Ok(levels)
+    }
 }
 
 impl BuildingLevels {
@@ -621,6 +655,12 @@ fn leak_non_empty<T>(value: String, error: T) -> Result<&'static str, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unknown_building_kind_key_fails_deserialization_cleanly() {
+        let result = ron::de::from_str::<BuildingKind>("\"not_a_real_building\"");
+        assert!(result.is_err());
+    }
 
     #[test]
     fn default_catalog_is_loaded_from_the_ruleset() {

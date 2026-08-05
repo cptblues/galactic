@@ -25,6 +25,7 @@ pub(crate) enum OpenPanel {
     Navigation,
     Objectives,
     Colony,
+    SaveLoad,
 }
 
 #[derive(Component)]
@@ -170,6 +171,7 @@ pub(crate) enum ScrollIndicatorId {
     ObjectiveDetail,
     MissionReportList,
     MissionReportDetail,
+    SaveSlotList,
 }
 
 #[derive(Component, Debug, Clone, Copy)]

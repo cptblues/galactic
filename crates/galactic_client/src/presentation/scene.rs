@@ -1240,6 +1240,7 @@ fn spawn_tab_bar(commands: &mut Commands) {
             spawn_tab_bar_slot(row, fleet_ui::spawn_fleet_toggle);
             spawn_tab_bar_slot(row, objectives_ui::spawn_objectives_toggle);
             spawn_tab_bar_slot(row, navigation_ui::spawn_search_toggle);
+            spawn_tab_bar_slot(row, save_load_ui::spawn_save_load_toggle);
             row.spawn(Node {
                 width: Val::Px(42.0),
                 ..default()
@@ -1714,7 +1715,8 @@ COMMANDES\n\
 Souris : clic gauche sélectionner  ·  double-clic ouvrir/recentrer  ·  \
 clic droit orbite  ·  clic molette déplacer  ·  molette zoom\n\
 Vue : [Tab] cible suivante  ·  [P] projection  ·  [?] afficher/masquer l’aide\n\
-Missions : [K] sonder  ·  [L] analyser  ·  [M] attaquer  ·  [H] récolter  ·  [N] coloniser"
+Missions : [V] Flottes & missions -> assistant de lancement (sonder / analyser / attaquer / récolter / coloniser)\n\
+Sauvegardes : [J] écran des sauvegardes  ·  [F5] sauvegarde rapide  ·  [F9] chargement rapide"
 }
 
 #[cfg(test)]
