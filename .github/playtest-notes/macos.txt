@@ -1,0 +1,9 @@
+Galactic - build de playtest (macOS, Intel + Apple Silicon)
+
+1. Dezippez ce dossier entierement (ne deplacez pas le binaire
+   galactic hors de son dossier assets/).
+2. Le binaire n'est pas signe par un compte developpeur Apple : un
+   double-clic direct sera bloque par Gatekeeper ("galactic ne peut
+   pas etre ouvert"). Pour lancer quand meme :
+     - clic droit sur "galactic" > Ouvrir > confirmer "Ouvrir", OU
+     - ouvrir un Terminal dans ce dossier et lancer : ./galactic

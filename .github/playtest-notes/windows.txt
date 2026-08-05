@@ -1,0 +1,8 @@
+Galactic - build de playtest (Windows)
+
+1. Dezippez ce dossier entierement (ne deplacez pas galactic.exe hors
+   de son dossier assets/).
+2. Double-cliquez sur galactic.exe.
+3. Windows Defender SmartScreen peut avertir que l'application n'est
+   pas signee : cliquez sur "Informations complementaires" puis
+   "Executer quand meme".

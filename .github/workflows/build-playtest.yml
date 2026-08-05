@@ -1,0 +1,68 @@
+name: Build playtest binaries
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --bin galactic
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=dist/galactic-windows
+          mkdir -p "$out"
+          cp target/release/galactic.exe "$out/"
+          cp -r assets "$out/"
+          cp .github/playtest-notes/windows.txt "$out/LISEZ-MOI.txt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: galactic-windows
+          path: dist/galactic-windows
+          retention-days: 14
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build (Intel)
+        run: cargo build --release --bin galactic --target x86_64-apple-darwin
+
+      - name: Build (Apple Silicon)
+        run: cargo build --release --bin galactic --target aarch64-apple-darwin
+
+      - name: Package universal binary
+        run: |
+          set -euo pipefail
+          out=dist/galactic-macos
+          mkdir -p "$out"
+          lipo -create -output "$out/galactic" \
+            target/x86_64-apple-darwin/release/galactic \
+            target/aarch64-apple-darwin/release/galactic
+          chmod +x "$out/galactic"
+          cp -r assets "$out/"
+          cp .github/playtest-notes/macos.txt "$out/LISEZ-MOI.txt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: galactic-macos
+          path: dist/galactic-macos
+          retention-days: 14
