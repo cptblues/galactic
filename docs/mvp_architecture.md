@@ -928,9 +928,9 @@ la faction agissante. L'enveloppe de commande avec émetteur reste le périmètr
 du MVP-019.
 
 Les factions sont chargées depuis `factions.ron`. Le ruleset par défaut contient
-une faction joueur active, une faction neutre inactive et une future faction IA
-inactive. Ces factions dormantes sont persistées mais n'exécutent aucune boucle
-d'action.
+le `Consortium` joueur, la `Ligue des Confins` neutre et les `Sylves` comme
+future faction IA hostile. Ces factions dormantes sont persistées mais
+n'exécutent aucune boucle d'action.
 
 Versions après migration :
 
@@ -1321,7 +1321,7 @@ exact. Une cible ayant changé pendant le trajet produit au contraire un
 rapport d'invalidation sans révéler l'ancien instantané défensif.
 
 Pour garantir un adversaire de test sans supprimer les mondes vides, les règles
-de présence imposent une patrouille hostile sur une planète de chaque système
+de présence imposent une croissance Sylve sur une planète de chaque système
 directement voisin du départ. Le reste de la génération garde ses profils
 pondérés.
 
@@ -1626,8 +1626,7 @@ Le HUD de ressources distingue désormais :
 
 - `Stock total` : quantité physiquement stockée dans la colonie ;
 - `Disponible maintenant` : quantité utilisable après réservations ;
-- `Réservé par ordres/missions` : ressources bloquées par files et missions ;
-- la formule `Disponible = Stock - Réservé`.
+- `Réservé par ordres/missions` : ressources bloquées par files et missions.
 
 Les panneaux de recherche distinguent explicitement la recherche technologique
 de la recherche de carte. Les raccourcis globaux ignorent l'entrée clavier tant
@@ -1667,10 +1666,11 @@ colonies à risque.
 
 L'état d'objectifs est volontairement une ressource client locale à la session :
 `ObjectiveProgressState` conserve les objectifs terminés, les dotations déjà
-réclamées, l'objectif sélectionné et le feedback ; `ObjectiveUiState` conserve
-l'affichage des conseils. Aucun `GameAction`, aucun champ de `GameState` et
-aucune donnée de sauvegarde ne sont ajoutés dans cette passe, car MVP-031 est
-reporté pour privilégier la validation du gameplay.
+réclamées, l'objectif sélectionné, l'ouverture initiale du panneau et le
+feedback ; `ObjectiveUiState` conserve l'affichage des conseils. Aucun
+`GameAction`, aucun champ de `GameState` et aucune donnée de sauvegarde ne sont
+ajoutés dans cette passe, car MVP-031 est reporté pour privilégier la
+validation du gameplay.
 
 Les objectifs se valident uniquement depuis l'état réel de simulation :
 niveaux de bâtiments, recherches, inventaires, flottes, connaissances,
@@ -1686,6 +1686,60 @@ Versions après ce checkpoint :
 - `GENERATION_VERSION` reste 5 ;
 - `RULESET_SCHEMA_VERSION` reste 12 ;
 - `content_version` du ruleset `default` reste 16.
+
+## MVP-032-B — Alignement factions, forces et quêtes sur le lore
+
+Le ruleset `default` reprend les factions de
+`docs/galactic_factions_lore.md` sans ajouter de nouvel identifiant numérique :
+`0` reste le `Consortium`, `1` devient la `Ligue des Confins` et `2` devient
+les `Sylves`. Vesper est conservée comme faction de scénario future, sans
+présence active dans le MVP actuel.
+
+Les présences planétaires abandonnent les placeholders génériques. Les mondes
+neutres emploient des forces de la Ligue des Confins (`Milice des Confins`,
+`Garde autonome`, `Bastion local`, défenses de quai) et les mondes hostiles
+emploient des organismes Sylves (`Épine`, `Traqueur`, `Carapace`, `Racine`,
+`Floraison`, `Ancien`). Le voisinage de départ garantit désormais une
+croissance Sylve pour préparer les objectifs de sécurisation et le futur arc
+Ambre de phase.
+
+Les libellés de préparation d'attaque parlent de `présence occupante` plutôt
+que de qualifier toute cible non-joueur d'hostile. La relation diplomatique
+reste la source de vérité pour la carte et les panneaux d'information.
+
+Versions après ce checkpoint :
+
+- `GAME_STATE_VERSION` reste 28 ;
+- `SAVE_VERSION` reste 29 ;
+- `GENERATION_VERSION` reste 5 ;
+- `RULESET_SCHEMA_VERSION` reste 12 ;
+- `content_version` du ruleset `default` = 17.
+
+## MVP-032-C — Nettoyage ergonomique des objectifs et panneaux MVP
+
+Passe d'ergonomie avant MVP-033. Le premier mandat devient `Prise de
+commandement` et se valide uniquement après ouverture volontaire du panneau
+`Objectifs`. Les conseils d'objectifs et le briefing `?` démarrent masqués par
+défaut, puis restent réouvrables par les boutons existants.
+
+Le panneau Objectifs abandonne sa hauteur minimale rigide pour laisser la liste
+et le détail scroller dans l'espace disponible sur petit écran. Le détail de
+ressources conserve `Stock total`, `Disponible maintenant` et `Réservé par
+ordres/missions`, sans afficher la formule explicative. Le bloc `ACTIONS` ne
+montre plus `Cible suivante` ni `Retour univers`; les raccourcis correspondants
+restent actifs et `Tab cible suivante` est documenté dans le helper `?`.
+
+Le panneau `Corps du système` est retiré de l'UI active du MVP. Le module reste
+dans le code avec ses tests pour une future refonte informative centrée sur la
+connaissance, l'habitabilité, la présence, les ressources et les actions utiles.
+
+Versions après ce checkpoint :
+
+- `GAME_STATE_VERSION` reste 28 ;
+- `SAVE_VERSION` reste 29 ;
+- `GENERATION_VERSION` reste 5 ;
+- `RULESET_SCHEMA_VERSION` reste 12 ;
+- `content_version` du ruleset `default` reste 17.
 
 ## Refactor technique — Modularisation interne
 

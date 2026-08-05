@@ -58,7 +58,7 @@ enum ObjectiveCategory {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum ObjectiveId {
-    ResourceInventory,
+    OpenObjectivesPanel,
     UpgradeProduction,
     BuildLaboratory,
     StartResearch,
@@ -80,7 +80,7 @@ pub(crate) enum ObjectiveId {
 }
 
 const CAMPAIGN_OBJECTIVES: [ObjectiveId; 14] = [
-    ObjectiveId::ResourceInventory,
+    ObjectiveId::OpenObjectivesPanel,
     ObjectiveId::UpgradeProduction,
     ObjectiveId::BuildLaboratory,
     ObjectiveId::StartResearch,
@@ -124,6 +124,7 @@ pub(crate) struct ObjectiveProgressState {
     completed_objectives: BTreeSet<ObjectiveId>,
     claimed_rewards: BTreeSet<ObjectiveId>,
     selected_objective: ObjectiveId,
+    opened_objectives_panel: bool,
     feedback: String,
 }
 
@@ -132,7 +133,8 @@ impl Default for ObjectiveProgressState {
         Self {
             completed_objectives: BTreeSet::new(),
             claimed_rewards: BTreeSet::new(),
-            selected_objective: ObjectiveId::ResourceInventory,
+            selected_objective: ObjectiveId::OpenObjectivesPanel,
+            opened_objectives_panel: false,
             feedback: String::new(),
         }
     }
@@ -146,7 +148,7 @@ pub(crate) struct ObjectiveUiState {
 impl Default for ObjectiveUiState {
     fn default() -> Self {
         Self {
-            hints_visible: true,
+            hints_visible: false,
         }
     }
 }
@@ -353,7 +355,7 @@ fn spawn_objectives_main(root: &mut ChildSpawnerCommands) {
     root.spawn((Node {
         width: Val::Percent(100.0),
         flex_grow: 1.0,
-        min_height: Val::Px(420.0),
+        min_height: Val::Px(0.0),
         flex_direction: FlexDirection::Row,
         column_gap: Val::Px(9.0),
         ..default()
@@ -368,6 +370,7 @@ fn spawn_objective_list(row: &mut ChildSpawnerCommands) {
     row.spawn((
         Node {
             width: Val::Px(420.0),
+            min_height: Val::Px(0.0),
             padding: UiRect::all(Val::Px(9.0)),
             border: UiRect::all(Val::Px(1.0)),
             border_radius: BorderRadius::all(Val::Px(6.0)),
@@ -441,6 +444,7 @@ fn spawn_objective_detail(row: &mut ChildSpawnerCommands) {
     row.spawn((
         Node {
             flex_grow: 1.0,
+            min_height: Val::Px(0.0),
             padding: UiRect::all(Val::Px(12.0)),
             border: UiRect::all(Val::Px(1.0)),
             border_radius: BorderRadius::all(Val::Px(6.0)),
@@ -466,6 +470,7 @@ fn spawn_objective_detail(row: &mut ChildSpawnerCommands) {
             .spawn(Node {
                 width: Val::Percent(100.0),
                 flex_grow: 1.0,
+                min_height: Val::Px(0.0),
                 overflow: Overflow::scroll_y(),
                 ..default()
             })
@@ -511,6 +516,7 @@ fn handle_objective_shortcuts(
             OpenPanel::None
         };
         if opening {
+            progress.opened_objectives_panel = true;
             progress.feedback.clear();
             navigation_ui.search_open = false;
             navigation_ui.filters_open = false;
@@ -544,6 +550,7 @@ fn handle_objective_buttons(
                     OpenPanel::None
                 };
                 if opening {
+                    progress.opened_objectives_panel = true;
                     progress.feedback.clear();
                     navigation_ui.search_open = false;
                     navigation_ui.filters_open = false;
@@ -575,7 +582,7 @@ fn sync_objective_progress(
             .copied()
             .filter(|id| {
                 !progress.completed_objectives.contains(id)
-                    && objective_is_complete(state, universe, *id)
+                    && objective_is_complete(state, universe, &progress, *id)
             })
             .collect::<Vec<_>>()
     };
@@ -813,18 +820,22 @@ Situation actuelle : {}",
         definition.briefing,
         definition.condition,
         reward,
-        objective_status_text(state, definition.id),
+        objective_status_text(state, progress, definition.id),
     )
 }
 
-fn objective_status_text(state: &GameState, id: ObjectiveId) -> String {
+fn objective_status_text(
+    state: &GameState,
+    progress: &ObjectiveProgressState,
+    id: ObjectiveId,
+) -> String {
     match id {
-        ObjectiveId::ResourceInventory => {
-            let stock = state
-                .player_home_colony()
-                .map(|colony| colony.resources.stock())
-                .unwrap_or(ResourceStock::ZERO);
-            format!("stock de Port-Sillage : {}", format_stock(stock))
+        ObjectiveId::OpenObjectivesPanel => {
+            if progress.opened_objectives_panel {
+                "panneau Objectifs ouvert".to_string()
+            } else {
+                "panneau Objectifs non consulté".to_string()
+            }
         }
         ObjectiveId::UpgradeProduction => {
             let best = player_best_level(
@@ -918,8 +929,8 @@ fn objective_status_text(state: &GameState, id: ObjectiveId) -> String {
 
 fn objective_hint_text(id: ObjectiveId) -> String {
     match id {
-        ObjectiveId::ResourceInventory => {
-            "Consulte le HUD de ressources : le Consortium aime savoir ce qu'il peut réquisitionner.".to_string()
+        ObjectiveId::OpenObjectivesPanel => {
+            "Ouvre Objectifs [O] ou le bouton bas pour confirmer la prise de commandement.".to_string()
         }
         ObjectiveId::UpgradeProduction => {
             "Ouvre Gestion colonie [C], choisis une installation de production, puis lance une amélioration.".to_string()
@@ -981,12 +992,11 @@ fn objective_hint_text(id: ObjectiveId) -> String {
 fn objective_is_complete(
     state: &GameState,
     universe: &UniverseRepository,
+    progress: &ObjectiveProgressState,
     id: ObjectiveId,
 ) -> bool {
     match id {
-        ObjectiveId::ResourceInventory => state
-            .player_home_colony()
-            .is_some_and(|colony| !colony.resources.stock().is_zero()),
+        ObjectiveId::OpenObjectivesPanel => progress.opened_objectives_panel,
         ObjectiveId::UpgradeProduction => {
             player_best_level(
                 state,
@@ -1030,12 +1040,12 @@ fn objective_is_complete(
 
 fn objective_definition(id: ObjectiveId) -> ObjectiveDefinition {
     match id {
-        ObjectiveId::ResourceInventory => ObjectiveDefinition {
+        ObjectiveId::OpenObjectivesPanel => ObjectiveDefinition {
             id,
             category: ObjectiveCategory::Campaign,
-            title: "Inventaire de survie",
-            briefing: "Port-Sillage doit confirmer ses stocks avant toute projection civilisatrice. Une ressource comptée est une ressource presque utile.",
-            condition: "Disposer d'une colonie mère avec des ressources stockées.",
+            title: "Prise de commandement",
+            briefing: "Un mandat ignoré reste techniquement un mandat, mais le Consortium préfère les amiraux qui ouvrent leurs dossiers.",
+            condition: "Ouvrir le panneau Objectifs au moins une fois.",
             reward: None,
         },
         ObjectiveId::UpgradeProduction => ObjectiveDefinition {
@@ -1200,7 +1210,7 @@ fn current_campaign_objective(progress: &ObjectiveProgressState) -> Option<Objec
 
 fn all_objective_ids() -> &'static [ObjectiveId] {
     const ALL: [ObjectiveId; 19] = [
-        ObjectiveId::ResourceInventory,
+        ObjectiveId::OpenObjectivesPanel,
         ObjectiveId::UpgradeProduction,
         ObjectiveId::BuildLaboratory,
         ObjectiveId::StartResearch,
@@ -1442,16 +1452,38 @@ mod tests {
     }
 
     #[test]
-    fn initial_objective_uses_real_home_stock() {
+    fn first_objective_requires_opening_the_objectives_panel() {
         let simulation = simulation();
-        assert!(objective_is_complete(
-            simulation.state(),
-            simulation.universe_repository(),
-            ObjectiveId::ResourceInventory,
-        ));
+        let mut progress = ObjectiveProgressState::default();
+
         assert!(!objective_is_complete(
             simulation.state(),
             simulation.universe_repository(),
+            &progress,
+            ObjectiveId::OpenObjectivesPanel,
+        ));
+        progress.opened_objectives_panel = true;
+        assert!(objective_is_complete(
+            simulation.state(),
+            simulation.universe_repository(),
+            &progress,
+            ObjectiveId::OpenObjectivesPanel,
+        ));
+        assert_eq!(
+            current_campaign_objective(&progress),
+            Some(ObjectiveId::OpenObjectivesPanel),
+        );
+        progress
+            .completed_objectives
+            .insert(ObjectiveId::OpenObjectivesPanel);
+        assert_eq!(
+            current_campaign_objective(&progress),
+            Some(ObjectiveId::UpgradeProduction),
+        );
+        assert!(!objective_is_complete(
+            simulation.state(),
+            simulation.universe_repository(),
+            &progress,
             ObjectiveId::BuildLaboratory,
         ));
     }
@@ -1459,9 +1491,11 @@ mod tests {
     #[test]
     fn production_upgrade_requires_a_real_level_increase() {
         let mut simulation = simulation();
+        let progress = ObjectiveProgressState::default();
         assert!(!objective_is_complete(
             simulation.state(),
             simulation.universe_repository(),
+            &progress,
             ObjectiveId::UpgradeProduction,
         ));
 
@@ -1480,6 +1514,7 @@ mod tests {
         assert!(objective_is_complete(
             simulation.state(),
             simulation.universe_repository(),
+            &progress,
             ObjectiveId::UpgradeProduction,
         ));
     }
@@ -1525,7 +1560,7 @@ mod tests {
         let mut progress = ObjectiveProgressState::default();
         progress
             .completed_objectives
-            .insert(ObjectiveId::ResourceInventory);
+            .insert(ObjectiveId::OpenObjectivesPanel);
         progress
             .completed_objectives
             .insert(ObjectiveId::UpgradeProduction);
@@ -1542,6 +1577,11 @@ mod tests {
 
         assert!(definition.briefing.contains("administrée"));
         assert!(!definition.briefing.contains("Helldivers"));
+    }
+
+    #[test]
+    fn objective_hints_start_hidden() {
+        assert!(!ObjectiveUiState::default().hints_visible);
     }
 
     #[test]

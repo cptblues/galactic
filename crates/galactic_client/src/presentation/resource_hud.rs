@@ -38,7 +38,7 @@ PLEIN — PRODUCTION BLOQUÉE"
         text: format!(
             "{}  {} / {}
 Stock total {}  •  Disponible maintenant {}
-Réservé par ordres/missions {}  •  Disponible = Stock - Réservé
+Réservé par ordres/missions {}
 Production +{:.2}/s  •  plein {}{}",
             kind.title(),
             stock,
@@ -679,7 +679,7 @@ mod tests {
         assert!(view.text.contains("Stock total"));
         assert!(view.text.contains("Disponible maintenant"));
         assert!(view.text.contains("Réservé par ordres/missions"));
-        assert!(view.text.contains("Disponible = Stock - Réservé"));
+        assert!(!view.text.contains("Disponible = Stock - Réservé"));
     }
 
     #[test]

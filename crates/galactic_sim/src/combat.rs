@@ -1082,10 +1082,10 @@ mod tests {
         let rules = combat_rules();
         let planetary = default_ruleset().planetary_presence();
         let light_force = planetary
-            .id_by_key("frontier_militia")
+            .id_by_key("confins_militia")
             .expect("default light force exists");
         let heavy_force = planetary
-            .id_by_key("surface_bunker")
+            .id_by_key("local_bastion")
             .expect("default heavy force exists");
         let mut light_bonuses = CombatTargetBonuses::default();
         light_bonuses.light_per_mille = 1_400;
@@ -1129,7 +1129,7 @@ mod tests {
         let rules = combat_rules();
         let planetary = default_ruleset().planetary_presence();
         let force = planetary
-            .id_by_key("line_garrison")
+            .id_by_key("confins_guard")
             .expect("default force exists");
         let attacker = snapshot(0, FactionId::new(0), 3, 70, 45, 60);
         let defender = defense(
@@ -1150,7 +1150,7 @@ mod tests {
         let rules = combat_rules();
         let planetary = default_ruleset().planetary_presence();
         let force = planetary
-            .id_by_key("line_garrison")
+            .id_by_key("confins_guard")
             .expect("default force exists");
         let attacker = snapshot(0, FactionId::new(0), 1, 10_000, 1, 1);
         let defender = defense(

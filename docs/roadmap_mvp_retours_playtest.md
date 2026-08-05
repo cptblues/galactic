@@ -18,7 +18,7 @@
 | MVP-030-A6 | Diversifier les vaisseaux et les rôles de combat | P1 | 13 pts | Implémenté |
 | MVP-030-A7 | Polir l’UX flotte, ressources et cadrage narratif | P1 | 5 pts | Implémenté |
 | MVP-031 | Finaliser sauvegarde, chargement et migrations V1 | P0 | 8 pts | Reporté après MVP-033 |
-| MVP-032 | Ajouter onboarding et objectifs contextuels | P1 | 5 pts | MVP-032-A implémenté |
+| MVP-032 | Ajouter onboarding et objectifs contextuels | P1 | 5 pts | MVP-032-C implémenté |
 | MVP-033 | Implémenter la condition de réussite du MVP | P1 | 3 pts | À faire |
 | MVP-034 | Ajouter les presets graphiques | P2 | 5 pts | À faire |
 | MVP-035 | Intégrer diagnostics et benchmark reproductible | P2 | 5 pts | À faire |
@@ -768,7 +768,7 @@ Permettre au joueur de sauvegarder une partie sur disque, la recharger et contin
 |---|---|
 | Priorité | P1 |
 | Estimation | 5 points |
-| Statut | MVP-032-A implémenté |
+| Statut | MVP-032-C implémenté |
 | Dépendances | MVP-030-A1 à MVP-030-A7 ; MVP-031 reporté |
 
 ### Objectif
@@ -777,7 +777,7 @@ Guider un nouveau joueur jusqu’à sa première colonisation sans documentation
 
 ### Suite d’objectifs recommandée
 
-1. Observer les ressources de Port-Sillage.
+1. Ouvrir le panneau Objectifs.
 2. Améliorer un bâtiment de production.
 3. Construire un Laboratoire.
 4. Lancer une première recherche.
@@ -820,7 +820,7 @@ objectif ne doit pas devenir le meilleur moyen d'optimiser l'économie.
 ### Critères d’acceptation
 
 - [ ] Un nouveau joueur atteint sa première sonde sans aide orale.
-- [ ] Un objectif ne se valide pas depuis un simple clic d’interface.
+- [ ] Sauf prise de commandement, un objectif ne se valide pas depuis un simple clic d’interface.
 - [x] Les conseils ne bloquent pas la navigation.
 - [ ] La progression est sauvegardée.
 - [x] Les objectifs utilisent les systèmes réels du jeu.
@@ -845,6 +845,56 @@ Les récompenses sont des petites dotations de ressources créditées une seule
 fois par session, plafonnées par la capacité de stockage de la colonie active
 ou de Port-Sillage.
 
+### MVP-032-B implémenté
+
+Le contenu est aligné avec `docs/galactic_factions_lore.md` pour préparer les
+arcs de scénario et de quêtes suivants. Les factions du ruleset restent au
+nombre de trois : `Consortium`, `Ligue des Confins` et `Sylves`. Vesper est
+documentée comme rival futur mais n'est pas ajoutée au ruleset actif.
+
+Les profils de présence et les forces planétaires utilisent désormais la
+Ligue des Confins pour les mondes humains autonomes et les Sylves pour les
+menaces biologiques. Le voisinage de départ garantit une croissance Sylve,
+ce qui donne une cible cohérente aux objectifs de sécurisation et à la future
+condition de réussite du MVP.
+
+Les écrans de lancement de mission ne qualifient plus automatiquement toute
+présence non-joueur d'hostile : l'attaque cible une `présence occupante`, et
+la carte conserve la relation diplomatique comme source d'information.
+
+Critères d'acceptation ajoutés :
+
+- [x] Les noms des factions actives suivent le lore.
+- [x] Les forces ennemies visibles préparent l'identité des Sylves.
+- [x] Les défenses humaines autonomes préparent la Ligue des Confins.
+- [x] Vesper reste hors ruleset actif pour éviter une faction inerte en trop.
+- [x] `content_version` du ruleset `default` est incrémentée à 17.
+
+### MVP-032-C implémenté
+
+Passe d'ergonomie issue des retours de playtest. Le premier mandat devient
+`Prise de commandement` : il se valide après ouverture volontaire du panneau
+`Objectifs`, ce qui évite que le parcours commence par une étape déjà validée
+au lancement.
+
+Les conseils démarrent masqués par défaut, dans le panneau Objectifs comme dans
+le briefing `?`. Le panneau Objectifs accepte les petites hauteurs en laissant
+scroller sa liste et son détail au lieu de forcer une hauteur minimale. Le
+détail de ressources ne montre plus la formule `Disponible = Stock - Réservé`.
+
+Le bloc `ACTIONS` est simplifié : `Cible suivante` et `Retour univers` ne sont
+plus affichés. Les raccourcis restent actifs, et `Tab cible suivante` est
+documenté dans le helper `?`. Le panneau `Corps du système` est retiré de l'UI
+active du MVP en attendant une refonte informative dédiée.
+
+Critères d'acceptation ajoutés :
+
+- [x] Le premier mandat demande une action volontaire du joueur.
+- [x] Les conseils et le helper démarrent masqués.
+- [x] Le panneau Objectifs reste utilisable sur petite hauteur.
+- [x] Les actions redondantes ne sont plus affichées dans le bloc `ACTIONS`.
+- [x] Le panneau `Corps du système` n'est plus branché dans l'UI active.
+
 ---
 
 <a id="mvp-033"></a>
@@ -856,19 +906,35 @@ ou de Port-Sillage.
 | Priorité | P1 |
 | Estimation | 3 points |
 | Statut | À faire |
-| Dépendances | MVP-030-A2, MVP-031, MVP-032 |
+| Dépendances | MVP-030-A2, MVP-030-A7, MVP-032 |
 
 ### Objectif
 
-Donner une conclusion mesurable à la vertical slice.
+Donner une conclusion mesurable à la vertical slice sous forme de directive du
+Consortium : sécuriser l'approvisionnement régional en Ambre de phase après
+avoir identifié la menace Sylve. La sauvegarde reste reportée ; la condition de
+réussite doit fonctionner sur l'état de session courant.
+
+### Arc narratif recommandé
+
+1. Étendre le réseau de reconnaissance autour de Port-Sillage.
+2. Identifier une présence Sylve via analyse planétaire.
+3. Récolter un premier site distant pour prouver l'intérêt économique du
+   secteur.
+4. Construire une capacité militaire crédible.
+5. Neutraliser une croissance Sylve proche.
+6. Fonder une troisième colonie ou sécuriser un monde stratégique pour acter
+   l'autonomie du secteur.
 
 ### Condition recommandée
 
 - Trois colonies.
 - Huit systèmes sondés.
-- Technologie finale atteinte.
+- Technologie `Colonisation avancée` atteinte.
 - Au moins une récolte distante réussie.
-- Au moins une planète sécurisée ou une mission militaire réussie.
+- Au moins une planète Sylve analysée.
+- Au moins une croissance Sylve sécurisée ou une mission militaire réussie
+  contre les Sylves.
 
 ### Périmètre
 
@@ -876,17 +942,21 @@ Donner une conclusion mesurable à la vertical slice.
 - Panneau de progression.
 - Événement de réussite.
 - Résumé de partie.
+- Texte de directive cohérent avec le Consortium.
 - Temps de jeu.
 - Colonies.
 - Systèmes explorés.
 - Recherches.
 - Missions.
+- Cibles Sylves.
 - Possibilité de continuer après la réussite.
 
 ### Critères d’acceptation
 
 - [ ] La réussite se déclenche uniquement lorsque toutes les conditions sont remplies.
 - [ ] Les seuils viennent du ruleset.
+- [ ] Les textes de réussite utilisent le vocabulaire administratif du Consortium.
+- [ ] Les conditions exploitent les rapports d'analyse et de combat existants.
 - [ ] Le résumé affiche les statistiques principales.
 - [ ] La partie reste jouable après l’écran de réussite.
 

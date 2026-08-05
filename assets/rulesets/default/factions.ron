@@ -10,13 +10,13 @@
         ),
         (
             id: 1,
-            name: "Collectifs à Convaincre",
+            name: "Ligue des Confins",
             kind: Neutral,
             active: false,
         ),
         (
             id: 2,
-            name: "Bureau Vesper de l'Oppression",
+            name: "Sylves",
             kind: FutureAi,
             active: false,
         ),

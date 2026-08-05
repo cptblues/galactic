@@ -737,10 +737,8 @@ pub(crate) fn spawn_ui(mut commands: Commands, icon_assets: Res<IconAssets>) {
         ))
         .with_children(|parent| {
             spawn_panel_heading(parent, "ACTIONS");
-            spawn_action_button(parent, UiAction::CycleTarget, "Cible suivante", "Tab");
             spawn_action_button(parent, UiAction::FocusSelection, "Recentrer", "F");
             spawn_action_button(parent, UiAction::EnterSystem, "Entrer système", "Enter");
-            spawn_action_button(parent, UiAction::ExitSystem, "Retour univers", "Esc");
             spawn_action_button(
                 parent,
                 UiAction::ToggleProjection,
@@ -987,7 +985,7 @@ fn spawn_intro_pitch_modal(commands: &mut Commands) {
                 ))
                 .with_children(|panel| {
                     panel.spawn((
-                        Text::new("LA SURVIE DE L'HUMANITÉ"),
+                        Text::new("INTRODUCTION"),
                         ui_text_font(22.0),
                         TextColor(Color::srgb(0.90, 0.96, 1.0)),
                         Node {
@@ -1244,28 +1242,54 @@ pub(crate) fn update_intro_pitch_visibility(
 }
 
 pub(crate) fn intro_pitch_text() -> &'static str {
-    "Le monde d'avant était à bout de souffle.\n\
-Guerres, famines, pollution, surpopulation. Les nations se disputaient les dernières ressources tandis que la planète s'épuisait.\n\
+    "Le monde d’avant était à bout de souffle.\n\
 \n\
-Face à l'effondrement, les gouvernements survivants formèrent le Consortium, avec une idée simple : une seule direction, un seul objectif, une seule humanité.\n\
-Et, pour la première fois, un ennemi commun.\n\
-Tout ce qui viendrait d'au-delà de notre monde.\n\
+Guerres, famines, pollution, surpopulation. Les nations se disputaient les dernières ressources tandis que notre planète s’épuisait.\n\
 \n\
-L'espace devint notre seule chance de survie.\n\
-Nous avons exploré. Colonisé. Exploité les ressources nécessaires à notre avenir. Chaque nouveau monde assurait quelques années de plus à notre civilisation.\n\
+Face à l’effondrement, les gouvernements survivants formèrent le Consortium, autour d’une idée simple :\n\
+\n\
+une seule direction, un seul objectif, une seule humanité.\n\
+\n\
+Et, pour la première fois, un avenir commun.\n\
+\n\
+L’espace devint notre seule chance de survie.\n\
+\n\
+Nous avons exploré.\n\
+\n\
+Colonisé.\n\
+\n\
+Exploité les ressources nécessaires à notre avenir.\n\
+\n\
+Chaque nouveau monde offrait quelques années de répit à notre civilisation.\n\
+\n\
 Puis quelques années devinrent des décennies.\n\
-Les colonies prospérèrent. Les flottes grandirent. Les besoins aussi.\n\
 \n\
-Avec le temps, nous avons appris qu'une planète inhabitée était une opportunité.\n\
-Qu'une planète occupée était un problème.\n\
-Et qu'un problème pouvait toujours être résolu.\n\
+Les colonies prospérèrent.\n\
+Les flottes grandirent.\n\
+Nos besoins aussi.\n\
 \n\
-Aujourd'hui, l'humanité s'étend à travers la galaxie au nom de sa survie, apportant stabilité et sécurité aux nouveaux mondes placés sous sa protection.\n\
+Nous avons découvert des mondes fertiles, des richesses inconnues et des formes de vie que personne n’avait imaginées.\n\
 \n\
-Vous venez d'être promu Amiral.\n\
-Votre mission est simple : assurer la survie de notre peuple, sécuriser les ressources dont il dépend et étendre notre présence aussi loin que nécessaire.\n\
+Certaines étaient inoffensives.\n\
+\n\
+D’autres occupaient des territoires dont notre survie finirait par dépendre.\n\
+\n\
+Nous avons appris à nous adapter.\n\
+\n\
+À négocier lorsque cela était possible.\n\
+\n\
+À sécuriser ce qui devait l’être.\n\
+\n\
+Aujourd’hui, l’humanité s’étend à travers la galaxie, apportant stabilité et protection aux mondes placés sous la responsabilité du Consortium.\n\
+\n\
+Vous venez d’être promu Amiral.\n\
+\n\
+Votre mission est simple :\n\
+\n\
+protéger notre peuple, garantir ses approvisionnements et étendre notre présence aussi loin que sa survie l’exigera.\n\
 \n\
 La galaxie est vaste.\n\
+\n\
 Nos besoins aussi."
 }
 
@@ -1276,7 +1300,7 @@ et étendre notre présence aussi loin que nécessaire.\n\
 Boucle conseillée : ouvrir Objectifs [O], produire -> rechercher -> sonder -> analyser -> exploiter -> coloniser.\n\
 \n\
 Commandes : clic sélectionner | double-clic ouvrir/recentrer | ? masquer/rouvrir | \
-K sonder | L analyser | M attaquer | H récolter | N coloniser | P projection | \
+Tab cible suivante | K sonder | L analyser | M attaquer | H récolter | N coloniser | P projection | \
 droit orbite | milieu déplacer | molette zoom"
 }
 
@@ -1285,12 +1309,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn help_starts_visible_with_consortium_briefing() {
-        assert!(HelpUiState::default().visible);
+    fn help_starts_hidden_with_consortium_briefing_available() {
+        assert!(!HelpUiState::default().visible);
 
         let text = help_panel_text();
         assert!(text.contains("BRIEFING DU CONSORTIUM"));
         assert!(text.contains("Boucle conseillée"));
+        assert!(text.contains("Tab cible suivante"));
         assert!(!text.contains("Helldivers"));
     }
 
@@ -1299,9 +1324,9 @@ mod tests {
         assert!(IntroPitchUiState::default().visible);
 
         let text = intro_pitch_text();
-        assert!(text.contains("Le monde d'avant était à bout de souffle"));
+        assert!(text.contains("Le monde d’avant était à bout de souffle"));
         assert!(text.contains("formèrent le Consortium"));
-        assert!(text.contains("Vous venez d'être promu Amiral"));
+        assert!(text.contains("Vous venez d’être promu Amiral"));
     }
 }
 

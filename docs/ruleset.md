@@ -4,9 +4,10 @@ Galactic charge son ruleset au démarrage depuis
 `assets/rulesets/default/`. La variable d'environnement
 `GALACTIC_RULESET_DIR` permet de sélectionner un autre dossier.
 
-Le ruleset `default` est actuellement en `content_version: 16`. Cette version
-actualise les noms et descriptions visibles selon
-`docs/galactic_nomenclature_mvp.md`, sans renommer les identifiants stables.
+Le ruleset `default` est actuellement en `content_version: 17`. Cette version
+aligne les factions, profils d'occupation et forces planétaires sur
+`docs/galactic_factions_lore.md`, sans renommer les identifiants économiques
+stables.
 
 Le ruleset est composé de onze fichiers RON :
 
@@ -139,7 +140,7 @@ décrivant sa population et sa garnison. Les identifiants de force et de faction
 doivent exister, les poids et statistiques doivent être strictement positifs,
 et les bornes doivent rester ordonnées.
 
-`home_neighborhood.guaranteed_profile_id` désigne en outre un profil hostile
+`home_neighborhood.guaranteed_profile_id` désigne en outre un profil Sylve
 appliqué à une planète de chaque système directement voisin du départ lorsque
 le tirage normal n'y a placé aucune présence équivalente. Cette garantie
 fournit une cible de combat proche sans modifier la distribution du reste de

@@ -57,10 +57,6 @@ use presentation::strategic_navigation::{
     BreadcrumbKind, NavigationHistory, StrategicNavigation, ViewRebuildRequest,
     breadcrumb_segments, navigate_to_galaxy, navigate_to_sector, navigate_to_selection,
 };
-use presentation::system_body_list::{
-    handle_system_body_colonize_buttons, spawn_system_body_list,
-    update_system_body_list_visibility, update_system_body_rows,
-};
 use presentation::universe_labels::LabelBudgetState;
 use research_ui::ResearchUiPlugin;
 use std::collections::HashMap;
@@ -271,7 +267,6 @@ impl Plugin for PresentationPlugin {
                 spawn_scene,
                 spawn_strategic_view,
                 spawn_ui,
-                spawn_system_body_list,
             )
                 .chain(),
         )
@@ -316,7 +311,6 @@ impl Plugin for PresentationPlugin {
                 handle_tab_bar_galaxy_button,
                 handle_help_toggle_button,
                 handle_intro_pitch_buttons,
-                handle_system_body_colonize_buttons,
                 handle_inspector_tab_buttons,
                 toggle_debug_overlay,
             )
@@ -334,8 +328,6 @@ impl Plugin for PresentationPlugin {
                 update_colony_management_buildings,
                 update_colony_management_detail,
                 update_colony_management_queue,
-                update_system_body_list_visibility,
-                update_system_body_rows,
             )
                 .chain()
                 .in_set(PresentationUpdateSet::Management),

@@ -34,8 +34,9 @@ expéditives.
 | Élément | Nom |
 |---|---|
 | Faction joueur | Consortium |
-| Faction neutre | Collectifs à Convaincre |
-| Puissance hostile dormante | Bureau Vesper de l'Oppression |
+| Faction neutre | Ligue des Confins |
+| Présence extraterrestre hostile | Sylves |
+| Puissance rivale future | Vesper |
 | Système natal | Hélianthe |
 | Planète mère | Nacre |
 | Colonie initiale | Port-Sillage |
@@ -45,11 +46,13 @@ expéditives.
 - **Consortium** : coalition humaine survivante, centralisée et expansionniste.
   Son vocabulaire privilégie survie, stabilité, sécurité, ressources et
   protection.
-- **Collectifs à Convaincre** : habitats autonomes que le Consortium décrit
-  comme des interlocuteurs mal alignés.
-- **Bureau Vesper de l'Oppression** : puissance hostile dormante. Son lexique
-  futur privilégiera protocoles fermés, garnisons, batteries et contrôle
-  orbital.
+- **Ligue des Confins** : colonies humaines autonomes que le Consortium décrit
+  comme des partenaires en attente d'intégration.
+- **Sylves** : biosphère extraterrestre collective, dangereuse et productrice
+  d'Ambre de phase, classée comme contrainte stratégique majeure.
+- **Vesper** : rival géopolitique humain réservé à une extension future. Son
+  lexique privilégiera régime, administration, frontières et contrôle
+  énergétique.
 
 ## Systèmes et planètes
 

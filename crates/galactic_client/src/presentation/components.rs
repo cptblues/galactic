@@ -115,7 +115,7 @@ pub(crate) struct HelpUiState {
 
 impl Default for HelpUiState {
     fn default() -> Self {
-        Self { visible: true }
+        Self { visible: false }
     }
 }
 

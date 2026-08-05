@@ -1125,7 +1125,7 @@ fn wizard_no_destination_hint(kind: MissionKind) -> String {
                 .name,
         ),
         MissionKind::Attack =>
-            "Aucune cible d'attaque : il faut une planète analysée et occupée par une faction hostile."
+            "Aucune cible d'attaque : il faut une planète analysée et occupée par une autre faction."
                 .to_string(),
         MissionKind::Colonize =>
             "Aucune planète colonisable : il faut une planète analysée, libre, habitable et accessible."
@@ -1843,7 +1843,7 @@ fn attack_candidates(simulation: &Simulation) -> Vec<(WizardTarget, String)> {
                     system_id: system.id,
                     planet_id: planet.id,
                 },
-                format!("{} — {} (occupée, hostile)", planet.name, system.name),
+                format!("{} — {} (présence occupante)", planet.name, system.name),
             ));
         }
     }

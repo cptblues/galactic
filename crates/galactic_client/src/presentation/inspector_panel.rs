@@ -1547,7 +1547,7 @@ mod tests {
                 occupant: galactic_domain::Owner::Faction(galactic_domain::FactionId::new(1)),
                 population: 120,
                 forces: vec![galactic_sim::PlanetaryForceStack {
-                    definition_id: galactic_sim::PlanetaryForceId::from_static("frontier_militia"),
+                    definition_id: galactic_sim::PlanetaryForceId::from_static("confins_militia"),
                     quantity: 6,
                 }],
                 revision: 1,
@@ -1569,11 +1569,11 @@ mod tests {
                     bonuses: galactic_sim::CombatTargetBonuses::default(),
                 }],
                 defender_losses: vec![galactic_sim::PlanetaryForceLoss {
-                    definition_id: galactic_sim::PlanetaryForceId::from_static("frontier_militia"),
+                    definition_id: galactic_sim::PlanetaryForceId::from_static("confins_militia"),
                     quantity: 4,
                 }],
                 defender_survivors: vec![galactic_sim::PlanetaryForceStack {
-                    definition_id: galactic_sim::PlanetaryForceId::from_static("frontier_militia"),
+                    definition_id: galactic_sim::PlanetaryForceId::from_static("confins_militia"),
                     quantity: 2,
                 }],
                 attacker_damage: 30,

@@ -4,6 +4,7 @@
 // gate, `assess_planet_colonizability`, `GameAction::LaunchColonization`) —
 // no new simulation logic, purely a new presentation entry point alongside
 // the Fleet panel's global candidate list.
+#![allow(dead_code)]
 
 use bevy::prelude::*;
 use galactic_domain::{PlanetId, SystemId};
