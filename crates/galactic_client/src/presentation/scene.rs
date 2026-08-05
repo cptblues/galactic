@@ -5,7 +5,11 @@ use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 use bevy::ui::{FocusPolicy, RelativeCursorPosition};
 use galactic_domain::{PlanetId, PlanetKind, StarClass, SystemId, WorldPosition};
-use galactic_sim::{KnowledgeLevel, MVP_HOME_SYSTEM_ID, Simulation, SystemVisibility, TimeSpeed};
+use galactic_sim::{
+    KnowledgeLevel, MVP_HOME_SYSTEM_ID, Simulation, SystemVisibility, TimeSpeed,
+    VictoryConditionProgress, VictoryProgress, evaluate_victory_progress, technology_definition,
+    victory_rules,
+};
 
 use crate::presentation::components::*;
 use crate::presentation::icons::{IconAssets, IconKind, spawn_icon};
@@ -13,6 +17,8 @@ use crate::presentation::procedural_materials::star_color;
 use crate::presentation::resource_hud::*;
 use crate::presentation::strategic_navigation::*;
 use crate::*;
+
+const INSPECTOR_PANEL_TOP_PX: f32 = navigation_ui::NAVIGATION_BAR_TOP_PX;
 
 pub(crate) fn spawn_scene(mut commands: Commands) {
     commands.spawn((
@@ -754,7 +760,7 @@ pub(crate) fn spawn_ui(mut commands: Commands, icon_assets: Res<IconAssets>) {
             Node {
                 position_type: PositionType::Absolute,
                 right: Val::Px(14.0),
-                top: Val::Px(72.0),
+                top: Val::Px(INSPECTOR_PANEL_TOP_PX),
                 width: Val::Px(348.0),
                 padding: UiRect::all(Val::Px(14.0)),
                 border: UiRect::all(Val::Px(1.0)),
@@ -907,6 +913,7 @@ pub(crate) fn spawn_ui(mut commands: Commands, icon_assets: Res<IconAssets>) {
 
     spawn_colony_management_screen(&mut commands);
     spawn_intro_pitch_modal(&mut commands);
+    spawn_victory_modal(&mut commands);
 }
 
 fn spawn_intro_pitch_modal(commands: &mut Commands) {
@@ -1038,6 +1045,136 @@ fn spawn_intro_pitch_modal(commands: &mut Commands) {
         });
 }
 
+fn spawn_victory_modal(commands: &mut Commands) {
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(0.0),
+                right: Val::Px(0.0),
+                top: Val::Px(0.0),
+                bottom: Val::Px(0.0),
+                padding: UiRect::all(Val::Px(14.0)),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.66)),
+            GlobalZIndex(230),
+            Interaction::None,
+            UiPointerBlocker,
+            Visibility::Hidden,
+            VictoryModalRoot,
+        ))
+        .with_children(|overlay| {
+            overlay
+                .spawn((
+                    Node {
+                        width: Val::Px(730.0),
+                        max_width: Val::Percent(96.0),
+                        max_height: Val::Percent(94.0),
+                        min_height: Val::Px(0.0),
+                        padding: UiRect::all(Val::Px(22.0)),
+                        border: UiRect::all(Val::Px(1.0)),
+                        border_radius: BorderRadius::all(Val::Px(7.0)),
+                        flex_direction: FlexDirection::Column,
+                        row_gap: Val::Px(14.0),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(0.018, 0.030, 0.026, 0.985)),
+                    Outline::new(
+                        Val::Px(1.0),
+                        Val::ZERO,
+                        Color::srgba(0.64, 0.92, 0.70, 0.66),
+                    ),
+                    Interaction::None,
+                    UiPointerBlocker,
+                ))
+                .with_children(|panel| {
+                    panel.spawn((
+                        Text::new("DIRECTIVE RÉGIONALE VALIDÉE"),
+                        ui_text_font(22.0),
+                        TextColor(Color::srgb(0.90, 1.0, 0.92)),
+                        Node {
+                            width: Val::Percent(100.0),
+                            ..default()
+                        },
+                    ));
+
+                    panel
+                        .spawn(Node {
+                            width: Val::Percent(100.0),
+                            flex_grow: 1.0,
+                            min_height: Val::Px(0.0),
+                            position_type: PositionType::Relative,
+                            ..default()
+                        })
+                        .with_children(|frame| {
+                            frame
+                                .spawn((
+                                    Node {
+                                        width: Val::Percent(100.0),
+                                        height: Val::Percent(100.0),
+                                        min_height: Val::Px(0.0),
+                                        padding: UiRect::right(Val::Px(12.0)),
+                                        overflow: Overflow::scroll_y(),
+                                        ..default()
+                                    },
+                                    ScrollPosition::default(),
+                                    RelativeCursorPosition::default(),
+                                    ScrollIndicatorArea {
+                                        id: ScrollIndicatorId::VictoryDirective,
+                                    },
+                                ))
+                                .with_children(|scroll| {
+                                    scroll.spawn((
+                                        Text::new(""),
+                                        ui_text_font(13.0),
+                                        TextColor(Color::srgb(0.78, 0.90, 0.82)),
+                                        Node {
+                                            width: Val::Percent(100.0),
+                                            ..default()
+                                        },
+                                        VictoryDirectiveText,
+                                    ));
+                                });
+                            spawn_scroll_indicator(frame, ScrollIndicatorId::VictoryDirective);
+                        });
+
+                    panel
+                        .spawn((
+                            Button,
+                            Node {
+                                align_self: AlignSelf::End,
+                                min_width: Val::Px(248.0),
+                                min_height: Val::Px(38.0),
+                                padding: UiRect::axes(Val::Px(14.0), Val::Px(8.0)),
+                                border: UiRect::all(Val::Px(1.0)),
+                                border_radius: BorderRadius::all(Val::Px(5.0)),
+                                justify_content: JustifyContent::Center,
+                                align_items: AlignItems::Center,
+                                ..default()
+                            },
+                            BackgroundColor(Color::srgba(0.07, 0.17, 0.12, 0.98)),
+                            Outline::new(
+                                Val::Px(1.0),
+                                Val::ZERO,
+                                Color::srgba(0.42, 0.88, 0.58, 0.72),
+                            ),
+                            VictoryContinueButton,
+                            UiPointerBlocker,
+                        ))
+                        .with_children(|button| {
+                            button.spawn((
+                                Text::new("Continuer l’administration du secteur"),
+                                ui_text_font(12.0),
+                                TextColor(Color::srgb(0.88, 1.0, 0.90)),
+                            ));
+                        });
+                });
+        });
+}
+
 pub(crate) fn spawn_scroll_indicator(parent: &mut ChildSpawnerCommands, id: ScrollIndicatorId) {
     parent
         .spawn((
@@ -1103,7 +1240,6 @@ fn spawn_tab_bar(commands: &mut Commands) {
             spawn_tab_bar_slot(row, fleet_ui::spawn_fleet_toggle);
             spawn_tab_bar_slot(row, objectives_ui::spawn_objectives_toggle);
             spawn_tab_bar_slot(row, navigation_ui::spawn_search_toggle);
-            spawn_tab_bar_slot(row, navigation_ui::spawn_filters_toggle);
             row.spawn(Node {
                 width: Val::Px(42.0),
                 ..default()
@@ -1137,6 +1273,8 @@ fn spawn_galaxy_tab_button(parent: &mut ChildSpawnerCommands) {
                 padding: UiRect::axes(Val::Px(10.0), Val::Px(7.0)),
                 border: UiRect::all(Val::Px(1.0)),
                 border_radius: BorderRadius::all(Val::Px(5.0)),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
                 ..default()
             },
             BackgroundColor(Color::srgba(0.02, 0.05, 0.06, 0.96)),
@@ -1232,6 +1370,78 @@ pub(crate) fn handle_intro_pitch_buttons(
         if *interaction == Interaction::Pressed {
             intro.visible = false;
             return;
+        }
+    }
+}
+
+pub(crate) fn handle_victory_modal_buttons(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut victory: ResMut<VictoryUiState>,
+    interactions: Query<&Interaction, (Changed<Interaction>, With<VictoryContinueButton>)>,
+) {
+    if !victory.visible {
+        return;
+    }
+    if keyboard.just_pressed(KeyCode::Escape) {
+        victory.visible = false;
+        return;
+    }
+    for interaction in &interactions {
+        if *interaction == Interaction::Pressed {
+            victory.visible = false;
+            return;
+        }
+    }
+}
+
+pub(crate) fn update_victory_state(
+    simulation: Res<SimulationResource>,
+    mut victory: ResMut<VictoryUiState>,
+) {
+    if victory.achieved_once {
+        return;
+    }
+    let simulation = simulation.simulation();
+    let progress = evaluate_victory_progress(
+        simulation.state(),
+        simulation.universe_repository(),
+        victory_rules(),
+    );
+    if progress.is_complete() {
+        victory.achieved_once = true;
+        victory.visible = true;
+    }
+}
+
+pub(crate) fn update_victory_modal(
+    victory: Res<VictoryUiState>,
+    simulation: Res<SimulationResource>,
+    mut roots: Query<&mut Visibility, With<VictoryModalRoot>>,
+    mut texts: Query<&mut Text, With<VictoryDirectiveText>>,
+) {
+    for mut visibility in &mut roots {
+        let next = if victory.visible {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+        if *visibility != next {
+            *visibility = next;
+        }
+    }
+    if !victory.visible {
+        return;
+    }
+    let simulation = simulation.simulation();
+    let progress = evaluate_victory_progress(
+        simulation.state(),
+        simulation.universe_repository(),
+        victory_rules(),
+    );
+    let body = victory_directive_text(progress);
+    for mut text in &mut texts {
+        if text.0 != body {
+            text.0 = body.clone();
         }
     }
 }
@@ -1370,6 +1580,46 @@ fn scroll_position_y(current: f32, wheel_y: f32, unit: MouseScrollUnit, max_offs
     (current - dy).clamp(0.0, max_offset)
 }
 
+fn victory_directive_text(progress: VictoryProgress) -> String {
+    let technology = technology_definition(victory_rules().required_technology);
+    [
+        "Le secteur dispose désormais d'une autonomie opérationnelle provisoire.".to_string(),
+        "L'approvisionnement régional en Ambre de phase est considéré comme sécurisé selon les tolérances actuellement publiables.".to_string(),
+        "La présence Sylve a été ramenée à un niveau compatible avec les opérations civiles.".to_string(),
+        String::new(),
+        "RÉSUMÉ DE CONFORMITÉ".to_string(),
+        victory_progress_line("Colonies opérationnelles", progress.colonies),
+        victory_progress_line("Systèmes sondés", progress.probed_systems),
+        format!(
+            "{} : {}",
+            technology.name,
+            if progress.required_technology.complete() {
+                "validée"
+            } else {
+                "en attente"
+            }
+        ),
+        victory_progress_line("Récoltes distantes livrées", progress.completed_harvests),
+        victory_progress_line("Présences Sylves analysées", progress.sylve_analysis_reports),
+        victory_progress_line("Croissances Sylves sécurisées", progress.sylve_attack_victories),
+        String::new(),
+        "La directive est validée. La poursuite de l'administration du secteur reste autorisée, recommandée et naturellement attendue.".to_string(),
+    ]
+    .join("\n")
+}
+
+fn victory_progress_line(label: &str, progress: VictoryConditionProgress) -> String {
+    let status = if progress.complete() {
+        "validé"
+    } else {
+        "en attente"
+    };
+    format!(
+        "{label} : {}/{} ({status})",
+        progress.current, progress.required
+    )
+}
+
 pub(crate) fn update_help_visibility(
     help: Res<HelpUiState>,
     mut texts: Query<&mut Visibility, With<HelpText>>,
@@ -1460,9 +1710,11 @@ Mission : assurer la survie de notre peuple, sécuriser les ressources nécessai
 et étendre notre présence aussi loin que nécessaire.\n\
 Boucle conseillée : ouvrir Objectifs [O], produire -> rechercher -> sonder -> analyser -> exploiter -> coloniser.\n\
 \n\
-Commandes : clic sélectionner | double-clic ouvrir/recentrer | ? masquer/rouvrir | \
-Tab cible suivante | K sonder | L analyser | M attaquer | H récolter | N coloniser | P projection | \
-droit orbite | milieu déplacer | molette zoom"
+COMMANDES\n\
+Souris : clic gauche sélectionner  ·  double-clic ouvrir/recentrer  ·  \
+clic droit orbite  ·  clic molette déplacer  ·  molette zoom\n\
+Vue : [Tab] cible suivante  ·  [P] projection  ·  [?] afficher/masquer l’aide\n\
+Missions : [K] sonder  ·  [L] analyser  ·  [M] attaquer  ·  [H] récolter  ·  [N] coloniser"
 }
 
 #[cfg(test)]
@@ -1476,7 +1728,7 @@ mod tests {
         let text = help_panel_text();
         assert!(text.contains("BRIEFING DU CONSORTIUM"));
         assert!(text.contains("Boucle conseillée"));
-        assert!(text.contains("Tab cible suivante"));
+        assert!(text.contains("[Tab] cible suivante"));
         assert!(!text.contains("Helldivers"));
     }
 
@@ -1488,6 +1740,29 @@ mod tests {
         assert!(text.contains("Le monde d’avant était à bout de souffle"));
         assert!(text.contains("formèrent le Consortium"));
         assert!(text.contains("Vous venez d’être promu Amiral"));
+    }
+
+    #[test]
+    fn victory_directive_keeps_phase_amber_narrative_only() {
+        let done = VictoryConditionProgress::new(1, 1);
+        let text = victory_directive_text(VictoryProgress {
+            colonies: VictoryConditionProgress::new(3, 3),
+            probed_systems: VictoryConditionProgress::new(8, 8),
+            required_technology: done,
+            completed_harvests: done,
+            sylve_analysis_reports: done,
+            sylve_attack_victories: done,
+        });
+
+        assert!(!text.contains("DIRECTIVE"));
+        assert!(text.contains("Ambre de phase"));
+        assert!(text.contains("approvisionnement régional"));
+        assert!(!text.contains("stock"));
+    }
+
+    #[test]
+    fn inspector_panel_aligns_with_navigation_bar() {
+        assert_eq!(INSPECTOR_PANEL_TOP_PX, navigation_ui::NAVIGATION_BAR_TOP_PX);
     }
 
     #[test]
@@ -1517,6 +1792,8 @@ pub(crate) fn spawn_colony_management_toggle(parent: &mut ChildSpawnerCommands) 
                 padding: UiRect::axes(Val::Px(10.0), Val::Px(7.0)),
                 border: UiRect::all(Val::Px(1.0)),
                 border_radius: BorderRadius::all(Val::Px(5.0)),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
                 ..default()
             },
             BackgroundColor(Color::srgba(0.08, 0.18, 0.19, 0.96)),

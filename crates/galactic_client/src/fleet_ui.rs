@@ -198,6 +198,8 @@ pub(crate) fn spawn_fleet_toggle(parent: &mut ChildSpawnerCommands) {
                 padding: UiRect::axes(Val::Px(10.0), Val::Px(7.0)),
                 border: UiRect::all(Val::Px(1.0)),
                 border_radius: BorderRadius::all(Val::Px(5.0)),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
                 ..default()
             },
             BackgroundColor(Color::srgba(0.06, 0.10, 0.18, 0.96)),

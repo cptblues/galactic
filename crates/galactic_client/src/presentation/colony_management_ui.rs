@@ -125,6 +125,10 @@ pub(crate) fn update_colony_management_visibility(
     open_panel: Res<OpenPanel>,
     mut roots: Query<&mut Visibility, With<ColonyManagementRoot>>,
     mut texts: Query<(&ManagementTextRole, &mut Text)>,
+    mut cycle_buttons: Query<
+        (&ManagementButtonAction, &mut Visibility),
+        (With<Button>, Without<ColonyManagementRoot>),
+    >,
 ) {
     let is_open = *open_panel == OpenPanel::Colony;
     for mut visibility in &mut roots {
@@ -145,6 +149,23 @@ pub(crate) fn update_colony_management_visibility(
             .iter()
             .position(|candidate| *candidate == active.id)
     });
+    let cycle_buttons_visible = colony_cycle_buttons_visible(colonies.len());
+
+    for (action, mut visibility) in &mut cycle_buttons {
+        if matches!(
+            action,
+            ManagementButtonAction::PreviousColony | ManagementButtonAction::NextColony
+        ) {
+            let next = if cycle_buttons_visible {
+                Visibility::Inherited
+            } else {
+                Visibility::Hidden
+            };
+            if *visibility != next {
+                *visibility = next;
+            }
+        }
+    }
 
     for (role, mut text) in &mut texts {
         let next = match role {
@@ -184,6 +205,10 @@ pub(crate) fn update_colony_management_visibility(
             text.0 = next;
         }
     }
+}
+
+const fn colony_cycle_buttons_visible(colony_count: usize) -> bool {
+    colony_count > 1
 }
 
 pub(crate) fn update_colony_management_resources(
@@ -528,5 +553,17 @@ pub(crate) fn update_action_buttons(
         if node.display != next_display {
             node.display = next_display;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn colony_cycle_buttons_are_hidden_until_a_second_colony_exists() {
+        assert!(!colony_cycle_buttons_visible(0));
+        assert!(!colony_cycle_buttons_visible(1));
+        assert!(colony_cycle_buttons_visible(2));
     }
 }

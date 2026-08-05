@@ -130,6 +130,12 @@ impl Default for IntroPitchUiState {
     }
 }
 
+#[derive(Resource, Default)]
+pub(crate) struct VictoryUiState {
+    pub(crate) achieved_once: bool,
+    pub(crate) visible: bool,
+}
+
 #[derive(Component)]
 pub(crate) struct ResourceBarRoot;
 
@@ -147,9 +153,19 @@ pub(crate) struct IntroPitchRoot;
 #[derive(Component)]
 pub(crate) struct IntroPitchCloseButton;
 
+#[derive(Component)]
+pub(crate) struct VictoryModalRoot;
+
+#[derive(Component)]
+pub(crate) struct VictoryContinueButton;
+
+#[derive(Component)]
+pub(crate) struct VictoryDirectiveText;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ScrollIndicatorId {
     IntroPitch,
+    VictoryDirective,
     ObjectiveList,
     ObjectiveDetail,
     MissionReportList,

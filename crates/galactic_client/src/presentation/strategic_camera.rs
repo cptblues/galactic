@@ -20,6 +20,7 @@ pub(crate) struct StrategicCameraInput<'w> {
     mouse_scroll: Res<'w, AccumulatedMouseScroll>,
     open_panel: Res<'w, OpenPanel>,
     intro_pitch: Res<'w, IntroPitchUiState>,
+    victory: Res<'w, VictoryUiState>,
 }
 
 pub(crate) fn update_strategic_camera(
@@ -34,6 +35,7 @@ pub(crate) fn update_strategic_camera(
     // camera, unlike Colony/Research/Craft/Navigation. Not touched here — this
     // pass moves the open-state mechanism, it does not change camera behavior.
     if input.intro_pitch.visible
+        || input.victory.visible
         || matches!(
             *input.open_panel,
             OpenPanel::Colony

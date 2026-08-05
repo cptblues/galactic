@@ -4,12 +4,12 @@ Galactic charge son ruleset au démarrage depuis
 `assets/rulesets/default/`. La variable d'environnement
 `GALACTIC_RULESET_DIR` permet de sélectionner un autre dossier.
 
-Le ruleset `default` est actuellement en `content_version: 17`. Cette version
-aligne les factions, profils d'occupation et forces planétaires sur
-`docs/galactic_factions_lore.md`, sans renommer les identifiants économiques
-stables.
+Le ruleset `default` est actuellement en `content_version: 18`. Cette version
+ajoute les seuils de réussite du MVP dans `victory.ron`, après l'alignement des
+factions, profils d'occupation et forces planétaires sur
+`docs/galactic_factions_lore.md`.
 
-Le ruleset est composé de onze fichiers RON :
+Le ruleset est composé de douze fichiers RON :
 
 - `manifest.ron` : identifiant et versions ;
 - `economy.ron` : stockage de base, limites de files et cadence de production ;
@@ -26,6 +26,7 @@ Le ruleset est composé de onze fichiers RON :
   combat ;
 - `extraction.ron` : ressource, réserve, rendement et durée de récolte des
   sites distants par type de planète ;
+- `victory.ron` : seuils de directive régionale validant la vertical slice ;
 - `starting_scenario.ron` : faction joueur, colonie, ressources et bâtiments initiaux.
 
 Les durées de construction et de fabrication sont exprimées en secondes dans

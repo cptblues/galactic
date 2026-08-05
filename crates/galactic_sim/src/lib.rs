@@ -20,6 +20,7 @@ pub mod starting;
 pub mod state;
 pub mod time;
 pub mod universe;
+pub mod victory;
 
 pub use analysis::*;
 pub use building_catalog::*;
@@ -43,3 +44,4 @@ pub use starting::*;
 pub use state::*;
 pub use time::*;
 pub use universe::*;
+pub use victory::*;

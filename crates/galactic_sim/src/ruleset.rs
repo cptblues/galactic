@@ -19,10 +19,11 @@ use crate::{
     PlanetaryAnalysisRules, PlanetaryAnalysisRulesConfig, PlanetaryAnalysisRulesError,
     PlanetaryPresenceRules, PlanetaryPresenceRulesConfig, PlanetaryPresenceRulesError,
     ResourceValuesConfig, StartingColonyConfig, StartingFactionConfig, StartingScenario,
-    TechnologyCatalog, TechnologyCatalogConfig, TechnologyCatalogError,
+    TechnologyCatalog, TechnologyCatalogConfig, TechnologyCatalogError, VictoryRules,
+    VictoryRulesConfig, VictoryRulesError,
 };
 
-pub const RULESET_SCHEMA_VERSION: u32 = 12;
+pub const RULESET_SCHEMA_VERSION: u32 = 13;
 pub const RULESET_DIRECTORY_ENV: &str = "GALACTIC_RULESET_DIR";
 pub const DEFAULT_RULESET_DIRECTORY: &str = "assets/rulesets/default";
 
@@ -50,6 +51,7 @@ pub struct Ruleset {
     planetary_analysis: PlanetaryAnalysisRules,
     planetary_presence: PlanetaryPresenceRules,
     combat: CombatRules,
+    victory: VictoryRules,
     starting_scenario: StartingScenario,
 }
 
@@ -100,6 +102,10 @@ impl Ruleset {
         let combat_config: CombatRulesConfig = read_ron(directory, "combat.ron")?;
         let combat = CombatRules::from_config(combat_config, &craftables, &planetary_presence)
             .map_err(RulesetLoadError::Combat)?;
+        let victory_config: VictoryRulesConfig = read_ron(directory, "victory.ron")?;
+        let victory =
+            VictoryRules::from_config(victory_config, faction_catalog.factions, &technologies)
+                .map_err(RulesetLoadError::Victory)?;
         let starting_config: StartingScenarioConfig = read_ron(directory, "starting_scenario.ron")?;
         let starting_scenario = starting_config.compile(
             &buildings,
@@ -126,6 +132,7 @@ impl Ruleset {
         planetary_analysis.append_structure(&mut structure);
         planetary_presence.append_structure(&mut structure);
         combat.append_structure(&mut structure);
+        victory.append_structure(&mut structure);
 
         Ok(Self {
             id: manifest.id,
@@ -140,6 +147,7 @@ impl Ruleset {
             planetary_analysis,
             planetary_presence,
             combat,
+            victory,
             starting_scenario,
         })
     }
@@ -190,6 +198,10 @@ impl Ruleset {
 
     pub const fn combat(&self) -> &CombatRules {
         &self.combat
+    }
+
+    pub const fn victory(&self) -> &VictoryRules {
+        &self.victory
     }
 
     pub const fn starting_scenario(&self) -> StartingScenario {
@@ -263,6 +275,7 @@ pub enum RulesetLoadError {
     PlanetaryAnalysis(PlanetaryAnalysisRulesError),
     PlanetaryPresence(PlanetaryPresenceRulesError),
     Combat(CombatRulesError),
+    Victory(VictoryRulesError),
     StartingScenario(&'static str),
 }
 
@@ -300,6 +313,7 @@ impl fmt::Display for RulesetLoadError {
                 write!(formatter, "invalid planetary presence rules: {error:?}")
             }
             Self::Combat(error) => write!(formatter, "invalid combat rules: {error:?}"),
+            Self::Victory(error) => write!(formatter, "invalid victory rules: {error:?}"),
             Self::StartingScenario(message) => {
                 write!(formatter, "invalid starting scenario: {message}")
             }
@@ -775,6 +789,7 @@ mod tests {
         assert_eq!(ruleset.planetary_presence().definitions().count(), 13);
         assert_eq!(ruleset.combat().version(), 2);
         assert_eq!(ruleset.combat().ships().count(), 3);
+        assert_eq!(ruleset.victory().version(), 1);
     }
 
     #[test]
@@ -799,6 +814,7 @@ mod tests {
             .planetary_presence()
             .append_structure(&mut first);
         default_ruleset().combat().append_structure(&mut first);
+        default_ruleset().victory().append_structure(&mut first);
         assert_eq!(
             default_ruleset().structure_fingerprint(),
             fnv1a64(first.as_bytes()),

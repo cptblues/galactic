@@ -22,6 +22,7 @@ use presentation::components::{
     InspectorTabBarRoot, InspectorTabButton, InspectorTabButtonQuery, InspectorTabLabelQuery,
     InspectorTabState, InspectorTextQuery, InspectorTextRole, IntroPitchUiState, OpenPanel,
     PointerSelectionState, SelectedMission, StrategicViewEntity, TopBarText, UiPointerBlocker,
+    VictoryUiState,
 };
 use presentation::icons::IconAssets;
 use presentation::input::{
@@ -47,10 +48,11 @@ use presentation::procedural_materials::{
 use presentation::scene::{
     accent_craft_amber, accent_fleet_blue, accent_research_violet, action_button_color,
     action_button_outline, handle_help_toggle_button, handle_intro_pitch_buttons,
-    handle_scroll_areas, handle_tab_bar_galaxy_button, panel_background, panel_outline,
-    rebuild_strategic_view_if_requested, spawn_scene, spawn_strategic_view, spawn_ui, ui_text_font,
-    update_help_visibility, update_intro_pitch_visibility, update_resource_bar,
-    update_scroll_indicators,
+    handle_scroll_areas, handle_tab_bar_galaxy_button, handle_victory_modal_buttons,
+    panel_background, panel_outline, rebuild_strategic_view_if_requested, spawn_scene,
+    spawn_strategic_view, spawn_ui, ui_text_font, update_help_visibility,
+    update_intro_pitch_visibility, update_resource_bar, update_scroll_indicators,
+    update_victory_modal, update_victory_state,
 };
 use presentation::shortcuts::{apply_simulation_command, apply_ui_action};
 use presentation::strategic_camera::{tick_simulation, update_strategic_camera};
@@ -196,6 +198,7 @@ impl Plugin for ClientPlugin {
         .init_resource::<DebugOverlayState>()
         .init_resource::<HelpUiState>()
         .init_resource::<IntroPitchUiState>()
+        .init_resource::<VictoryUiState>()
         .init_resource::<InspectorTabState>()
         .add_plugins(SimulationBridgePlugin)
         .add_plugins(PresentationPlugin)
@@ -312,6 +315,7 @@ impl Plugin for PresentationPlugin {
                 handle_tab_bar_galaxy_button,
                 handle_help_toggle_button,
                 handle_intro_pitch_buttons,
+                handle_victory_modal_buttons,
                 handle_inspector_tab_buttons,
                 toggle_debug_overlay,
             )
@@ -338,10 +342,12 @@ impl Plugin for PresentationPlugin {
             (
                 update_resource_bar,
                 update_ui,
+                update_victory_state,
                 handle_scroll_areas,
                 update_scroll_indicators,
                 update_help_visibility,
                 update_intro_pitch_visibility,
+                update_victory_modal,
                 update_info_panel,
                 update_debug_overlay_visibility,
             )

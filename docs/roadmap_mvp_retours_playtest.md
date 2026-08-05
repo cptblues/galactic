@@ -19,7 +19,7 @@
 | MVP-030-A7 | Polir l’UX flotte, ressources et cadrage narratif | P1 | 5 pts | Implémenté |
 | MVP-031 | Finaliser sauvegarde, chargement et migrations V1 | P0 | 8 pts | Reporté après MVP-033 |
 | MVP-032 | Ajouter onboarding et objectifs contextuels | P1 | 5 pts | MVP-032-C implémenté |
-| MVP-033 | Implémenter la condition de réussite du MVP | P1 | 3 pts | À faire |
+| MVP-033 | Implémenter la condition de réussite du MVP | P1 | 3 pts | Implémenté |
 | MVP-034 | Ajouter les presets graphiques | P2 | 5 pts | À faire |
 | MVP-035 | Intégrer diagnostics et benchmark reproductible | P2 | 5 pts | À faire |
 | MVP-036 | Auditer et compléter les tests métier | P0 | 8 pts | À faire |
@@ -119,7 +119,7 @@ Durée : 01:24
 |---|---|
 | Priorité | P1 |
 | Estimation | 8 points |
-| Statut | À faire |
+| Statut | Implémenté |
 | Dépendances | MVP-030-A1 |
 
 ### Objectif
@@ -956,14 +956,30 @@ réussite doit fonctionner sur l'état de session courant.
 - Cibles Sylves.
 - Possibilité de continuer après la réussite.
 
-### Critères d’acceptation
+### MVP-033 implémenté
 
-- [ ] La réussite se déclenche uniquement lorsque toutes les conditions sont remplies.
-- [ ] Les seuils viennent du ruleset.
-- [ ] Les textes de réussite utilisent le vocabulaire administratif du Consortium.
-- [ ] Les conditions exploitent les rapports d'analyse et de combat existants.
-- [ ] Le résumé affiche les statistiques principales.
-- [ ] La partie reste jouable après l’écran de réussite.
+La condition de réussite est évaluée depuis `victory.ron` et l'état courant de
+session. Le moteur expose une progression pure et testable : colonies du
+joueur, systèmes sondés, technologie de colonisation, récoltes livrées,
+rapports d'analyse Sylves et victoires contre des défenses Sylves. L'Ambre de
+phase reste un objectif narratif pour cette passe, sans nouvelle ressource
+stockée.
+
+Le client affiche une directive régionale globale la première fois que toutes
+les conditions sont remplies. Le joueur peut fermer la directive et continuer
+la partie. Le panneau Objectifs affiche aussi une synthèse compacte des six
+critères de réussite.
+
+Critères d'acceptation :
+
+- [x] La réussite se déclenche uniquement lorsque toutes les conditions sont remplies.
+- [x] Les seuils viennent du ruleset.
+- [x] Les textes de réussite utilisent le vocabulaire administratif du Consortium.
+- [x] Les conditions exploitent les rapports d'analyse et de combat existants.
+- [x] Le résumé affiche les statistiques principales.
+- [x] La partie reste jouable après l’écran de réussite.
+- [x] `RULESET_SCHEMA_VERSION` est incrémenté à 13.
+- [x] `content_version` du ruleset `default` est incrémentée à 18.
 
 ---
 

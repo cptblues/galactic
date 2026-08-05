@@ -20,6 +20,10 @@ const NAVIGATION_Z_INDEX: i32 = 140;
 const MAX_SEARCH_ROWS: usize = 12;
 const MAX_BREADCRUMB_SEGMENTS: usize = 4;
 const MAX_QUERY_LENGTH: usize = 48;
+pub(crate) const NAVIGATION_BAR_TOP_PX: f32 = 64.0;
+const NAVIGATION_BAR_LEFT_PX: f32 = 14.0;
+const NAVIGATION_PANEL_TOP_PX: f32 = 102.0;
+const MAP_FILTERS_ENABLED: bool = false;
 
 pub(crate) struct NavigationUiPlugin;
 
@@ -83,7 +87,7 @@ pub(crate) struct NavigationUiState {
 }
 
 pub(crate) const fn navigation_text_or_filter_is_active(ui: &NavigationUiState) -> bool {
-    ui.search_open || ui.filters_open
+    ui.search_open || (MAP_FILTERS_ENABLED && ui.filters_open)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -304,6 +308,7 @@ const MISSION_KIND_CYCLE: [MissionKind; 6] = [
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 enum NavAction {
     ToggleSearch,
+    #[allow(dead_code)]
     ToggleFilters,
     SelectResult(usize),
     CycleMinKnowledge,
@@ -354,10 +359,12 @@ pub(crate) fn spawn_search_toggle(parent: &mut ChildSpawnerCommands) {
             Button,
             Node {
                 width: Val::Percent(100.0),
-                min_height: Val::Px(30.0),
-                padding: UiRect::axes(Val::Px(10.0), Val::Px(6.0)),
+                min_height: Val::Px(36.0),
+                padding: UiRect::axes(Val::Px(10.0), Val::Px(7.0)),
                 border: UiRect::all(Val::Px(1.0)),
                 border_radius: BorderRadius::all(Val::Px(5.0)),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
                 ..default()
             },
             BackgroundColor(Color::srgba(0.06, 0.10, 0.18, 0.96)),
@@ -374,16 +381,19 @@ pub(crate) fn spawn_search_toggle(parent: &mut ChildSpawnerCommands) {
         });
 }
 
+#[allow(dead_code)]
 pub(crate) fn spawn_filters_toggle(parent: &mut ChildSpawnerCommands) {
     parent
         .spawn((
             Button,
             Node {
                 width: Val::Percent(100.0),
-                min_height: Val::Px(30.0),
-                padding: UiRect::axes(Val::Px(10.0), Val::Px(6.0)),
+                min_height: Val::Px(36.0),
+                padding: UiRect::axes(Val::Px(10.0), Val::Px(7.0)),
                 border: UiRect::all(Val::Px(1.0)),
                 border_radius: BorderRadius::all(Val::Px(5.0)),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
                 ..default()
             },
             BackgroundColor(Color::srgba(0.06, 0.10, 0.18, 0.96)),
@@ -405,9 +415,9 @@ fn spawn_navigation_panels(mut commands: Commands) {
         .spawn((
             Node {
                 position_type: PositionType::Absolute,
-                left: Val::Px(300.0),
+                left: Val::Px(NAVIGATION_BAR_LEFT_PX),
                 right: Val::Px(370.0),
-                top: Val::Px(64.0),
+                top: Val::Px(NAVIGATION_BAR_TOP_PX),
                 padding: UiRect::axes(Val::Px(10.0), Val::Px(6.0)),
                 border: UiRect::all(Val::Px(1.0)),
                 border_radius: BorderRadius::all(Val::Px(6.0)),
@@ -432,9 +442,9 @@ fn spawn_navigation_panels(mut commands: Commands) {
         .spawn((
             Node {
                 position_type: PositionType::Absolute,
-                left: Val::Px(300.0),
+                left: Val::Px(NAVIGATION_BAR_LEFT_PX),
                 right: Val::Px(370.0),
-                top: Val::Px(102.0),
+                top: Val::Px(NAVIGATION_PANEL_TOP_PX),
                 padding: UiRect::all(Val::Px(12.0)),
                 border: UiRect::all(Val::Px(1.0)),
                 border_radius: BorderRadius::all(Val::Px(6.0)),
@@ -473,9 +483,9 @@ fn spawn_navigation_panels(mut commands: Commands) {
         .spawn((
             Node {
                 position_type: PositionType::Absolute,
-                left: Val::Px(300.0),
+                left: Val::Px(NAVIGATION_BAR_LEFT_PX),
                 right: Val::Px(370.0),
-                top: Val::Px(102.0),
+                top: Val::Px(NAVIGATION_PANEL_TOP_PX),
                 padding: UiRect::all(Val::Px(12.0)),
                 border: UiRect::all(Val::Px(1.0)),
                 border_radius: BorderRadius::all(Val::Px(6.0)),
@@ -676,7 +686,7 @@ fn handle_navigation_shortcuts(
         return;
     }
 
-    if keyboard.just_pressed(KeyCode::KeyB) && !ui.search_open {
+    if MAP_FILTERS_ENABLED && keyboard.just_pressed(KeyCode::KeyB) && !ui.search_open {
         ui.filters_open = !ui.filters_open;
         if ui.filters_open {
             ui.search_open = false;
@@ -854,6 +864,10 @@ fn handle_navigation_toggle_buttons(
                 }
             }
             NavAction::ToggleFilters => {
+                if !MAP_FILTERS_ENABLED {
+                    ui.filters_open = false;
+                    continue;
+                }
                 ui.filters_open = !ui.filters_open;
                 if ui.filters_open {
                     ui.search_open = false;
@@ -1029,7 +1043,7 @@ fn update_navigation_visibility(
         }
     }
     for mut visibility in &mut filters_roots {
-        let next = if ui.filters_open {
+        let next = if MAP_FILTERS_ENABLED && ui.filters_open {
             Visibility::Visible
         } else {
             Visibility::Hidden
@@ -1131,7 +1145,7 @@ fn update_filters_display(
     simulation: Res<SimulationResource>,
     mut texts: Query<(&FilterValueText, &mut Text)>,
 ) {
-    if !ui.filters_open {
+    if !MAP_FILTERS_ENABLED || !ui.filters_open {
         return;
     }
     for (marker, mut text) in &mut texts {
@@ -1156,10 +1170,16 @@ mod tests {
             search_open: true,
             ..Default::default()
         }));
-        assert!(navigation_text_or_filter_is_active(&NavigationUiState {
+        assert!(!navigation_text_or_filter_is_active(&NavigationUiState {
             filters_open: true,
             ..Default::default()
         }));
+    }
+
+    #[test]
+    fn breadcrumb_layout_starts_at_the_left_ui_margin() {
+        assert_eq!(NAVIGATION_BAR_LEFT_PX, 14.0);
+        assert_eq!(NAVIGATION_BAR_TOP_PX, 64.0);
     }
 
     #[test]

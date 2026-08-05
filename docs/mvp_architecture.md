@@ -1745,6 +1745,34 @@ Versions après ce checkpoint :
 - `RULESET_SCHEMA_VERSION` reste 12 ;
 - `content_version` du ruleset `default` reste 17.
 
+## MVP-033 — Directive de réussite du MVP
+
+La vertical slice possède désormais une condition de réussite mesurable sous
+forme de directive régionale du Consortium. Les seuils sont configurés dans
+`assets/rulesets/default/victory.ron` : trois colonies, huit systèmes sondés,
+la technologie de colonisation, une récolte distante livrée, un rapport
+d'analyse Sylve et une victoire militaire contre une présence Sylve.
+
+Le moteur expose `VictoryRules`, `VictoryProgress` et
+`evaluate_victory_progress`. Cette évaluation reste pure : elle lit seulement
+l'état courant, l'univers et le ruleset. Les présences Sylves analysées
+passent par les rapports d'intelligence déjà révélés au joueur ; les victoires
+Sylves passent par les rapports de mission et les rapports de combat.
+
+Le client conserve un `VictoryUiState` local à la session pour afficher une
+modale globale une seule fois au passage en réussite complète. Fermer cette
+directive ne modifie pas la simulation et la partie reste jouable. L'Ambre de
+phase est introduite comme enjeu narratif d'approvisionnement, sans nouvelle
+ressource stockée dans ce checkpoint.
+
+Versions après ce checkpoint :
+
+- `GAME_STATE_VERSION` reste 28 ;
+- `SAVE_VERSION` reste 29 ;
+- `GENERATION_VERSION` reste 5 ;
+- `RULESET_SCHEMA_VERSION = 13` ;
+- `content_version` du ruleset `default` = 18.
+
 ## Refactor technique — Modularisation interne
 
 Passe technique pure, sans changement de comportement ni de gameplay, menée

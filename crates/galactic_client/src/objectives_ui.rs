@@ -8,8 +8,9 @@ use galactic_domain::ResourceStock;
 use galactic_sim::{
     AttackMissionOutcome, BuildingKind, ColonizationBlocker, CombatOutcome, CraftableId, GameState,
     KnowledgeLevel, MissionKind, MissionReportOutcome, MissionResult, PlanetaryOccupancyIntel,
-    TechnologyId, UniverseRepository, assess_planet_colonizability, combat_rules,
-    craftable_definition, storage_capacity, technology_definition,
+    TechnologyId, UniverseRepository, VictoryConditionProgress, VictoryProgress,
+    assess_planet_colonizability, combat_rules, craftable_definition, evaluate_victory_progress,
+    storage_capacity, technology_definition, victory_rules,
 };
 
 use crate::presentation::{
@@ -182,6 +183,7 @@ enum ObjectiveTextRole {
     Toggle,
     Title,
     Briefing,
+    VictoryDirective,
     Current,
     Detail,
     Hints,
@@ -210,6 +212,8 @@ pub(crate) fn spawn_objectives_toggle(parent: &mut ChildSpawnerCommands) {
                 padding: UiRect::axes(Val::Px(10.0), Val::Px(7.0)),
                 border: UiRect::all(Val::Px(1.0)),
                 border_radius: BorderRadius::all(Val::Px(5.0)),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
                 ..default()
             },
             BackgroundColor(Color::srgba(0.08, 0.13, 0.11, 0.96)),
@@ -266,6 +270,16 @@ fn spawn_objectives_screen(mut commands: Commands) {
                     ..default()
                 },
                 ObjectiveTextRole::Briefing,
+            ));
+            root.spawn((
+                Text::new(""),
+                ui_text_font(10.5),
+                TextColor(Color::srgb(0.78, 0.92, 0.80)),
+                Node {
+                    min_height: Val::Px(52.0),
+                    ..default()
+                },
+                ObjectiveTextRole::VictoryDirective,
             ));
             spawn_objectives_main(root);
             root.spawn((
@@ -751,6 +765,8 @@ fn update_objective_texts(
         return;
     }
     let state = simulation.simulation().state();
+    let universe = simulation.simulation().universe_repository();
+    let victory_progress = evaluate_victory_progress(state, universe, victory_rules());
     let current = current_campaign_objective(&progress);
     let selected = objective_definition(progress.selected_objective);
     let completed_campaign = CAMPAIGN_OBJECTIVES
@@ -774,6 +790,14 @@ fn update_objective_texts(
             }
             ObjectiveTextRole::Briefing => {
                 text.0 = "Directive : convertir l'incertitude galactique en stabilité exploitable. Les besoins du Consortium restent prioritaires, surtout lorsqu'ils deviennent commodes.".to_string();
+            }
+            ObjectiveTextRole::VictoryDirective => {
+                text.0 = victory_objectives_text(victory_progress);
+                color.0 = if victory_progress.is_complete() {
+                    Color::srgb(0.90, 1.0, 0.72)
+                } else {
+                    Color::srgb(0.78, 0.92, 0.80)
+                };
             }
             ObjectiveTextRole::Current => {
                 text.0 = current
@@ -820,6 +844,38 @@ fn update_objective_texts(
             ObjectiveTextRole::Toggle => {}
         }
     }
+}
+
+fn victory_objectives_text(progress: VictoryProgress) -> String {
+    let completed = victory_completed_conditions(progress);
+    let technology = technology_definition(victory_rules().required_technology);
+    format!(
+        "Directive régionale : {completed}/6 critères validés.\n{} · {} · {} {}\n{} · {} · {}",
+        compact_progress("colonies", progress.colonies),
+        compact_progress("systèmes sondés", progress.probed_systems),
+        technology.name,
+        if progress.required_technology.complete() {
+            "validée"
+        } else {
+            "en attente"
+        },
+        compact_progress("récoltes", progress.completed_harvests),
+        compact_progress("analyses Sylves", progress.sylve_analysis_reports),
+        compact_progress("sécurisations Sylves", progress.sylve_attack_victories),
+    )
+}
+
+fn compact_progress(label: &str, progress: VictoryConditionProgress) -> String {
+    format!("{label} {}/{}", progress.current, progress.required)
+}
+
+fn victory_completed_conditions(progress: VictoryProgress) -> usize {
+    usize::from(progress.colonies.complete())
+        + usize::from(progress.probed_systems.complete())
+        + usize::from(progress.required_technology.complete())
+        + usize::from(progress.completed_harvests.complete())
+        + usize::from(progress.sylve_analysis_reports.complete())
+        + usize::from(progress.sylve_attack_victories.complete())
 }
 
 fn grant_reward(simulation: &mut SimulationResource, reward: ObjectiveReward) -> ResourceStock {
