@@ -10,3 +10,4 @@ galactic_persistence = { path = "../galactic_persistence" }
 galactic_sim = { path = "../galactic_sim" }
 ron.workspace = true
 serde.workspace = true
+serde_json.workspace = true

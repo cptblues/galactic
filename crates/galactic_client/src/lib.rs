@@ -1,3 +1,4 @@
+mod benchmark;
 mod craft_ui;
 mod fleet_ui;
 mod graphics_settings_ui;
@@ -8,6 +9,10 @@ mod presentation;
 mod research_ui;
 mod save_load_ui;
 
+use benchmark::{
+    BenchmarkConfig, BenchmarkResolution, drive_benchmark_sequence, graphics_preset_from_slug,
+    sample_benchmark_metrics,
+};
 use craft_ui::CraftUiPlugin;
 use fleet_ui::FleetUiPlugin;
 use graphics_settings_ui::GraphicsSettingsUiPlugin;
@@ -131,25 +136,36 @@ pub(crate) const UNIVERSE_VERTICAL_EXAGGERATION: f32 = 3.4;
 const INITIAL_OBSERVATION_SYSTEM_LIMIT: usize = 14;
 
 pub fn run() {
-    let scale_preset = match universe_scale_preset_from_args(std::env::args().skip(1)) {
-        Ok(preset) => preset,
+    let (scale_preset, benchmark) = match parse_launch_args(std::env::args().skip(1)) {
+        Ok(parsed) => parsed,
         Err(message) => {
             eprintln!("{message}");
             return;
         }
     };
-    App::new()
-        .add_plugins(ClientPlugin::new(scale_preset))
-        .run();
+    let mut plugin = ClientPlugin::new(scale_preset);
+    if let Some(config) = benchmark {
+        plugin = plugin.with_benchmark(config);
+    }
+    App::new().add_plugins(plugin).run();
 }
 
 pub struct ClientPlugin {
     scale_preset: UniverseScalePreset,
+    benchmark: Option<BenchmarkConfig>,
 }
 
 impl ClientPlugin {
     pub const fn new(scale_preset: UniverseScalePreset) -> Self {
-        Self { scale_preset }
+        Self {
+            scale_preset,
+            benchmark: None,
+        }
+    }
+
+    pub(crate) fn with_benchmark(mut self, config: BenchmarkConfig) -> Self {
+        self.benchmark = Some(config);
+        self
     }
 }
 
@@ -210,19 +226,24 @@ impl Plugin for ClientPlugin {
         .init_resource::<IntroPitchUiState>()
         .init_resource::<VictoryUiState>()
         .init_resource::<InspectorTabState>()
-        .init_resource::<FleetTrailSpawnTimer>()
-        .add_plugins(SimulationBridgePlugin)
-        .add_plugins(PresentationPlugin)
-        .add_plugins(ResearchUiPlugin)
-        .add_plugins(CraftUiPlugin)
-        .add_plugins(FleetUiPlugin)
-        .add_plugins(MissionWizardPlugin)
-        .add_plugins(NavigationUiPlugin)
-        .add_plugins(ObjectivesUiPlugin)
-        .add_plugins(SaveLoadUiPlugin)
-        .add_plugins(GraphicsSettingsUiPlugin)
-        .add_systems(Startup, log_startup)
-        .add_systems(Update, log_memory_diagnostics);
+        .init_resource::<FleetTrailSpawnTimer>();
+
+        if let Some(config) = self.benchmark.clone() {
+            app.insert_resource(benchmark::BenchmarkState::new(config));
+        }
+
+        app.add_plugins(SimulationBridgePlugin)
+            .add_plugins(PresentationPlugin)
+            .add_plugins(ResearchUiPlugin)
+            .add_plugins(CraftUiPlugin)
+            .add_plugins(FleetUiPlugin)
+            .add_plugins(MissionWizardPlugin)
+            .add_plugins(NavigationUiPlugin)
+            .add_plugins(ObjectivesUiPlugin)
+            .add_plugins(SaveLoadUiPlugin)
+            .add_plugins(GraphicsSettingsUiPlugin)
+            .add_systems(Startup, log_startup)
+            .add_systems(Update, log_memory_diagnostics);
     }
 }
 
@@ -236,30 +257,81 @@ fn low_memory_render_plugin() -> RenderPlugin {
     }
 }
 
-fn universe_scale_preset_from_args(
+/// Returns `Some(value)` and consumes it from `args` if `argument` is either
+/// `flag` (value taken from the next argument) or `flag=value`. Returns
+/// `None` (leaving `args` untouched) if `argument` doesn't match `flag` at
+/// all.
+fn take_flag_value(
+    argument: &str,
+    flag: &str,
+    args: &mut impl Iterator<Item = String>,
+) -> Result<Option<String>, String> {
+    if argument == flag {
+        let value = args
+            .next()
+            .ok_or_else(|| format!("Option {flag} sans valeur."))?;
+        Ok(Some(value))
+    } else if let Some(value) = argument.strip_prefix(&format!("{flag}=")) {
+        Ok(Some(value.to_string()))
+    } else {
+        Ok(None)
+    }
+}
+
+fn parse_launch_args(
     args: impl IntoIterator<Item = String>,
-) -> Result<UniverseScalePreset, String> {
+) -> Result<(UniverseScalePreset, Option<BenchmarkConfig>), String> {
     let mut args = args.into_iter();
     let mut preset = UniverseScalePreset::default();
+    let mut benchmark_enabled = false;
+    let mut benchmark_resolution = None;
+    let mut benchmark_preset = None;
+    let mut benchmark_export_dir = None;
 
     while let Some(argument) = args.next() {
-        let value = if argument == "--scale" {
-            args.next()
-                .ok_or_else(|| "Option --scale sans valeur (test, mvp ou stress).".to_string())?
-        } else if let Some(value) = argument.strip_prefix("--scale=") {
-            value.to_string()
+        if let Some(value) = take_flag_value(&argument, "--scale", &mut args)? {
+            preset = UniverseScalePreset::from_slug(&value).ok_or_else(|| {
+                format!("Preset inconnu « {value} ». Valeurs acceptées : test, mvp, stress.")
+            })?;
+        } else if argument == "--benchmark" {
+            benchmark_enabled = true;
+        } else if let Some(value) = take_flag_value(&argument, "--benchmark-resolution", &mut args)?
+        {
+            benchmark_resolution = Some(BenchmarkResolution::from_slug(&value).ok_or_else(|| {
+                format!("Résolution de benchmark inconnue « {value} ». Valeurs acceptées : 720p, 1080p.")
+            })?);
+        } else if let Some(value) = take_flag_value(&argument, "--benchmark-preset", &mut args)? {
+            benchmark_preset = Some(graphics_preset_from_slug(&value).ok_or_else(|| {
+                format!(
+                    "Preset de benchmark inconnu « {value} ». Valeurs acceptées : low, medium, high."
+                )
+            })?);
+        } else if let Some(value) = take_flag_value(&argument, "--benchmark-export", &mut args)? {
+            benchmark_export_dir = Some(std::path::PathBuf::from(value));
         } else {
             return Err(format!(
-                "Option inconnue « {argument} ». Utiliser --scale test|mvp|stress."
+                "Option inconnue « {argument} ». Utiliser --scale test|mvp|stress, --benchmark, \
+                 --benchmark-resolution 720p|1080p, --benchmark-preset low|medium|high, \
+                 --benchmark-export <dossier>."
             ));
-        };
-
-        preset = UniverseScalePreset::from_slug(&value).ok_or_else(|| {
-            format!("Preset inconnu « {value} ». Valeurs acceptées : test, mvp, stress.")
-        })?;
+        }
     }
 
-    Ok(preset)
+    let benchmark = benchmark_enabled.then(|| {
+        let mut config = BenchmarkConfig::default();
+        if let Some(resolution) = benchmark_resolution {
+            config.resolutions = vec![resolution];
+        }
+        if let Some(preset) = benchmark_preset {
+            config.presets = vec![preset];
+        }
+        if let Some(export_dir) = benchmark_export_dir {
+            config.export_dir = export_dir;
+        }
+        config
+    });
+
+    Ok((preset, benchmark))
 }
 
 pub struct SimulationBridgePlugin;
@@ -319,6 +391,8 @@ impl Plugin for PresentationPlugin {
                     update_system_labels,
                     update_sector_labels,
                     update_pointer_halo_positions,
+                    sample_benchmark_metrics,
+                    drive_benchmark_sequence,
                     update_strategic_camera,
                     update_pointer_candidates,
                     handle_pointer_selection,
@@ -807,18 +881,81 @@ VmSwap:\t      2048 kB
     #[test]
     fn scale_cli_defaults_to_mvp_and_accepts_all_presets() {
         assert_eq!(
-            universe_scale_preset_from_args(Vec::<String>::new()),
+            parse_launch_args(Vec::<String>::new()).map(|(preset, _)| preset),
             Ok(UniverseScalePreset::Mvp),
         );
         assert_eq!(
-            universe_scale_preset_from_args(["--scale", "test"].map(str::to_string)),
+            parse_launch_args(["--scale", "test"].map(str::to_string)).map(|(preset, _)| preset),
             Ok(UniverseScalePreset::Test),
         );
         assert_eq!(
-            universe_scale_preset_from_args(["--scale=stress"].map(str::to_string)),
+            parse_launch_args(["--scale=stress"].map(str::to_string)).map(|(preset, _)| preset),
             Ok(UniverseScalePreset::Stress),
         );
-        assert!(universe_scale_preset_from_args(["--scale=huge"].map(str::to_string)).is_err());
+        assert!(parse_launch_args(["--scale=huge"].map(str::to_string)).is_err());
+    }
+
+    #[test]
+    fn benchmark_flag_absent_means_no_benchmark_config() {
+        let (_, benchmark) = parse_launch_args(Vec::<String>::new()).expect("parses");
+        assert!(benchmark.is_none());
+    }
+
+    #[test]
+    fn benchmark_flag_alone_runs_the_full_matrix() {
+        let (_, benchmark) =
+            parse_launch_args(["--benchmark"].map(str::to_string)).expect("parses");
+        let config = benchmark.expect("benchmark enabled");
+        assert_eq!(config.resolutions.len(), 2);
+        assert_eq!(config.presets.len(), 3);
+    }
+
+    #[test]
+    fn benchmark_resolution_and_preset_flags_restrict_the_matrix() {
+        let (_, benchmark) = parse_launch_args(
+            [
+                "--benchmark",
+                "--benchmark-resolution",
+                "720p",
+                "--benchmark-preset=low",
+            ]
+            .map(str::to_string),
+        )
+        .expect("parses");
+        let config = benchmark.expect("benchmark enabled");
+        assert_eq!(config.resolutions, vec![BenchmarkResolution::Hd720]);
+        assert_eq!(
+            config.presets,
+            vec![galactic_persistence::GraphicsPreset::Low]
+        );
+    }
+
+    #[test]
+    fn benchmark_export_flag_overrides_the_output_directory() {
+        let (_, benchmark) = parse_launch_args(
+            ["--benchmark", "--benchmark-export", "/tmp/my-benchmarks"].map(str::to_string),
+        )
+        .expect("parses");
+        let config = benchmark.expect("benchmark enabled");
+        assert_eq!(
+            config.export_dir,
+            std::path::PathBuf::from("/tmp/my-benchmarks")
+        );
+    }
+
+    #[test]
+    fn unknown_benchmark_resolution_is_rejected() {
+        assert!(parse_launch_args(["--benchmark-resolution=4k"].map(str::to_string)).is_err());
+    }
+
+    #[test]
+    fn unknown_benchmark_preset_is_rejected() {
+        assert!(parse_launch_args(["--benchmark-preset=ultra"].map(str::to_string)).is_err());
+    }
+
+    #[test]
+    fn unknown_flag_is_rejected() {
+        assert!(parse_launch_args(["--nope"].map(str::to_string)).is_err());
     }
 
     #[test]
