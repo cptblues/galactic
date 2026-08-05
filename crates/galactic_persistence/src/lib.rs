@@ -5,6 +5,7 @@ use galactic_sim::Simulation;
 mod file;
 mod restore;
 mod save;
+mod settings;
 mod snapshot;
 
 pub use file::{
@@ -16,6 +17,7 @@ pub use save::{
     ColonySave, FactionSave, FleetSave, MutableGameSave, SAVE_VERSION, SaveError, SaveGame,
     StrategicClockSave, UniverseReference,
 };
+pub use settings::{GraphicsPreset, default_settings_path, load_settings, save_settings};
 pub use snapshot::snapshot_from_simulation;
 
 #[cfg(test)]

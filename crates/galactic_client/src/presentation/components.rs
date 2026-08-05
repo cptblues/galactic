@@ -26,6 +26,7 @@ pub(crate) enum OpenPanel {
     Objectives,
     Colony,
     SaveLoad,
+    Settings,
 }
 
 #[derive(Component)]
@@ -33,6 +34,19 @@ pub(crate) struct StrategicViewEntity;
 
 #[derive(Component)]
 pub(crate) struct StrategicCamera;
+
+/// MVP-034: the single "sun" light providing shadow-casting illumination in
+/// the system view. Always present; its illuminance/shadow settings are
+/// preset-driven rather than the entity being spawned/despawned.
+#[derive(Component)]
+pub(crate) struct StrategicSunLight;
+
+/// MVP-034: procedural nebula backdrop plane, visible only in the Universe
+/// view. Unlike the sun light and camera bloom/HDR, the patch *count* itself
+/// is preset-driven, so these are despawned/respawned on a preset change
+/// rather than having their fields mutated in place.
+#[derive(Component)]
+pub(crate) struct NebulaBackdrop;
 
 #[derive(Component)]
 pub(crate) struct SystemVisual {

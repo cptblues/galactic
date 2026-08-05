@@ -7,8 +7,20 @@ use galactic_sim::{
     SelectionTarget, TechnologyUnlock,
 };
 
+use crate::presentation::graphics_settings::GraphicsPreset;
 use crate::presentation::inspector_panel::*;
-use crate::*;
+
+/// `Low` quarters the pixel count of the pre-preset default; `High`
+/// quadruples it. Threaded as parameters (not consts) rather than a global
+/// resource read deep in pixel-generation code, so `procedural_planet_pixel`
+/// stays a pure function.
+pub(crate) const fn planet_texture_dimensions(preset: GraphicsPreset) -> (u32, u32) {
+    match preset {
+        GraphicsPreset::Low => (64, 32),
+        GraphicsPreset::Medium => (128, 64),
+        GraphicsPreset::High => (256, 128),
+    }
+}
 
 pub(crate) fn star_material(class: StarClass) -> StandardMaterial {
     StandardMaterial {
@@ -87,19 +99,19 @@ pub(crate) fn atmosphere_material(kind: PlanetKind) -> StandardMaterial {
     }
 }
 
-pub(crate) fn procedural_planet_texture(kind: PlanetKind) -> Image {
-    let mut texture =
-        Vec::with_capacity((PLANET_TEXTURE_WIDTH * PLANET_TEXTURE_HEIGHT * 4) as usize);
-    for y in 0..PLANET_TEXTURE_HEIGHT {
-        for x in 0..PLANET_TEXTURE_WIDTH {
-            texture.extend_from_slice(&procedural_planet_pixel(kind, x, y));
+pub(crate) fn procedural_planet_texture(kind: PlanetKind, preset: GraphicsPreset) -> Image {
+    let (width, height) = planet_texture_dimensions(preset);
+    let mut texture = Vec::with_capacity((width * height * 4) as usize);
+    for y in 0..height {
+        for x in 0..width {
+            texture.extend_from_slice(&procedural_planet_pixel(kind, x, y, width, height));
         }
     }
 
     Image::new_fill(
         Extent3d {
-            width: PLANET_TEXTURE_WIDTH,
-            height: PLANET_TEXTURE_HEIGHT,
+            width,
+            height,
             depth_or_array_layers: 1,
         },
         TextureDimension::D2,
@@ -109,10 +121,14 @@ pub(crate) fn procedural_planet_texture(kind: PlanetKind) -> Image {
     )
 }
 
-pub(crate) fn procedural_planet_pixel(kind: PlanetKind, x: u32, y: u32) -> [u8; 4] {
+pub(crate) fn procedural_planet_pixel(
+    kind: PlanetKind,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+) -> [u8; 4] {
     let noise = layered_noise(x, y, planet_kind_seed(kind));
-    let width = PLANET_TEXTURE_WIDTH;
-    let height = PLANET_TEXTURE_HEIGHT;
     let color = match kind {
         PlanetKind::Rocky => {
             if noise > 205 {
@@ -239,6 +255,50 @@ pub(crate) fn visual_hash(x: u32, y: u32, seed: u32) -> u8 {
     value = value.wrapping_mul(0x7FEB_352D);
     value ^= value >> 15;
     (value >> 24) as u8
+}
+
+pub(crate) const NEBULA_TEXTURE_SIZE: u32 = 128;
+
+/// A soft, radially-fading noise cloud — reuses `layered_noise` the same way
+/// `procedural_planet_texture` does, but with a circular falloff toward the
+/// edges (instead of the planet textures' hard biome bands) so it reads as a
+/// diffuse gas cloud rather than a tiled pattern. `peak_alpha` bakes the
+/// preset's overall nebula opacity directly into the texture, so the
+/// material itself can stay a plain opaque-white base color.
+pub(crate) fn procedural_nebula_texture(seed: u32, tint: Color, peak_alpha: f32) -> Image {
+    let size = NEBULA_TEXTURE_SIZE;
+    let tint = tint.to_srgba();
+    let center = size as f32 / 2.0;
+    let mut data = Vec::with_capacity((size * size * 4) as usize);
+    for y in 0..size {
+        for x in 0..size {
+            let noise = f32::from(layered_noise(x, y, seed)) / 255.0;
+            let dx = x as f32 - center;
+            let dy = y as f32 - center;
+            let radial = (dx * dx + dy * dy).sqrt() / center;
+            let falloff = (1.0 - radial).clamp(0.0, 1.0).powf(1.6);
+            let density = (noise * 0.7 + 0.3) * falloff;
+            let alpha = (density * peak_alpha * 255.0).clamp(0.0, 255.0) as u8;
+            data.extend_from_slice(&[
+                (tint.red * 255.0) as u8,
+                (tint.green * 255.0) as u8,
+                (tint.blue * 255.0) as u8,
+                alpha,
+            ]);
+        }
+    }
+
+    Image::new_fill(
+        Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        &data,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    )
 }
 
 pub(crate) const fn planet_kind_seed(kind: PlanetKind) -> u32 {
@@ -476,5 +536,46 @@ pub(crate) fn colonization_arrival_failure_label(blocker: ColonizationBlocker) -
         ColonizationBlocker::InsufficientFoundationResources { .. } => {
             "chargement de fondation indisponible"
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nebula_texture_is_correctly_sized_and_denser_at_the_center_than_the_edge() {
+        let image = procedural_nebula_texture(11, Color::srgb(0.4, 0.3, 0.7), 0.2);
+        let data = image.data.expect("generated texture keeps its source data");
+        assert_eq!(
+            data.len(),
+            (NEBULA_TEXTURE_SIZE * NEBULA_TEXTURE_SIZE * 4) as usize
+        );
+
+        let pixel_alpha = |x: u32, y: u32| -> u8 {
+            let index = ((y * NEBULA_TEXTURE_SIZE + x) * 4 + 3) as usize;
+            data[index]
+        };
+        let center = NEBULA_TEXTURE_SIZE / 2;
+        let corner_alpha = pixel_alpha(1, 1);
+        let center_alpha = pixel_alpha(center, center);
+        assert!(
+            center_alpha > corner_alpha,
+            "center ({center_alpha}) should be denser than the corner ({corner_alpha})"
+        );
+    }
+
+    #[test]
+    fn nebula_texture_alpha_scales_with_peak_alpha() {
+        let dim = procedural_nebula_texture(11, Color::WHITE, 0.05);
+        let bright = procedural_nebula_texture(11, Color::WHITE, 0.5);
+        let dim_data = dim.data.expect("generated texture keeps its source data");
+        let bright_data = bright
+            .data
+            .expect("generated texture keeps its source data");
+
+        let center = (NEBULA_TEXTURE_SIZE / 2) as usize;
+        let index = (center * NEBULA_TEXTURE_SIZE as usize + center) * 4 + 3;
+        assert!(bright_data[index] > dim_data[index]);
     }
 }

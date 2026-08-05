@@ -982,6 +982,7 @@ fn approximate_position(value: f32) -> f32 {
 pub(crate) fn update_ui(
     simulation: Res<SimulationResource>,
     navigation: Res<StrategicNavigation>,
+    graphics: Res<super::graphics_settings::GraphicsSettings>,
     log: Res<PresentationLog>,
     mut query: Query<&mut Text, With<TopBarText>>,
 ) {
@@ -1029,7 +1030,7 @@ pub(crate) fn update_ui(
         "Galactic MVP | échelle {} ({}) | graphique {:?} | {} | tick {} | vitesse {} | colonie active {} | cible {}\nSystèmes {}/{} | Secteurs connus {}/{} | Routes {}/{} | Détectés/Sondés/Analysés/Colonisés {}/{}/{}/{} | debug {} | {}\n{}",
         navigation.scale_preset.label(),
         navigation.scale_preset.system_count(),
-        navigation.preset,
+        graphics.preset,
         view_label,
         state.clock.current_tick(),
         state.clock.speed(),

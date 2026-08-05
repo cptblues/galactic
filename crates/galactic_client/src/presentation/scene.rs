@@ -1,9 +1,11 @@
 use bevy::camera::Hdr;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
+use bevy::light::DirectionalLightShadowMap;
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 use bevy::ui::{FocusPolicy, RelativeCursorPosition};
+use bevy::window::PrimaryWindow;
 use galactic_domain::{PlanetId, PlanetKind, StarClass, SystemId, WorldPosition};
 use galactic_sim::{
     KnowledgeLevel, MVP_HOME_SYSTEM_ID, Simulation, SystemVisibility, TimeSpeed,
@@ -12,6 +14,7 @@ use galactic_sim::{
 };
 
 use crate::presentation::components::*;
+use crate::presentation::graphics_settings::{GraphicsPreset, GraphicsSettings};
 use crate::presentation::icons::{IconAssets, IconKind, spawn_icon};
 use crate::presentation::procedural_materials::star_color;
 use crate::presentation::resource_hud::*;
@@ -27,8 +30,9 @@ pub(crate) fn spawn_scene(mut commands: Commands) {
             clear_color: ClearColorConfig::Custom(Color::srgb(0.006, 0.008, 0.014)),
             ..default()
         },
+        // Matches the Medium preset; `update_camera_graphics_preset` corrects
+        // this on the first frame if the loaded preference differs.
         Hdr,
-        // Bloom fixe pour l'instant ; MVP-034 (futur) pourra le brancher sur GraphicsPreset.
         Bloom::default(),
         Tonemapping::TonyMcMapface,
         Transform::from_xyz(0.0, 62.0, 88.0).looking_at(Vec3::ZERO, Vec3::Y),
@@ -44,6 +48,142 @@ pub(crate) fn spawn_scene(mut commands: Commands) {
         },
         Transform::from_xyz(0.0, 40.0, 0.0),
     ));
+
+    // Zero illuminance + shadows off at spawn matches the Low preset (and
+    // today's pre-preset look); `update_sun_light_preset` corrects this on
+    // the first frame if the loaded preference differs.
+    commands.spawn((
+        DirectionalLight {
+            illuminance: 0.0,
+            shadow_maps_enabled: false,
+            ..default()
+        },
+        Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.9, 0.4, 0.0)),
+        StrategicSunLight,
+    ));
+}
+
+/// `None` for Low means no `Bloom` component at all — and, since `Bloom` is
+/// `#[require(Hdr)]`, no `Hdr` either, the cheapest state for the axis.
+fn bloom_for_preset(preset: GraphicsPreset) -> Option<Bloom> {
+    match preset {
+        GraphicsPreset::Low => None,
+        GraphicsPreset::Medium => Some(Bloom::default()),
+        GraphicsPreset::High => Some(Bloom {
+            intensity: 0.22,
+            ..Bloom::NATURAL
+        }),
+    }
+}
+
+pub(crate) fn update_camera_graphics_preset(
+    graphics: Res<GraphicsSettings>,
+    mut commands: Commands,
+    cameras: Query<Entity, With<StrategicCamera>>,
+) {
+    if !graphics.is_changed() {
+        return;
+    }
+    let Ok(camera) = cameras.single() else {
+        return;
+    };
+
+    match bloom_for_preset(graphics.preset) {
+        Some(bloom) => {
+            commands.entity(camera).insert((Hdr, bloom));
+        }
+        // Bloom must be removed before Hdr: Bloom requires Hdr, so removing
+        // them in the other order would leave Hdr gone while Bloom still
+        // declares it as a requirement for one frame.
+        None => {
+            commands.entity(camera).remove::<Bloom>().remove::<Hdr>();
+        }
+    }
+}
+
+struct SunLightSettings {
+    illuminance: f32,
+    shadow_maps_enabled: bool,
+    shadow_map_size: usize,
+}
+
+fn sun_light_for_preset(preset: GraphicsPreset) -> SunLightSettings {
+    match preset {
+        GraphicsPreset::Low => SunLightSettings {
+            illuminance: 0.0,
+            shadow_maps_enabled: false,
+            shadow_map_size: 2048,
+        },
+        GraphicsPreset::Medium => SunLightSettings {
+            illuminance: 3500.0,
+            shadow_maps_enabled: true,
+            shadow_map_size: 2048,
+        },
+        GraphicsPreset::High => SunLightSettings {
+            illuminance: 3500.0,
+            shadow_maps_enabled: true,
+            shadow_map_size: 4096,
+        },
+    }
+}
+
+/// `DirectionalLightShadowMap.size` is a single global resource (not
+/// per-light), so High's crisper shadows apply to every shadow-casting light
+/// at once — harmless here since `StrategicSunLight` is the only one.
+pub(crate) fn update_sun_light_preset(
+    graphics: Res<GraphicsSettings>,
+    mut shadow_map: ResMut<DirectionalLightShadowMap>,
+    mut lights: Query<&mut DirectionalLight, With<StrategicSunLight>>,
+) {
+    if !graphics.is_changed() {
+        return;
+    }
+    let settings = sun_light_for_preset(graphics.preset);
+    for mut light in &mut lights {
+        light.illuminance = settings.illuminance;
+        light.shadow_maps_enabled = settings.shadow_maps_enabled;
+    }
+    if shadow_map.size != settings.shadow_map_size {
+        shadow_map.size = settings.shadow_map_size;
+    }
+}
+
+/// True internal-resolution scaling (rendering to a smaller off-screen
+/// texture then upscaling) was evaluated and deliberately not implemented:
+/// `Camera::world_to_viewport` derives its coordinate space from the
+/// camera's `RenderTarget`, so pointing the 3D camera at a smaller render
+/// target would desync every screen-space computation in
+/// `presentation/input.rs` (pointer picking, tooltip placement) from
+/// `Window::cursor_position`, which always stays in the real window's
+/// logical space. Fixing that correctly means finding and correcting every
+/// consumer of `world_to_viewport` with a preset-dependent scale factor — a
+/// wide, easy-to-miss-a-spot blast radius for a P2 "nice to have" axis. This
+/// resizes the actual window instead: fewer total pixels shaded end to end,
+/// exactly like real render scaling, but `world_to_viewport` keeps tracking
+/// the one real render target, so picking needs no changes at all.
+const fn window_resolution_for_preset(preset: GraphicsPreset) -> (u32, u32) {
+    match preset {
+        GraphicsPreset::Low => (960, 540),
+        GraphicsPreset::Medium => (1280, 720),
+        GraphicsPreset::High => (1600, 900),
+    }
+}
+
+pub(crate) fn update_window_resolution_preset(
+    graphics: Res<GraphicsSettings>,
+    mut windows: Query<&mut Window, With<PrimaryWindow>>,
+) {
+    if !graphics.is_changed() {
+        return;
+    }
+    let Ok(mut window) = windows.single_mut() else {
+        return;
+    };
+    let (width, height) = window_resolution_for_preset(graphics.preset);
+    let target = Vec2::new(width as f32, height as f32);
+    if window.resolution.size() != target {
+        window.resolution.set(target.x, target.y);
+    }
 }
 
 pub(crate) fn spawn_strategic_view(
@@ -1241,6 +1381,7 @@ fn spawn_tab_bar(commands: &mut Commands) {
             spawn_tab_bar_slot(row, objectives_ui::spawn_objectives_toggle);
             spawn_tab_bar_slot(row, navigation_ui::spawn_search_toggle);
             spawn_tab_bar_slot(row, save_load_ui::spawn_save_load_toggle);
+            spawn_tab_bar_slot(row, graphics_settings_ui::spawn_graphics_settings_toggle);
             row.spawn(Node {
                 width: Val::Px(42.0),
                 ..default()
@@ -1716,12 +1857,51 @@ Souris : clic gauche sélectionner  ·  double-clic ouvrir/recentrer  ·  \
 clic droit orbite  ·  clic molette déplacer  ·  molette zoom\n\
 Vue : [Tab] cible suivante  ·  [P] projection  ·  [?] afficher/masquer l’aide\n\
 Missions : [V] Flottes & missions -> assistant de lancement (sonder / analyser / attaquer / récolter / coloniser)\n\
-Sauvegardes : [J] écran des sauvegardes  ·  [F5] sauvegarde rapide  ·  [F9] chargement rapide"
+Sauvegardes : [J] écran des sauvegardes  ·  [F5] sauvegarde rapide  ·  [F9] chargement rapide\n\
+Réglages : [K] presets graphiques (Faible / Moyen / Élevé)"
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_resolution_grows_with_preset_and_medium_matches_todays_default() {
+        assert_eq!(
+            window_resolution_for_preset(GraphicsPreset::Medium),
+            (1280, 720)
+        );
+        let (low_width, low_height) = window_resolution_for_preset(GraphicsPreset::Low);
+        let (high_width, high_height) = window_resolution_for_preset(GraphicsPreset::High);
+        assert!(low_width < 1280 && low_height < 720);
+        assert!(high_width > 1280 && high_height > 720);
+    }
+
+    #[test]
+    fn sun_light_is_off_on_low_and_only_high_raises_the_shadow_map_size() {
+        let low = sun_light_for_preset(GraphicsPreset::Low);
+        assert_eq!(low.illuminance, 0.0);
+        assert!(!low.shadow_maps_enabled);
+
+        let medium = sun_light_for_preset(GraphicsPreset::Medium);
+        assert!(medium.illuminance > 0.0);
+        assert!(medium.shadow_maps_enabled);
+
+        let high = sun_light_for_preset(GraphicsPreset::High);
+        assert!(high.shadow_maps_enabled);
+        assert!(high.shadow_map_size > medium.shadow_map_size);
+    }
+
+    #[test]
+    fn bloom_is_absent_on_low_present_on_medium_and_high_with_higher_intensity() {
+        assert!(bloom_for_preset(GraphicsPreset::Low).is_none());
+
+        let medium = bloom_for_preset(GraphicsPreset::Medium).expect("medium has bloom");
+        assert_eq!(medium.intensity, Bloom::default().intensity);
+
+        let high = bloom_for_preset(GraphicsPreset::High).expect("high has bloom");
+        assert!(high.intensity > medium.intensity);
+    }
 
     #[test]
     fn help_starts_hidden_with_consortium_briefing_available() {

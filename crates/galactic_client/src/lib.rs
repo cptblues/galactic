@@ -1,5 +1,6 @@
 mod craft_ui;
 mod fleet_ui;
+mod graphics_settings_ui;
 mod mission_wizard;
 mod navigation_ui;
 mod objectives_ui;
@@ -9,6 +10,7 @@ mod save_load_ui;
 
 use craft_ui::CraftUiPlugin;
 use fleet_ui::FleetUiPlugin;
+use graphics_settings_ui::GraphicsSettingsUiPlugin;
 use mission_wizard::MissionWizardPlugin;
 use navigation_ui::NavigationUiPlugin;
 use objectives_ui::ObjectivesUiPlugin;
@@ -38,7 +40,9 @@ use presentation::inspector_panel::{
     mission_result_text, mission_target_label, update_info_panel, update_ui,
 };
 use presentation::overlays::{
-    compute_label_budget, draw_strategic_overlays, update_orbiting_visuals, update_planet_spins,
+    FleetTrailSpawnTimer, advance_fleet_trail_particles, compute_label_budget,
+    draw_strategic_overlays, spawn_fleet_trail_particles, update_nebula_backdrop,
+    update_nebula_visibility, update_orbiting_visuals, update_planet_spins,
     update_pointer_halo_positions, update_projection_transition, update_sector_labels,
     update_system_labels, update_system_visuals,
 };
@@ -51,9 +55,10 @@ use presentation::scene::{
     action_button_outline, handle_help_toggle_button, handle_intro_pitch_buttons,
     handle_scroll_areas, handle_tab_bar_galaxy_button, handle_victory_modal_buttons,
     panel_background, panel_outline, rebuild_strategic_view_if_requested, spawn_scene,
-    spawn_strategic_view, spawn_ui, ui_text_font, update_help_visibility,
-    update_intro_pitch_visibility, update_resource_bar, update_scroll_indicators,
-    update_victory_modal, update_victory_state,
+    spawn_strategic_view, spawn_ui, ui_text_font, update_camera_graphics_preset,
+    update_help_visibility, update_intro_pitch_visibility, update_resource_bar,
+    update_scroll_indicators, update_sun_light_preset, update_victory_modal, update_victory_state,
+    update_window_resolution_preset,
 };
 use presentation::shortcuts::{apply_simulation_command, apply_ui_action, replace_simulation};
 use presentation::strategic_camera::{tick_simulation, update_strategic_camera};
@@ -125,8 +130,6 @@ use std::time::Duration;
 
 pub(crate) const UNIVERSE_VERTICAL_EXAGGERATION: f32 = 3.4;
 const INITIAL_OBSERVATION_SYSTEM_LIMIT: usize = 14;
-const PLANET_TEXTURE_WIDTH: u32 = 128;
-const PLANET_TEXTURE_HEIGHT: u32 = 64;
 
 pub fn run() {
     let scale_preset = match universe_scale_preset_from_args(std::env::args().skip(1)) {
@@ -165,6 +168,11 @@ impl Plugin for ClientPlugin {
         ));
         let navigation =
             StrategicNavigation::for_universe(self.scale_preset, simulation.universe());
+        let graphics_settings = presentation::graphics_settings::GraphicsSettings {
+            preset: galactic_persistence::load_settings(
+                &galactic_persistence::default_settings_path(),
+            ),
+        };
 
         app.add_plugins(
             DefaultPlugins
@@ -185,6 +193,7 @@ impl Plugin for ClientPlugin {
             simulation,
             pending_events: Vec::new(),
         })
+        .insert_resource(graphics_settings)
         .init_resource::<PresentationLog>()
         .init_resource::<VisualAssets>()
         .init_resource::<IconAssets>()
@@ -202,6 +211,7 @@ impl Plugin for ClientPlugin {
         .init_resource::<IntroPitchUiState>()
         .init_resource::<VictoryUiState>()
         .init_resource::<InspectorTabState>()
+        .init_resource::<FleetTrailSpawnTimer>()
         .add_plugins(SimulationBridgePlugin)
         .add_plugins(PresentationPlugin)
         .add_plugins(ResearchUiPlugin)
@@ -211,6 +221,7 @@ impl Plugin for ClientPlugin {
         .add_plugins(NavigationUiPlugin)
         .add_plugins(ObjectivesUiPlugin)
         .add_plugins(SaveLoadUiPlugin)
+        .add_plugins(GraphicsSettingsUiPlugin)
         .add_systems(Startup, log_startup)
         .add_systems(Update, log_memory_diagnostics);
     }
@@ -290,22 +301,36 @@ impl Plugin for PresentationPlugin {
         .add_systems(
             Update,
             (
-                rebuild_strategic_view_if_requested,
-                update_projection_transition,
-                update_system_visuals,
-                update_orbiting_visuals,
-                update_planet_spins,
-                compute_label_budget,
-                update_system_labels,
-                update_sector_labels,
-                update_pointer_halo_positions,
-                update_strategic_camera,
-                update_pointer_candidates,
-                handle_pointer_selection,
-                capture_colony_management_feedback,
-                collect_presentation_events,
-                update_pointer_halos,
-                draw_strategic_overlays,
+                (
+                    rebuild_strategic_view_if_requested,
+                    update_camera_graphics_preset,
+                    update_sun_light_preset,
+                    update_window_resolution_preset,
+                    update_planet_texture_quality,
+                    spawn_fleet_trail_particles,
+                    advance_fleet_trail_particles,
+                    update_nebula_backdrop,
+                    update_nebula_visibility,
+                    update_projection_transition,
+                    update_system_visuals,
+                    update_orbiting_visuals,
+                    update_planet_spins,
+                )
+                    .chain(),
+                (
+                    compute_label_budget,
+                    update_system_labels,
+                    update_sector_labels,
+                    update_pointer_halo_positions,
+                    update_strategic_camera,
+                    update_pointer_candidates,
+                    handle_pointer_selection,
+                    capture_colony_management_feedback,
+                    collect_presentation_events,
+                    update_pointer_halos,
+                    draw_strategic_overlays,
+                )
+                    .chain(),
             )
                 .chain()
                 .in_set(PresentationUpdateSet::View),
@@ -426,23 +451,20 @@ struct MemoryDiagnosticSources<'w, 's> {
     font_atlases: Res<'w, FontAtlasSet>,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) enum GraphicsPreset {
-    #[default]
-    Low,
-}
-
 #[derive(Resource)]
 pub(crate) struct VisualAssets {
     system_mesh: Handle<Mesh>,
     planet_mesh: Handle<Mesh>,
     ring_mesh: Handle<Mesh>,
     colony_ring_mesh: Handle<Mesh>,
+    pub(crate) particle_mesh: Handle<Mesh>,
+    pub(crate) particle_material: Handle<StandardMaterial>,
     known_star_materials: HashMap<StarClass, Handle<StandardMaterial>>,
     star_halo_materials: HashMap<StarClass, Handle<StandardMaterial>>,
     detected_material: Handle<StandardMaterial>,
     observed_material: Handle<StandardMaterial>,
     planet_materials: HashMap<PlanetKind, Handle<StandardMaterial>>,
+    planet_textures: HashMap<PlanetKind, Handle<Image>>,
     atmosphere_materials: HashMap<PlanetKind, Handle<StandardMaterial>>,
     ring_material: Handle<StandardMaterial>,
     hover_material: Handle<StandardMaterial>,
@@ -452,7 +474,7 @@ pub(crate) struct VisualAssets {
 impl FromWorld for VisualAssets {
     fn from_world(world: &mut World) -> Self {
         // Low preset: every geometry and material is shared by all matching bodies.
-        let (system_mesh, planet_mesh, ring_mesh, colony_ring_mesh) = {
+        let (system_mesh, planet_mesh, ring_mesh, colony_ring_mesh, particle_mesh) = {
             let mut meshes = world.resource_mut::<Assets<Mesh>>();
             (
                 meshes.add(Sphere::default().mesh().ico(1).unwrap()),
@@ -462,13 +484,17 @@ impl FromWorld for VisualAssets {
                     COLONY_RING_INNER_RADIUS,
                     COLONY_RING_OUTER_RADIUS,
                 )),
+                meshes.add(Sphere::new(0.5).mesh().ico(0).unwrap()),
             )
         };
+        let preset = world
+            .resource::<presentation::graphics_settings::GraphicsSettings>()
+            .preset;
         let planet_textures = {
             let mut images = world.resource_mut::<Assets<Image>>();
             PlanetKind::ALL
                 .into_iter()
-                .map(|kind| (kind, images.add(procedural_planet_texture(kind))))
+                .map(|kind| (kind, images.add(procedural_planet_texture(kind, preset))))
                 .collect::<HashMap<_, _>>()
         };
 
@@ -529,21 +555,53 @@ impl FromWorld for VisualAssets {
             .into_iter()
             .map(|tint| (tint, materials.add(territory_tint_material(tint))))
             .collect();
+        let particle_material = materials.add(StandardMaterial {
+            base_color: Color::srgba(0.62, 0.84, 1.0, 0.85),
+            emissive: LinearRgba::rgb(0.62, 0.94, 1.4),
+            unlit: true,
+            alpha_mode: AlphaMode::Add,
+            double_sided: true,
+            cull_mode: None,
+            ..default()
+        });
 
         Self {
             system_mesh,
             planet_mesh,
             ring_mesh,
             colony_ring_mesh,
+            particle_mesh,
+            particle_material,
             known_star_materials,
             star_halo_materials,
             detected_material,
             observed_material,
             planet_materials,
+            planet_textures,
             atmosphere_materials,
             ring_material,
             hover_material,
             territory_materials,
+        }
+    }
+}
+
+/// Regenerates the shared per-`PlanetKind` textures in place (via their
+/// existing `Handle<Image>`) on a preset change — every already-spawned
+/// planet mesh references these same handles through its material, so this
+/// alone is enough to update every visible planet's texture resolution with
+/// no despawn/respawn needed.
+fn update_planet_texture_quality(
+    graphics: Res<presentation::graphics_settings::GraphicsSettings>,
+    visual_assets: Res<VisualAssets>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    if !graphics.is_changed() {
+        return;
+    }
+    for (kind, handle) in &visual_assets.planet_textures {
+        if let Some(mut image) = images.get_mut(handle) {
+            *image = procedural_planet_texture(*kind, graphics.preset);
         }
     }
 }
@@ -789,11 +847,10 @@ VmSwap:\t      2048 kB
     }
 
     #[test]
-    fn low_graphics_mvp_scale_stays_inside_the_render_budget() {
+    fn mvp_scale_stays_inside_the_render_budget() {
         let simulation = Simulation::new(UniverseConfig::mvp());
         let universe = simulation.universe();
 
-        assert_eq!(GraphicsPreset::default(), GraphicsPreset::Low);
         assert_eq!(
             universe.systems.len(),
             UniverseScalePreset::Mvp.system_count(),
@@ -1173,9 +1230,12 @@ VmSwap:\t      2048 kB
 
     #[test]
     fn procedural_planet_textures_are_small_varied_and_deterministic() {
+        use presentation::graphics_settings::GraphicsPreset;
+        use presentation::procedural_materials::planet_texture_dimensions;
+
         for kind in PlanetKind::ALL {
-            let first = procedural_planet_texture(kind);
-            let second = procedural_planet_texture(kind);
+            let first = procedural_planet_texture(kind, GraphicsPreset::Medium);
+            let second = procedural_planet_texture(kind, GraphicsPreset::Medium);
             let first_data = first.data.expect("generated texture keeps its source data");
             let second_data = second
                 .data
@@ -1185,13 +1245,23 @@ VmSwap:\t      2048 kB
                 .map(|pixel| [pixel[0], pixel[1], pixel[2], pixel[3]])
                 .collect::<HashSet<_>>();
 
-            assert_eq!(
-                first_data.len(),
-                (PLANET_TEXTURE_WIDTH * PLANET_TEXTURE_HEIGHT * 4) as usize
-            );
+            let (width, height) = planet_texture_dimensions(GraphicsPreset::Medium);
+            assert_eq!(first_data.len(), (width * height * 4) as usize);
             assert_eq!(first_data, second_data);
             assert!(colors.len() >= 3, "{kind:?} texture is not varied");
         }
+    }
+
+    #[test]
+    fn low_preset_textures_are_smaller_than_high_preset_textures() {
+        use presentation::graphics_settings::GraphicsPreset;
+        use presentation::procedural_materials::planet_texture_dimensions;
+
+        let (low_width, low_height) = planet_texture_dimensions(GraphicsPreset::Low);
+        let (high_width, high_height) = planet_texture_dimensions(GraphicsPreset::High);
+
+        assert!(low_width < high_width);
+        assert!(low_height < high_height);
     }
 
     #[test]

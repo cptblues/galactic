@@ -3,12 +3,34 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 use galactic_domain::{SectorId, SystemId};
 
+use crate::presentation::graphics_settings::GraphicsPreset;
 use crate::presentation::strategic_navigation::UniverseLod;
 
 pub(crate) const LABEL_HIDE_DELAY_SECONDS: f32 = 0.4;
-const OVERVIEW_LABEL_BUDGET: usize = 12;
-const REGIONAL_LABEL_BUDGET: usize = 30;
 pub(crate) const LABEL_MIN_SEPARATION_FACTOR: f32 = 0.09;
+
+struct LabelBudgets {
+    overview: usize,
+    regional: usize,
+}
+
+const fn label_budgets_for_preset(preset: GraphicsPreset) -> LabelBudgets {
+    match preset {
+        GraphicsPreset::Low => LabelBudgets {
+            overview: 8,
+            regional: 20,
+        },
+        // Matches the values this project shipped with before presets existed.
+        GraphicsPreset::Medium => LabelBudgets {
+            overview: 12,
+            regional: 30,
+        },
+        GraphicsPreset::High => LabelBudgets {
+            overview: 18,
+            regional: 45,
+        },
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct LabelMemory {
@@ -21,10 +43,14 @@ pub(crate) struct LabelBudgetState {
     pub(crate) systems: HashMap<SystemId, LabelMemory>,
 }
 
-pub(crate) const fn label_budget_for_lod(lod: UniverseLod) -> Option<usize> {
+pub(crate) const fn label_budget_for_lod(
+    lod: UniverseLod,
+    preset: GraphicsPreset,
+) -> Option<usize> {
+    let budgets = label_budgets_for_preset(preset);
     match lod {
-        UniverseLod::Overview => Some(OVERVIEW_LABEL_BUDGET),
-        UniverseLod::Regional => Some(REGIONAL_LABEL_BUDGET),
+        UniverseLod::Overview => Some(budgets.overview),
+        UniverseLod::Regional => Some(budgets.regional),
         UniverseLod::Local => None,
     }
 }
@@ -89,6 +115,39 @@ pub(crate) fn group_missions_by_sector<'a>(
 mod tests {
     use super::*;
     use crate::*;
+
+    #[test]
+    fn medium_preset_label_budgets_match_the_pre_preset_defaults() {
+        assert_eq!(
+            label_budget_for_lod(UniverseLod::Overview, GraphicsPreset::Medium),
+            Some(12)
+        );
+        assert_eq!(
+            label_budget_for_lod(UniverseLod::Regional, GraphicsPreset::Medium),
+            Some(30)
+        );
+    }
+
+    #[test]
+    fn low_preset_has_a_smaller_budget_than_high_at_every_lod_with_a_budget() {
+        for lod in [UniverseLod::Overview, UniverseLod::Regional] {
+            let low = label_budget_for_lod(lod, GraphicsPreset::Low).expect("budget exists");
+            let high = label_budget_for_lod(lod, GraphicsPreset::High).expect("budget exists");
+            assert!(low < high);
+        }
+    }
+
+    #[test]
+    fn local_lod_has_no_budget_regardless_of_preset() {
+        assert_eq!(
+            label_budget_for_lod(UniverseLod::Local, GraphicsPreset::Low),
+            None
+        );
+        assert_eq!(
+            label_budget_for_lod(UniverseLod::Local, GraphicsPreset::High),
+            None
+        );
+    }
 
     #[test]
     fn labels_overlap_detects_nearby_points_only() {

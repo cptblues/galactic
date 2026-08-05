@@ -2,8 +2,11 @@ use bevy::prelude::*;
 use galactic_domain::SystemId;
 use galactic_sim::{MissionPhase, MissionTarget, Simulation, SystemVisibility};
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 
 use crate::presentation::components::*;
+use crate::presentation::graphics_settings::{GraphicsPreset, GraphicsSettings};
+use crate::presentation::procedural_materials::procedural_nebula_texture;
 use crate::presentation::scene::planet_orbit;
 use crate::presentation::shortcuts::selected_system;
 use crate::presentation::strategic_navigation::*;
@@ -116,6 +119,7 @@ pub(crate) fn compute_label_budget(
     time: Res<Time>,
     navigation: Res<StrategicNavigation>,
     simulation: Res<SimulationResource>,
+    graphics: Res<crate::presentation::graphics_settings::GraphicsSettings>,
     mut budget: ResMut<LabelBudgetState>,
     system_labels: Query<&SystemLabel>,
 ) {
@@ -169,7 +173,7 @@ pub(crate) fn compute_label_budget(
 
     candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-    let budget_limit = label_budget_for_lod(navigation.lod);
+    let budget_limit = label_budget_for_lod(navigation.lod, graphics.preset);
     let min_separation = navigation.universe_distance * LABEL_MIN_SEPARATION_FACTOR;
 
     let mut accepted_positions = Vec::new();
@@ -743,6 +747,245 @@ pub(crate) fn mission_route_position(
     )
 }
 
+/// MVP-034: small, bounded engine-trail effect for fleets in transit between
+/// systems — chosen over an ambient/decorative particle effect because it
+/// reads as gameplay information (which fleets are moving) rather than pure
+/// decoration, and because "in transit" already has a well-defined spawn
+/// trigger and a natural lifetime.
+#[derive(Component)]
+pub(crate) struct FleetTrailParticle {
+    velocity: Vec3,
+    initial_lifetime: f32,
+    lifetime_remaining: f32,
+}
+
+#[derive(Resource)]
+pub(crate) struct FleetTrailSpawnTimer(Timer);
+
+impl Default for FleetTrailSpawnTimer {
+    fn default() -> Self {
+        Self(Timer::from_seconds(0.25, TimerMode::Repeating))
+    }
+}
+
+struct FleetTrailSettings {
+    enabled: bool,
+    spawn_interval_secs: f32,
+    max_live: usize,
+}
+
+const fn fleet_trail_settings_for_preset(preset: GraphicsPreset) -> FleetTrailSettings {
+    match preset {
+        GraphicsPreset::Low => FleetTrailSettings {
+            enabled: false,
+            spawn_interval_secs: 0.25,
+            max_live: 0,
+        },
+        GraphicsPreset::Medium => FleetTrailSettings {
+            enabled: true,
+            spawn_interval_secs: 0.25,
+            max_live: 40,
+        },
+        GraphicsPreset::High => FleetTrailSettings {
+            enabled: true,
+            spawn_interval_secs: 0.1,
+            max_live: 120,
+        },
+    }
+}
+
+/// Only spawns while in the Universe view — the same view
+/// `draw_universe_missions` draws its in-transit marker in — since that is
+/// where a fleet's continuous position along its route is meaningful.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn spawn_fleet_trail_particles(
+    time: Res<Time>,
+    graphics: Res<GraphicsSettings>,
+    mut spawn_timer: ResMut<FleetTrailSpawnTimer>,
+    simulation: Res<SimulationResource>,
+    navigation: Res<StrategicNavigation>,
+    visual_assets: Res<VisualAssets>,
+    particles: Query<(), With<FleetTrailParticle>>,
+    mut commands: Commands,
+) {
+    let settings = fleet_trail_settings_for_preset(graphics.preset);
+    if !settings.enabled || !matches!(navigation.mode, StrategicViewMode::Universe) {
+        return;
+    }
+
+    let interval = Duration::from_secs_f32(settings.spawn_interval_secs);
+    if spawn_timer.0.duration() != interval {
+        spawn_timer.0.set_duration(interval);
+    }
+    spawn_timer.0.tick(time.delta());
+    if !spawn_timer.0.just_finished() {
+        return;
+    }
+    if particles.iter().count() >= settings.max_live {
+        return;
+    }
+
+    let simulation = simulation.simulation();
+    let current_tick = simulation.state().clock.current_tick();
+    for mission in simulation
+        .state()
+        .player_missions()
+        .filter(|mission| !mission.phase.is_terminal() && mission.plan.route.len() > 1)
+    {
+        let Some(progress) = mission_route_progress(mission, current_tick) else {
+            continue;
+        };
+        let Some(position) = mission_route_position(
+            simulation,
+            &mission.plan.route,
+            progress,
+            navigation.projection_mix,
+        ) else {
+            continue;
+        };
+
+        commands.spawn((
+            Mesh3d(visual_assets.particle_mesh.clone()),
+            MeshMaterial3d(visual_assets.particle_material.clone()),
+            Transform::from_translation(position).with_scale(Vec3::splat(0.35)),
+            FleetTrailParticle {
+                velocity: Vec3::new(0.0, 0.35, 0.0),
+                initial_lifetime: 1.2,
+                lifetime_remaining: 1.2,
+            },
+        ));
+    }
+}
+
+/// Fades via shrinking scale rather than alpha, so every particle can share
+/// one `StandardMaterial` handle instead of needing a unique material per
+/// entity just to animate its own opacity.
+pub(crate) fn advance_fleet_trail_particles(
+    time: Res<Time>,
+    mut commands: Commands,
+    mut particles: Query<(Entity, &mut Transform, &mut FleetTrailParticle)>,
+) {
+    let dt = time.delta_secs();
+    for (entity, mut transform, mut particle) in &mut particles {
+        particle.lifetime_remaining -= dt;
+        if particle.lifetime_remaining <= 0.0 {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        transform.translation += particle.velocity * dt;
+        let life_fraction =
+            (particle.lifetime_remaining / particle.initial_lifetime).clamp(0.0, 1.0);
+        transform.scale = Vec3::splat(0.35 * life_fraction);
+    }
+}
+
+struct NebulaSettings {
+    patch_count: usize,
+    peak_alpha: f32,
+}
+
+const fn nebula_settings_for_preset(preset: GraphicsPreset) -> NebulaSettings {
+    match preset {
+        GraphicsPreset::Low => NebulaSettings {
+            patch_count: 0,
+            peak_alpha: 0.0,
+        },
+        GraphicsPreset::Medium => NebulaSettings {
+            patch_count: 2,
+            peak_alpha: 0.12,
+        },
+        GraphicsPreset::High => NebulaSettings {
+            patch_count: 5,
+            peak_alpha: 0.18,
+        },
+    }
+}
+
+const NEBULA_TINTS: [Color; 3] = [
+    Color::srgb(0.42, 0.30, 0.72),
+    Color::srgb(0.22, 0.46, 0.70),
+    Color::srgb(0.62, 0.28, 0.46),
+];
+
+/// Despawns and respawns every nebula patch on a preset change — cheap (at
+/// most 5 entities) and simpler than trying to grow/shrink the patch count in
+/// place. Deliberately not tied to `ViewRebuildRequest`: that request's
+/// contract is "despawn/respawn every `StrategicViewEntity`" for a fresh
+/// system/universe view, and nebulae must survive ordinary navigation, not
+/// disappear every time the player enters or exits a system.
+pub(crate) fn update_nebula_backdrop(
+    graphics: Res<GraphicsSettings>,
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+    existing: Query<Entity, With<NebulaBackdrop>>,
+) {
+    if !graphics.is_changed() {
+        return;
+    }
+    for entity in &existing {
+        commands.entity(entity).despawn();
+    }
+
+    let settings = nebula_settings_for_preset(graphics.preset);
+    if settings.patch_count == 0 {
+        return;
+    }
+    let plane_mesh = meshes.add(Rectangle::new(340.0, 340.0));
+    for index in 0..settings.patch_count {
+        let tint = NEBULA_TINTS[index % NEBULA_TINTS.len()];
+        let texture = images.add(procedural_nebula_texture(
+            index as u32 * 41 + 7,
+            tint,
+            settings.peak_alpha,
+        ));
+        let material = materials.add(StandardMaterial {
+            base_color: Color::WHITE,
+            base_color_texture: Some(texture),
+            unlit: true,
+            alpha_mode: AlphaMode::Add,
+            double_sided: true,
+            cull_mode: None,
+            ..default()
+        });
+        let angle = index as f32 * 2.4;
+        let radius = 90.0 + (index as f32 * 37.0) % 60.0;
+        let position = Vec3::new(
+            angle.cos() * radius,
+            -30.0 - index as f32 * 6.0,
+            angle.sin() * radius,
+        );
+        commands.spawn((
+            Mesh3d(plane_mesh.clone()),
+            MeshMaterial3d(material),
+            Transform::from_translation(position)
+                .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
+            Visibility::Inherited,
+            NebulaBackdrop,
+        ));
+    }
+}
+
+/// Nebulae read as a galaxy-scale backdrop, so they're hidden while zoomed
+/// into a single system rather than always rendering behind everything.
+pub(crate) fn update_nebula_visibility(
+    navigation: Res<StrategicNavigation>,
+    mut query: Query<&mut Visibility, With<NebulaBackdrop>>,
+) {
+    let visible = matches!(navigation.mode, StrategicViewMode::Universe);
+    for mut visibility in &mut query {
+        let next = if visible {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        if *visibility != next {
+            *visibility = next;
+        }
+    }
+}
+
 pub(crate) fn draw_probe_marker(gizmos: &mut Gizmos, position: Vec3, radius: f32) {
     let color = Color::srgba(0.42, 0.96, 1.0, 0.96);
     gizmos.line(
@@ -760,4 +1003,37 @@ pub(crate) fn draw_probe_marker(gizmos: &mut Gizmos, position: Vec3, radius: f32
         position + Vec3::Z * radius,
         color,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nebulae_are_absent_on_low_and_more_numerous_on_high_than_medium() {
+        let low = nebula_settings_for_preset(GraphicsPreset::Low);
+        assert_eq!(low.patch_count, 0);
+
+        let medium = nebula_settings_for_preset(GraphicsPreset::Medium);
+        assert!(medium.patch_count > 0);
+
+        let high = nebula_settings_for_preset(GraphicsPreset::High);
+        assert!(high.patch_count > medium.patch_count);
+        assert!(high.peak_alpha > medium.peak_alpha);
+    }
+
+    #[test]
+    fn fleet_trails_are_disabled_on_low_and_denser_on_high_than_medium() {
+        let low = fleet_trail_settings_for_preset(GraphicsPreset::Low);
+        assert!(!low.enabled);
+        assert_eq!(low.max_live, 0);
+
+        let medium = fleet_trail_settings_for_preset(GraphicsPreset::Medium);
+        assert!(medium.enabled);
+
+        let high = fleet_trail_settings_for_preset(GraphicsPreset::High);
+        assert!(high.enabled);
+        assert!(high.max_live > medium.max_live);
+        assert!(high.spawn_interval_secs < medium.spawn_interval_secs);
+    }
 }

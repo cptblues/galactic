@@ -4,7 +4,7 @@ use galactic_domain::{SystemId, UniverseScalePreset, WorldPosition};
 use galactic_sim::{GameAction, MVP_HOME_SYSTEM_ID, SelectionTarget, Simulation};
 
 use crate::presentation::shortcuts::{apply_simulation_command, selected_system};
-use crate::{GraphicsPreset, SimulationResource, UNIVERSE_VERTICAL_EXAGGERATION};
+use crate::{SimulationResource, UNIVERSE_VERTICAL_EXAGGERATION};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StrategicViewMode {
@@ -69,7 +69,6 @@ pub(crate) struct StrategicNavigation {
     pub(crate) system_pitch: f32,
     pub(crate) lod: UniverseLod,
     pub(crate) debug_full_graph: bool,
-    pub(crate) preset: GraphicsPreset,
     pub(crate) projection: UniverseProjection,
     pub(crate) projection_mix: f32,
 }
@@ -113,7 +112,6 @@ impl StrategicNavigation {
             system_pitch: -0.62,
             lod: UniverseLod::from_distance(universe_distance),
             debug_full_graph: false,
-            preset: GraphicsPreset::Low,
             projection: UniverseProjection::Spatial,
             projection_mix: 0.0,
         }
