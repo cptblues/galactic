@@ -1,8 +1,64 @@
 (
-    version: 2,
+    version: 4,
     maximum_rounds: 12,
     damage_scale: 1000,
     defense_weight_per_mille: 500,
     damage_variance_per_mille: 80,
     salvage_per_destroyed_defender: (metal: 12, crystal: 5, fuel: 2),
+    // COMBAT-001-A: tactical doctrine modifiers for the round-based combat
+    // engine. The six doctrines are fixed game design (see combat/doctrine.rs);
+    // only their magnitudes are configured here.
+    tactics: (
+        version: 1,
+        repetition_penalty_per_mille: 150,
+        repetition_penalty_maximum_stacks: 3,
+        support_protection_per_mille: 250,
+        flanking_support_bonus_per_mille: 350,
+        dispersion_concentration_cap_per_mille: 400,
+        concentration_bonus_per_mille: 500,
+        doctrines: [
+            (id: BalancedEngagement, offense_multiplier_per_mille: 1000, damage_taken_multiplier_per_mille: 1000, repetition_exempt: true),
+            (id: ConcentratedAssault, offense_multiplier_per_mille: 1250, damage_taken_multiplier_per_mille: 850, repetition_exempt: false),
+            (id: DefensiveScreen, offense_multiplier_per_mille: 800, damage_taken_multiplier_per_mille: 750, repetition_exempt: false),
+            (id: FlankingManeuver, offense_multiplier_per_mille: 1000, damage_taken_multiplier_per_mille: 1150, repetition_exempt: false),
+            (id: DispersedFormation, offense_multiplier_per_mille: 950, damage_taken_multiplier_per_mille: 1000, repetition_exempt: false),
+            (id: TacticalAnalysis, offense_multiplier_per_mille: 750, damage_taken_multiplier_per_mille: 1000, repetition_exempt: false),
+        ],
+        counters: [
+            (doctrine: ConcentratedAssault, countered_by: DefensiveScreen, damage_dealt_multiplier_per_mille: 800),
+            (doctrine: DefensiveScreen, countered_by: FlankingManeuver, damage_dealt_multiplier_per_mille: 800),
+            (doctrine: FlankingManeuver, countered_by: DispersedFormation, damage_dealt_multiplier_per_mille: 800),
+            (doctrine: DispersedFormation, countered_by: ConcentratedAssault, damage_dealt_multiplier_per_mille: 800),
+        ],
+    ),
+    // COMBAT-001-B: combat intel (attacker's knowledge of the defender's
+    // composition) — derived from the existing PlanetaryIntelligenceReport
+    // precision/age plus a reconnaissance-ship bonus, gains per round.
+    intel: (
+        version: 1,
+        contact_base_percent: 20,
+        surveyed_base_percent: 45,
+        exact_base_percent: 70,
+        staleness_penalty_percent_per_interval: 2,
+        staleness_interval_ticks: 600,
+        staleness_penalty_maximum_percent: 20,
+        reconnaissance_bonus_percent: 10,
+        round_gain_percent: 5,
+        tactical_analysis_bonus_percent: 15,
+        minimum_percent: 5,
+        maximum_percent: 100,
+    ),
+    // COMBAT-001-B: single rule-based AI profile driving doctrine choice for
+    // both sides in the auto-resolve façade (replaces A's random placeholder).
+    ai: (
+        version: 1,
+        concentrated_assault_target_bonus: 30,
+        defensive_screen_damage_taken_bonus: 25,
+        flanking_support_bonus: 35,
+        dispersed_formation_counter_bonus: 20,
+        tactical_analysis_first_round_bonus: 40,
+        balanced_engagement_base_score: 10,
+        repetition_avoidance_penalty: 50,
+        repetition_avoidance_threshold: 2,
+    ),
 )
