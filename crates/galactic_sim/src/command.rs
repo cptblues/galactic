@@ -3,8 +3,8 @@ use galactic_domain::{
 };
 
 use crate::{
-    AuthorizationError, BuildingKind, CraftableId, FleetComposition, MissionOrder, MissionTarget,
-    StrategicTick, TechnologyId, TimeSpeed,
+    AuthorizationError, BuildingKind, CombatDoctrineId, CraftableId, FleetComposition,
+    MissionOrder, MissionTarget, StrategicTick, TechnologyId, TimeSpeed,
 };
 
 /// An action requested from the deterministic simulation.
@@ -80,6 +80,20 @@ pub enum GameAction {
     },
     LaunchMission(MissionOrder),
     CancelMission {
+        mission_id: MissionId,
+    },
+    /// Resolves exactly one tactical round for a pending combat's attacker
+    /// side. `round` must match the combat's next round (doc §10: rejects a
+    /// stale or double-submitted command).
+    ChooseCombatDoctrine {
+        mission_id: MissionId,
+        round: u16,
+        doctrine: CombatDoctrineId,
+    },
+    RetreatFromCombat {
+        mission_id: MissionId,
+    },
+    AutoResolveCombat {
         mission_id: MissionId,
     },
     /// Temporary validation action until the probe mission loop is added.

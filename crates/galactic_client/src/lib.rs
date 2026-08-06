@@ -25,6 +25,7 @@ use presentation::colony_management_ui::{
     update_colony_management_queue, update_colony_management_resources,
     update_colony_management_visibility,
 };
+use presentation::combat_autopilot::auto_resolve_pending_combats;
 use presentation::components::{
     ColonyManagementState, DebugOverlayState, HelpUiState, InspectorContent, InspectorSection,
     InspectorTabBarRoot, InspectorTabButton, InspectorTabButtonQuery, InspectorTabLabelQuery,
@@ -340,7 +341,13 @@ impl Plugin for SimulationBridgePlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             Update,
-            (handle_simulation_input, handle_view_input, tick_simulation).chain(),
+            (
+                handle_simulation_input,
+                handle_view_input,
+                tick_simulation,
+                auto_resolve_pending_combats,
+            )
+                .chain(),
         );
     }
 }

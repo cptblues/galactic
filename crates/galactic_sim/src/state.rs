@@ -8,7 +8,7 @@ use crate::{
     BuildingLevels, ColonyFoundation, CombatReport, ConstructionQueue, CraftInventory, CraftQueue,
     DiplomacyError, DiplomacyState, DiplomaticRelation, DiscoveryFrontier, ExtractionSiteState,
     FleetState, KnowledgeChange, KnowledgeCounts, KnowledgeLevel, KnowledgeTarget, MissionReport,
-    MissionState, PlanetAnalysisReport, PlanetKnowledge, PlanetResourceProfile,
+    MissionState, PendingCombat, PlanetAnalysisReport, PlanetKnowledge, PlanetResourceProfile,
     PlanetaryIntelligenceReport, PlanetaryPresence, ProductionRemainder, ResearchState,
     SelectionTarget, StartingScenario, StartingScenarioError, StrategicClock, StrategicTick,
     SystemKnowledge, UniverseRepository, generate_extraction_sites,
@@ -65,6 +65,7 @@ pub struct GameState {
     pub next_mission_id: u64,
     pub mission_reports: Vec<MissionReport>,
     pub combat_reports: Vec<CombatReport>,
+    pub pending_combats: Vec<PendingCombat>,
     pub colony_foundations: Vec<ColonyFoundation>,
     pub planet_analysis_reports: Vec<PlanetAnalysisReport>,
     pub extraction_sites: Vec<ExtractionSiteState>,
@@ -141,6 +142,7 @@ impl GameState {
             next_mission_id: 0,
             mission_reports: Vec::new(),
             combat_reports: Vec::new(),
+            pending_combats: Vec::new(),
             colony_foundations: Vec::new(),
             planet_analysis_reports: Vec::new(),
             extraction_sites: generate_extraction_sites(universe),
@@ -323,6 +325,22 @@ impl GameState {
             .iter()
             .filter(|report| report.planet_id == planet_id)
             .max_by_key(|report| (report.resolved_at, report.mission_id))
+    }
+
+    // Consumed by combat/session.rs's command handlers, wired in starting
+    // COMBAT-001-C's re-entrancy step.
+    #[allow(dead_code)]
+    pub fn pending_combat(&self, mission_id: MissionId) -> Option<&PendingCombat> {
+        self.pending_combats
+            .iter()
+            .find(|pending| pending.mission_id == mission_id)
+    }
+
+    #[allow(dead_code)]
+    pub fn pending_combat_mut(&mut self, mission_id: MissionId) -> Option<&mut PendingCombat> {
+        self.pending_combats
+            .iter_mut()
+            .find(|pending| pending.mission_id == mission_id)
     }
 
     pub fn colony_foundation_on_planet(&self, planet_id: PlanetId) -> Option<&ColonyFoundation> {

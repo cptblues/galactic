@@ -146,6 +146,7 @@ pub fn restore_from_snapshot(save: &SaveGame) -> Result<Simulation, SaveError> {
         next_mission_id: save.state.next_mission_id,
         mission_reports: save.state.mission_reports.clone(),
         combat_reports: save.state.combat_reports.clone(),
+        pending_combats: save.state.pending_combats.clone(),
         colony_foundations: save.state.colony_foundations.clone(),
         planet_analysis_reports: save.state.planet_analysis_reports.clone(),
         extraction_sites: save.state.extraction_sites.clone(),

@@ -1,5 +1,5 @@
 (
-    version: 4,
+    version: 5,
     maximum_rounds: 12,
     damage_scale: 1000,
     defense_weight_per_mille: 500,
@@ -60,5 +60,12 @@
         balanced_engagement_base_score: 10,
         repetition_avoidance_penalty: 50,
         repetition_avoidance_threshold: 2,
+    ),
+    // COMBAT-001-C: one-time damage penalty applied when a side retreats
+    // (GameCommand::RetreatFromCombat), on top of the always-zero salvage a
+    // retreat recovers. Reuses the normal round-damage pipeline, scaled down.
+    retreat: (
+        version: 1,
+        penalty_per_mille: 300,
     ),
 )

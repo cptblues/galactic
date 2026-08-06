@@ -89,8 +89,16 @@ pub fn launch_attack_mission(
     Ok((created, launched))
 }
 
-pub(crate) fn validate_attack_result(mission: &MissionState) -> Result<(), MissionStateError> {
+pub(crate) fn validate_attack_result(
+    mission: &MissionState,
+    has_pending_combat: bool,
+) -> Result<(), MissionStateError> {
     match (mission.phase, mission.result) {
+        // COMBAT-001-C: an attack mission legitimately sits at `OnSite` with
+        // no result yet while a `PendingCombat` awaits a decision — the
+        // caller (`reconstruction.rs`) checks that this pairing is exactly
+        // right (a pending combat exists iff the mission needs one).
+        (MissionPhase::OnSite, None) if has_pending_combat => Ok(()),
         (
             MissionPhase::OnSite
             | MissionPhase::Returning

@@ -28,15 +28,19 @@ pub(crate) mod tests {
         ColonyId, ExtractionSiteId, MissionId, Owner, PlanetId, ResourceStock, UniverseConfig,
     };
     use galactic_sim::{
-        BuildingKind, CraftableId, FleetComposition, GAME_STATE_VERSION, GameAction,
-        KnowledgeLevel, MissionKind, MissionOrder, MissionPhase, MissionResult, MissionTarget,
-        PlanetaryIntelPrecision, ResearchState, ShipStack, SimulationBuildError, StrategicTick,
-        TechnologyId, default_building_catalog,
+        BuildingKind, CombatDoctrineId, CraftableId, FleetComposition, GAME_STATE_VERSION,
+        GameAction, KnowledgeLevel, MissionKind, MissionOrder, MissionPhase, MissionResult,
+        MissionTarget, PlanetaryIntelPrecision, ResearchState, ShipStack, SimulationBuildError,
+        StrategicTick, TechnologyId, default_building_catalog,
     };
 
     use super::*;
 
     fn simulation_with_launched_attack() -> (Simulation, PlanetId) {
+        simulation_with_launched_attack_using(3)
+    }
+
+    fn simulation_with_launched_attack_using(ship_count: u64) -> (Simulation, PlanetId) {
         let mut simulation = Simulation::new(UniverseConfig::mvp());
         let actor = simulation.state().player_faction;
         let colony_id = simulation.state().colonies[0].id;
@@ -103,7 +107,7 @@ pub(crate) mod tests {
             simulation.state().planet_knowledge_level(target),
             KnowledgeLevel::Analyzed
         );
-        for _ in 0..3 {
+        for _ in 0..ship_count {
             simulation.apply_player_action(GameAction::QueueCraft {
                 colony_id,
                 craftable: CraftableId::FRIGATE_BULWARK,
@@ -115,7 +119,7 @@ pub(crate) mod tests {
             simulation.state().colonies[0]
                 .inventory
                 .quantity(CraftableId::FRIGATE_BULWARK),
-            3
+            ship_count
         );
         simulation.apply_player_action(GameAction::LaunchAttack {
             colony_id,
@@ -544,6 +548,17 @@ pub(crate) mod tests {
         assert_eq!(restored.state(), uninterrupted.state());
         uninterrupted.advance(Duration::from_secs(120));
         restored.advance(Duration::from_secs(120));
+        assert_eq!(restored.state(), uninterrupted.state());
+
+        // COMBAT-001-C: arrival now opens a pending combat instead of
+        // resolving synchronously — auto-resolve it identically on both
+        // sessions (mirroring what the client's temporary auto-pilot bridge
+        // does for every real player) before asserting they stay identical.
+        let mission_id = uninterrupted.state().missions[0].id;
+        uninterrupted.apply_player_action(GameAction::AutoResolveCombat { mission_id });
+        restored.apply_player_action(GameAction::AutoResolveCombat { mission_id });
+        uninterrupted.advance(Duration::from_secs(120));
+        restored.advance(Duration::from_secs(120));
 
         assert_eq!(restored.state(), uninterrupted.state());
         assert_eq!(restored.state().combat_reports.len(), 1);
@@ -555,6 +570,95 @@ pub(crate) mod tests {
         assert_eq!(
             reloaded.state().combat_reports,
             restored.state().combat_reports
+        );
+    }
+
+    #[test]
+    fn pending_combats_default_to_empty_when_absent_from_an_older_save() {
+        // COMBAT-001-C: `pending_combats` is a purely additive field — an
+        // older save file (pre-C) simply never had it. Strip it out of a
+        // real, freshly-serialized save (mirrors file.rs's synthetic
+        // `additive_field_migration_defaults_when_absent_from_an_older_file`
+        // test, but against the real `MutableGameSave` shape rather than a
+        // toy struct) and confirm it still deserializes, defaulting to
+        // empty.
+        let simulation = Simulation::new(UniverseConfig::mvp());
+        let save = snapshot_from_simulation(&simulation);
+        assert!(save.state.pending_combats.is_empty());
+        let full_ron = ron::ser::to_string(&save).expect("serializes");
+
+        let field = "pending_combats:";
+        let start = full_ron
+            .find(field)
+            .expect("the field is present in a freshly-serialized save");
+        let end = full_ron[start..]
+            .find(',')
+            .map(|offset| start + offset + 1)
+            .expect("the field is followed by a comma");
+        let mut older_ron = full_ron.clone();
+        older_ron.replace_range(start..end, "");
+        assert_ne!(older_ron, full_ron);
+
+        let migrated: SaveGame =
+            ron::de::from_str(&older_ron).expect("a save missing the field still deserializes");
+        assert!(migrated.state.pending_combats.is_empty());
+    }
+
+    #[test]
+    fn saving_and_reloading_mid_combat_produces_the_same_next_round() {
+        // Doc §20 Scenario F: save mid-combat, close the game, reload, same
+        // groups, same next result. Proven here through a real RON
+        // round-trip (not just an in-memory clone), on both sides of the
+        // reload, to a further round that must match bit for bit. A
+        // 2-frigate attacker (the fixture's default 3-ship fleet otherwise
+        // wins in a single round) keeps the fight close enough to genuinely
+        // span multiple rounds — the whole point of this scenario.
+        let (mut simulation, target) = simulation_with_launched_attack_using(2);
+        simulation.advance(Duration::from_secs(120));
+        let mission_id = simulation.state().missions[0].id;
+        assert_eq!(simulation.state().pending_combats.len(), 1);
+
+        simulation.apply_player_action(GameAction::ChooseCombatDoctrine {
+            mission_id,
+            round: 1,
+            doctrine: CombatDoctrineId::BalancedEngagement,
+        });
+        assert_eq!(
+            simulation
+                .state()
+                .pending_combat(mission_id)
+                .expect("this fixture's target survives at least one round")
+                .planet_id,
+            target
+        );
+
+        let mid_combat = snapshot_from_simulation(&simulation);
+        let mut reloaded =
+            restore_from_snapshot(&mid_combat).expect("a mid-combat save is compatible");
+        assert_eq!(reloaded.state(), simulation.state());
+
+        let uninterrupted_events =
+            simulation.apply_player_action(GameAction::ChooseCombatDoctrine {
+                mission_id,
+                round: 2,
+                doctrine: CombatDoctrineId::DefensiveScreen,
+            });
+        let reloaded_events = reloaded.apply_player_action(GameAction::ChooseCombatDoctrine {
+            mission_id,
+            round: 2,
+            doctrine: CombatDoctrineId::DefensiveScreen,
+        });
+
+        assert_eq!(reloaded.state(), simulation.state());
+        assert_eq!(
+            uninterrupted_events
+                .iter()
+                .map(|event| event.kind)
+                .collect::<Vec<_>>(),
+            reloaded_events
+                .iter()
+                .map(|event| event.kind)
+                .collect::<Vec<_>>(),
         );
     }
 

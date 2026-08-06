@@ -195,10 +195,6 @@ pub(crate) struct CombatRoundRecord {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CombatEngineError {
-    /// A combat with a retreated side cannot be finalized into a
-    /// `CombatOutcome` in COMBAT-001-A — mapping retreat onto an outcome is a
-    /// COMBAT-001-C concern (it interacts with missions/reports).
-    CannotFinalizeRetreatedState,
     RoundAlreadyCompleted,
 }
 
@@ -410,17 +406,23 @@ pub(crate) fn finalize_fleet_combat(
     attacker_cargo_capacity: u64,
     rules: &CombatRules,
 ) -> Result<super::CombatResolution, CombatEngineError> {
-    if state.attacker.retreated || state.defender.retreated {
-        return Err(CombatEngineError::CannotFinalizeRetreatedState);
-    }
-
     let attacker_alive = state.attacker.has_operational_stack();
     let defender_alive = state.defender.has_operational_stack();
-    let outcome = match (attacker_alive, defender_alive) {
-        (true, false) => super::CombatOutcome::AttackerVictory,
-        (false, true) => super::CombatOutcome::DefenderVictory,
-        (false, false) => super::CombatOutcome::MutualDestruction,
-        (true, true) => super::CombatOutcome::Stalemate,
+    let outcome = if state.attacker.retreated {
+        super::CombatOutcome::Retreat {
+            retreating_side: super::RetreatingSide::Attacker,
+        }
+    } else if state.defender.retreated {
+        super::CombatOutcome::Retreat {
+            retreating_side: super::RetreatingSide::Defender,
+        }
+    } else {
+        match (attacker_alive, defender_alive) {
+            (true, false) => super::CombatOutcome::AttackerVictory,
+            (false, true) => super::CombatOutcome::DefenderVictory,
+            (false, false) => super::CombatOutcome::MutualDestruction,
+            (true, true) => super::CombatOutcome::Stalemate,
+        }
     };
 
     let attacker_survivors = ship_survivors(&state.attacker.stacks);
@@ -433,12 +435,17 @@ pub(crate) fn finalize_fleet_combat(
     });
     let salvage_recoverable =
         super::multiply_stock(rules.salvage_per_destroyed_defender, destroyed_defenders);
-    let salvage_recovered =
-        if outcome == super::CombatOutcome::AttackerVictory && !attacker_survivors.is_empty() {
-            super::cap_salvage(salvage_recoverable, attacker_cargo, attacker_cargo_capacity)
-        } else {
-            galactic_domain::ResourceStock::ZERO
-        };
+    // A retreat never recovers salvage (doc §16: "ne récupère pas
+    // nécessairement tout le butin") — combined with the deterministic
+    // damage penalty already applied by `rounds::apply_retreat_penalty`
+    // before this state was marked retreated, retreating has a real cost.
+    let salvage_recovered = if matches!(outcome, super::CombatOutcome::Retreat { .. }) {
+        galactic_domain::ResourceStock::ZERO
+    } else if outcome == super::CombatOutcome::AttackerVictory && !attacker_survivors.is_empty() {
+        super::cap_salvage(salvage_recoverable, attacker_cargo, attacker_cargo_capacity)
+    } else {
+        galactic_domain::ResourceStock::ZERO
+    };
 
     let control = if outcome == super::CombatOutcome::AttackerVictory {
         super::CombatControlChange::Secured {
@@ -762,15 +769,51 @@ mod tests {
     }
 
     #[test]
-    fn finalize_rejects_a_retreated_combat() {
-        let mut state = prepared();
-        state.attacker.retreated = true;
-        state.phase = FleetCombatPhase::Completed;
-
+    fn finalize_produces_a_retreat_outcome_for_the_retreating_side() {
+        let mut attacker_retreated = prepared();
+        attacker_retreated.attacker.retreated = true;
+        attacker_retreated.phase = FleetCombatPhase::Completed;
+        let resolution = finalize_fleet_combat(
+            &attacker_retreated,
+            ResourceStock::ZERO,
+            1_000,
+            combat_rules(),
+        )
+        .expect("a retreated state finalizes");
         assert_eq!(
-            finalize_fleet_combat(&state, ResourceStock::ZERO, 1_000, combat_rules()),
-            Err(CombatEngineError::CannotFinalizeRetreatedState)
+            resolution.outcome,
+            super::super::CombatOutcome::Retreat {
+                retreating_side: super::super::RetreatingSide::Attacker,
+            }
         );
+        assert_eq!(
+            resolution.control,
+            super::super::CombatControlChange::Unchanged
+        );
+        assert!(resolution.salvage_recovered.is_zero());
+        assert!(!resolution.attacker_survivors.is_empty());
+
+        let mut defender_retreated = prepared();
+        defender_retreated.defender.retreated = true;
+        defender_retreated.phase = FleetCombatPhase::Completed;
+        let resolution = finalize_fleet_combat(
+            &defender_retreated,
+            ResourceStock::ZERO,
+            1_000,
+            combat_rules(),
+        )
+        .expect("a retreated state finalizes");
+        assert_eq!(
+            resolution.outcome,
+            super::super::CombatOutcome::Retreat {
+                retreating_side: super::super::RetreatingSide::Defender,
+            }
+        );
+        assert_eq!(
+            resolution.control,
+            super::super::CombatControlChange::Unchanged
+        );
+        assert!(resolution.salvage_recovered.is_zero());
     }
 
     #[test]

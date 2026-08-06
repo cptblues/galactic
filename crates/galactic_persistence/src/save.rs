@@ -5,10 +5,10 @@ use galactic_domain::{
 use galactic_sim::{
     BuildingLevels, CombatReport, ConstructionQueue, CraftInventory, CraftQueue, DiplomacyState,
     ExtractionSiteState, FactionKind, FleetAssignment, FleetComposition, FleetLocation,
-    MissionReport, MissionState, PlanetAnalysisReport, PlanetKnowledge, PlanetResourceProfile,
-    PlanetaryIntelligenceReport, PlanetaryPresence, ProductionRemainderError, ResearchState,
-    SelectionTarget, SimulationBuildError, StrategicClockError, StrategicTick, SystemKnowledge,
-    TimeSpeed,
+    MissionReport, MissionState, PendingCombat, PlanetAnalysisReport, PlanetKnowledge,
+    PlanetResourceProfile, PlanetaryIntelligenceReport, PlanetaryPresence,
+    ProductionRemainderError, ResearchState, SelectionTarget, SimulationBuildError,
+    StrategicClockError, StrategicTick, SystemKnowledge, TimeSpeed,
 };
 
 /// Version 29 persists A6 combat roles and per-ship combat snapshots.
@@ -53,6 +53,8 @@ pub struct MutableGameSave {
     pub next_mission_id: u64,
     pub mission_reports: Vec<MissionReport>,
     pub combat_reports: Vec<CombatReport>,
+    #[serde(default)]
+    pub pending_combats: Vec<PendingCombat>,
     pub colony_foundations: Vec<galactic_sim::ColonyFoundation>,
     pub planet_analysis_reports: Vec<PlanetAnalysisReport>,
     pub extraction_sites: Vec<ExtractionSiteState>,

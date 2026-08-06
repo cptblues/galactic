@@ -16,6 +16,7 @@
 
 use super::doctrine::CombatTacticsRules;
 use super::intel::apply_round_intel_gain;
+use super::retreat::CombatRetreatRules;
 use super::state::{
     CombatEngineError, CombatRoundEvent, CombatRoundRecord, CombatSide, CombatSideState,
     CombatStackId, CombatStackLoss, CombatStackState, CombatTacticalRole, FleetCombatPhase,
@@ -550,6 +551,44 @@ pub(crate) fn apply_round_resolution(
     };
 
     Ok(())
+}
+
+/// One-time damage applied to the retreating side as it disengages — doc
+/// §16's "pénalité configurable" made concrete as a single deterministic
+/// damage instance, reusing the same offense/hull-scaling pipeline as a
+/// normal round's `side_damage`, minus the doctrine-specific multipliers
+/// (repetition/counter — retreating isn't a doctrine choice) and the seeded
+/// variance (a flat, predictable cost is the point, not another random
+/// draw). Not counted as a round: `state.round` is left untouched, keeping
+/// "the code must never assume a fixed round count" (§16) true here too.
+/// Returns the resulting losses for the caller (`combat/session.rs`) to
+/// fold into whatever report/record it builds.
+#[allow(dead_code)] // wired into combat/session.rs's retreat orchestration, starting COMBAT-001-C's session step
+pub(crate) fn apply_retreat_penalty(
+    state: &mut FleetCombatState,
+    retreating_side: CombatSide,
+    rules: &CombatRules,
+    retreat_rules: &CombatRetreatRules,
+) -> Vec<CombatStackLoss> {
+    let (retreating_stacks, opposing_stacks) = match retreating_side {
+        CombatSide::Attacker => (&state.attacker.stacks, &state.defender.stacks),
+        CombatSide::Defender => (&state.defender.stacks, &state.attacker.stacks),
+    };
+    let (current_hull, maximum_hull) = side_hull_totals(retreating_stacks);
+    let offense = offense_pool(opposing_stacks, retreating_stacks);
+    let base_power = scaled_power(offense, current_hull, maximum_hull);
+    let scaled = base_power.saturating_mul(u128::from(rules.damage_scale));
+    let total_damage = apply_per_mille(scaled, retreat_rules.penalty_per_mille());
+
+    let weights: Vec<u128> = retreating_stacks.iter().map(base_weight).collect();
+    let updates = allocate_damage(retreating_stacks, &weights, total_damage);
+    let losses = losses_from_updates(retreating_stacks, &updates);
+
+    match retreating_side {
+        CombatSide::Attacker => apply_stack_updates(&mut state.attacker, &updates),
+        CombatSide::Defender => apply_stack_updates(&mut state.defender, &updates),
+    }
+    losses
 }
 
 #[cfg(test)]
@@ -1089,5 +1128,48 @@ mod tests {
             apply_round_resolution(&mut state, second_resolution),
             Err(CombatEngineError::RoundAlreadyCompleted)
         );
+    }
+
+    #[test]
+    fn retreat_penalty_damages_the_retreating_side_and_returns_matching_losses() {
+        let mut state = fixture_state();
+        let before_hull = state.attacker.stacks[0].current_hull;
+
+        let losses = apply_retreat_penalty(
+            &mut state,
+            CombatSide::Attacker,
+            combat_rules(),
+            combat_rules().retreat(),
+        );
+
+        assert!(state.attacker.stacks[0].current_hull < before_hull);
+        // The defender is untouched by an attacker retreat penalty.
+        assert_eq!(
+            state.defender.stacks[0].current_hull,
+            state.defender.stacks[0].maximum_hull
+        );
+        // The round counter is not consumed by a retreat penalty (doc §16:
+        // never assume a fixed round count).
+        assert_eq!(state.round, 0);
+        for loss in losses {
+            assert_eq!(loss.stack_id, state.attacker.stacks[0].stack_id);
+        }
+    }
+
+    #[test]
+    fn a_zero_retreat_penalty_deals_no_damage() {
+        let mut state = fixture_state();
+        let before_hull = state.attacker.stacks[0].current_hull;
+        let zero_penalty = CombatRetreatRules::for_tests(0);
+
+        let losses = apply_retreat_penalty(
+            &mut state,
+            CombatSide::Attacker,
+            combat_rules(),
+            &zero_penalty,
+        );
+
+        assert_eq!(state.attacker.stacks[0].current_hull, before_hull);
+        assert!(losses.is_empty());
     }
 }

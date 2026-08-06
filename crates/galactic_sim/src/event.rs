@@ -2,14 +2,16 @@ use galactic_domain::{ColonyId, FactionId, PlanetId, SystemId};
 
 use crate::{
     ColonyEstablished, ColonyFoundation, ColonyProductionReport, ColonySelectionRejected,
-    CommandRejection, ConstructionCancellationRejected, ConstructionCancelled,
-    ConstructionCompleted, ConstructionQueued, ConstructionRejected, CraftCancellationRejected,
-    CraftCancelled, CraftCompleted, CraftQueued, CraftRejected, FleetCreated,
-    FleetCreationRejected, FleetDisbandRejected, FleetDisbanded, FleetRenameRejected, FleetRenamed,
-    KnowledgeChange, MissionCancellationRejected, MissionLaunchRejected, MissionLaunched,
-    MissionReport, MissionResolution, MissionTransition, PlanetAnalysisRejected,
-    PlanetAnalysisReport, ResearchCancellationRejected, ResearchCancelled, ResearchCompleted,
-    ResearchQueued, ResearchRejected, StrategicDuration, StrategicTick, TimeSpeed,
+    CombatAutoResolveRejected, CombatCompleted, CombatDecisionRequired, CombatDoctrineRejected,
+    CombatIntelUpdated, CombatRetreatRejected, CombatRoundResolved, CommandRejection,
+    ConstructionCancellationRejected, ConstructionCancelled, ConstructionCompleted,
+    ConstructionQueued, ConstructionRejected, CraftCancellationRejected, CraftCancelled,
+    CraftCompleted, CraftQueued, CraftRejected, FleetCreated, FleetCreationRejected,
+    FleetDisbandRejected, FleetDisbanded, FleetRenameRejected, FleetRenamed, KnowledgeChange,
+    MissionCancellationRejected, MissionLaunchRejected, MissionLaunched, MissionReport,
+    MissionResolution, MissionTransition, PlanetAnalysisRejected, PlanetAnalysisReport,
+    ResearchCancellationRejected, ResearchCancelled, ResearchCompleted, ResearchQueued,
+    ResearchRejected, StrategicDuration, StrategicTick, TimeSpeed,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -89,4 +91,11 @@ pub enum GameEventKind {
     ColonyEstablished(ColonyEstablished),
     MissionReported(MissionReport),
     MissionCancellationRejected(MissionCancellationRejected),
+    CombatDecisionRequired(CombatDecisionRequired),
+    CombatRoundResolved(CombatRoundResolved),
+    CombatIntelUpdated(CombatIntelUpdated),
+    CombatCompleted(CombatCompleted),
+    CombatDoctrineRejected(CombatDoctrineRejected),
+    CombatRetreatRejected(CombatRetreatRejected),
+    CombatAutoResolveRejected(CombatAutoResolveRejected),
 }

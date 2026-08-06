@@ -731,6 +731,12 @@ pub(crate) const fn combat_outcome_label(outcome: CombatOutcome) -> &'static str
         CombatOutcome::DefenderVictory => "victoire défensive",
         CombatOutcome::Stalemate => "affrontement indécis",
         CombatOutcome::MutualDestruction => "destruction mutuelle",
+        CombatOutcome::Retreat {
+            retreating_side: galactic_sim::RetreatingSide::Attacker,
+        } => "repli attaquant",
+        CombatOutcome::Retreat {
+            retreating_side: galactic_sim::RetreatingSide::Defender,
+        } => "repli défensif",
     }
 }
 

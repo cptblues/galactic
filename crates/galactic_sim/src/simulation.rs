@@ -4,13 +4,16 @@ use std::time::Duration;
 use galactic_domain::{UniverseConfig, UniverseDefinition};
 
 use crate::{
-    ColonySelectionRejected, CommandRejection, GameAction, GameCommand, GameEvent, GameEventKind,
-    GameState, MissionEngineEvent, SelectionTarget, StartingScenario, StrategicDuration,
-    UniverseRepository, advance_colony_construction, advance_colony_craft, advance_missions,
-    advance_research, cancel_construction, cancel_craft, cancel_mission, cancel_research,
-    disband_fleet, enqueue_building_upgrade, enqueue_craft, enqueue_research, form_fleet,
-    launch_attack_mission, launch_colonization_mission, launch_harvest_mission, launch_mission,
-    launch_probe_mission, launch_transport_mission, queue_colony_production, rename_fleet,
+    ColonySelectionRejected, CombatAutoResolveRejected, CombatCompleted, CombatDecisionRequired,
+    CombatDoctrineRejected, CombatIntelUpdated, CombatRetreatRejected, CombatRoundResolved,
+    CommandRejection, GameAction, GameCommand, GameEvent, GameEventKind, GameState,
+    MissionEngineEvent, SelectionTarget, StartingScenario, StrategicDuration, UniverseRepository,
+    advance_colony_construction, advance_colony_craft, advance_missions, advance_research,
+    auto_resolve_combat, cancel_construction, cancel_craft, cancel_mission, cancel_research,
+    choose_combat_doctrine, disband_fleet, enqueue_building_upgrade, enqueue_craft,
+    enqueue_research, form_fleet, launch_attack_mission, launch_colonization_mission,
+    launch_harvest_mission, launch_mission, launch_probe_mission, launch_transport_mission,
+    queue_colony_production, rename_fleet, retreat_from_combat,
 };
 
 mod build_error;
@@ -333,6 +336,62 @@ impl Simulation {
                     )],
                 }
             }
+            GameAction::ChooseCombatDoctrine {
+                mission_id,
+                round,
+                doctrine,
+            } => match choose_combat_doctrine(&mut self.state, issuer, mission_id, round, doctrine)
+            {
+                Ok(outcome) => {
+                    let mut kinds = vec![GameEventKind::CombatRoundResolved(CombatRoundResolved {
+                        mission_id,
+                        round: outcome.round,
+                    })];
+                    if outcome.intel_after != outcome.intel_before {
+                        kinds.push(GameEventKind::CombatIntelUpdated(CombatIntelUpdated {
+                            mission_id,
+                            intel_percent: outcome.intel_after,
+                        }));
+                    }
+                    if let Some(result) = outcome.completed {
+                        kinds.push(GameEventKind::CombatCompleted(CombatCompleted {
+                            mission_id,
+                            result,
+                        }));
+                    }
+                    kinds
+                }
+                Err(error) => vec![GameEventKind::CombatDoctrineRejected(
+                    CombatDoctrineRejected {
+                        mission_id,
+                        round,
+                        doctrine,
+                        error,
+                    },
+                )],
+            },
+            GameAction::RetreatFromCombat { mission_id } => {
+                match retreat_from_combat(&mut self.state, issuer, mission_id) {
+                    Ok(result) => vec![GameEventKind::CombatCompleted(CombatCompleted {
+                        mission_id,
+                        result,
+                    })],
+                    Err(error) => vec![GameEventKind::CombatRetreatRejected(
+                        CombatRetreatRejected { mission_id, error },
+                    )],
+                }
+            }
+            GameAction::AutoResolveCombat { mission_id } => {
+                match auto_resolve_combat(&mut self.state, issuer, mission_id) {
+                    Ok(result) => vec![GameEventKind::CombatCompleted(CombatCompleted {
+                        mission_id,
+                        result,
+                    })],
+                    Err(error) => vec![GameEventKind::CombatAutoResolveRejected(
+                        CombatAutoResolveRejected { mission_id, error },
+                    )],
+                }
+            }
             GameAction::DebugAdvanceSelectedKnowledge => self.debug_advance_selected_knowledge(),
         };
         let occurred_at = self.state.clock.current_tick();
@@ -452,6 +511,20 @@ impl Simulation {
                     colony.established_at,
                     GameEventKind::ColonyEstablished(colony),
                 )),
+                MissionEngineEvent::CombatPending {
+                    recipient,
+                    mission_id,
+                    planet_id,
+                    round,
+                } => events.push(GameEvent::new(
+                    recipient,
+                    advance.current_tick,
+                    GameEventKind::CombatDecisionRequired(CombatDecisionRequired {
+                        mission_id,
+                        planet_id,
+                        round,
+                    }),
+                )),
             }
         }
         events
@@ -478,16 +551,85 @@ impl Simulation {
 #[cfg(test)]
 mod tests {
     use galactic_domain::{
-        ColonyId, FactionId, Owner, PlanetId, ResourceLedger, ResourceStock, SystemId,
+        ColonyId, FactionId, MissionId, Owner, PlanetId, ResourceLedger, ResourceStock, SystemId,
         UniverseConfig,
     };
 
     use crate::{
-        AuthorizationError, BuildingKind, ColonySelectionError, KnowledgeLevel, KnowledgeTarget,
-        TechnologyId, TimeSpeed, default_building_catalog,
+        AuthorizationError, BuildingKind, ColonySelectionError, CraftableId, GameAction,
+        KnowledgeLevel, KnowledgeTarget, MissionPhase, MissionResult, MissionTarget, TechnologyId,
+        TimeSpeed, default_building_catalog,
     };
 
     use super::*;
+
+    fn simulation_with_pending_combat() -> (Simulation, MissionId) {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+        let actor = simulation.state().player_faction;
+        let origin = simulation.state().colonies[0].system_id;
+        let neighboring_systems = simulation
+            .universe_repository()
+            .neighboring_systems(origin)
+            .to_vec();
+        let target = simulation
+            .state()
+            .planetary_presences
+            .iter()
+            .find(|presence| {
+                neighboring_systems.contains(&presence.planet_id.system_id())
+                    && presence.occupant != Owner::Faction(actor)
+                    && presence.occupant != Owner::Unowned
+                    && !presence.forces.is_empty()
+            })
+            .expect("the home neighborhood guarantees a hostile outpost")
+            .planet_id;
+        let repository = simulation.universe_repository().clone();
+        simulation.state_mut().advance_system_knowledge(
+            &repository,
+            target.system_id(),
+            KnowledgeLevel::Probed,
+        );
+        simulation.state_mut().advance_planet_knowledge(
+            &repository,
+            target,
+            KnowledgeLevel::Analyzed,
+        );
+        let precision = crate::intelligence_precision_for_knowledge(KnowledgeLevel::Analyzed)
+            .expect("Analyzed knowledge always maps to an intelligence precision");
+        let current_tick = simulation.state().clock.current_tick();
+        crate::refresh_planetary_intelligence(
+            simulation.state_mut(),
+            target,
+            precision,
+            current_tick,
+        )
+        .expect("the target planet has a validated planetary presence");
+        let (system_id, planet) = repository
+            .planet_location(target)
+            .expect("the target planet exists in the generated universe");
+        let report = crate::build_planet_analysis_report(
+            planet,
+            system_id,
+            simulation.state().clock.current_tick(),
+            crate::planetary_analysis_rules(),
+        );
+        simulation.state_mut().planet_analysis_reports.push(report);
+        simulation.state_mut().colonies[0]
+            .inventory
+            .add(CraftableId::FRIGATE_BULWARK, 3);
+        let colony_id = simulation.state().colonies[0].id;
+        simulation.apply_player_action(GameAction::LaunchAttack {
+            colony_id,
+            target: MissionTarget::Planet {
+                system_id: target.system_id(),
+                planet_id: target,
+            },
+        });
+        let mission_id = simulation.state().missions[0].id;
+        simulation.advance(Duration::from_secs(120));
+        assert_eq!(simulation.state().pending_combats.len(), 1);
+        (simulation, mission_id)
+    }
 
     fn advance_in_equal_frames(
         simulation: &mut Simulation,
@@ -1032,6 +1174,113 @@ mod tests {
         assert!(matches!(
             Simulation::from_parts(universe, state),
             Err(SimulationBuildError::ColonyPlanetNotColonized { .. })
+        ));
+    }
+
+    #[test]
+    fn reconstruction_rejects_a_duplicated_pending_combat() {
+        let (simulation, _mission_id) = simulation_with_pending_combat();
+        let universe = simulation.universe().clone();
+        let mut state = simulation.state().clone();
+        let duplicate = state.pending_combats[0].clone();
+        state.pending_combats.push(duplicate);
+
+        assert!(matches!(
+            Simulation::from_parts(universe, state),
+            Err(SimulationBuildError::DuplicatePendingCombat(_))
+        ));
+    }
+
+    #[test]
+    fn reconstruction_rejects_a_pending_combat_without_its_mission() {
+        let (simulation, mission_id) = simulation_with_pending_combat();
+        let universe = simulation.universe().clone();
+        let mut state = simulation.state().clone();
+        let fleet_id = state
+            .mission(mission_id)
+            .expect("the mission exists")
+            .order
+            .fleet_id;
+        state.missions.retain(|mission| mission.id != mission_id);
+        state.fleets.retain(|fleet| fleet.id != fleet_id);
+
+        assert!(matches!(
+            Simulation::from_parts(universe, state),
+            Err(SimulationBuildError::PendingCombatWithoutMission(_))
+        ));
+    }
+
+    #[test]
+    fn reconstruction_rejects_a_pending_combat_on_a_terminal_mission() {
+        let (simulation, mission_id) = simulation_with_pending_combat();
+        let universe = simulation.universe().clone();
+        let mut state = simulation.state().clone();
+        // Satisfy every *other* validation layer (a matching `MissionResult`
+        // and `CombatReport`) so only the new "pending combat on a terminal
+        // mission" invariant is under test — this scenario is otherwise
+        // unreachable through the real engine (finalizing a combat always
+        // removes its `PendingCombat` entry in the same atomic step that
+        // sets `mission.result`), it's a defensive check against corrupted
+        // save data.
+        let pending = state.pending_combats[0].clone();
+        let stalemate = crate::CombatOutcome::Stalemate;
+        let result = crate::AttackMissionResult {
+            target: pending.planet_id,
+            outcome: crate::AttackMissionOutcome::Resolved(stalemate),
+            secured: false,
+            attackers_destroyed: false,
+        };
+        state.combat_reports.push(crate::CombatReport {
+            mission_id,
+            planet_id: pending.planet_id,
+            resolved_at: state.clock.current_tick(),
+            rules_version: crate::combat_rules().version(),
+            seed: pending.seed,
+            attacker: pending.attacker.clone(),
+            defender: pending.defender.clone(),
+            status: crate::CombatReportStatus::Resolved(crate::CombatResolution {
+                outcome: stalemate,
+                rounds: 1,
+                attacker_losses: Vec::new(),
+                attacker_survivors: pending.attacker.ships.clone(),
+                defender_losses: Vec::new(),
+                defender_survivors: pending.defender.forces.clone(),
+                attacker_damage: 0,
+                defender_damage: 0,
+                salvage_recoverable: galactic_domain::ResourceStock::ZERO,
+                salvage_recovered: galactic_domain::ResourceStock::ZERO,
+                control: crate::CombatControlChange::Unchanged,
+            }),
+        });
+        let fleet_id = state
+            .mission(mission_id)
+            .expect("the mission exists")
+            .order
+            .fleet_id;
+        let mission = state.mission_mut(mission_id).expect("the mission exists");
+        mission.phase = MissionPhase::Failed;
+        mission.result = Some(MissionResult::Attack(result));
+        state
+            .fleet_mut(fleet_id)
+            .expect("the fleet exists")
+            .assignment = crate::FleetAssignment::Idle;
+
+        assert!(matches!(
+            Simulation::from_parts(universe, state),
+            Err(SimulationBuildError::PendingCombatForTerminalMission(_))
+        ));
+    }
+
+    #[test]
+    fn reconstruction_rejects_a_pending_combat_round_beyond_the_configured_maximum() {
+        let (simulation, _mission_id) = simulation_with_pending_combat();
+        let universe = simulation.universe().clone();
+        let mut state = simulation.state().clone();
+        state.pending_combats[0].state.round = state.pending_combats[0].state.maximum_rounds + 1;
+
+        assert!(matches!(
+            Simulation::from_parts(universe, state),
+            Err(SimulationBuildError::PendingCombatRoundExceedsMaximum(_))
         ));
     }
 }

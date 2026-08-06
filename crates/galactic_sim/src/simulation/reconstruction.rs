@@ -304,7 +304,11 @@ pub(crate) fn validate_state(
                 existing_mission_id: mission.id,
             });
         }
-        if let Err(error) = validate_mission_state(mission, universe) {
+        let has_pending_combat = state
+            .pending_combats
+            .iter()
+            .any(|pending| pending.mission_id == mission.id);
+        if let Err(error) = validate_mission_state(mission, universe, has_pending_combat) {
             return Err(SimulationBuildError::InvalidMissionState {
                 mission_id: mission.id,
                 error,
@@ -634,6 +638,45 @@ pub(crate) fn validate_state(
             && !combat_missions.contains(&mission.id)
         {
             return Err(SimulationBuildError::MissingCombatReport(mission.id));
+        }
+    }
+
+    let mut pending_combat_missions = HashSet::with_capacity(state.pending_combats.len());
+    for pending in &state.pending_combats {
+        if !pending_combat_missions.insert(pending.mission_id) {
+            return Err(SimulationBuildError::DuplicatePendingCombat(
+                pending.mission_id,
+            ));
+        }
+        let Some(mission) = state.mission(pending.mission_id) else {
+            return Err(SimulationBuildError::PendingCombatWithoutMission(
+                pending.mission_id,
+            ));
+        };
+        if mission.phase.is_terminal() {
+            return Err(SimulationBuildError::PendingCombatForTerminalMission(
+                pending.mission_id,
+            ));
+        }
+        if pending.is_completed() {
+            return Err(SimulationBuildError::PendingCombatAlreadyCompleted(
+                pending.mission_id,
+            ));
+        }
+        if pending.round() > pending.maximum_rounds() {
+            return Err(SimulationBuildError::PendingCombatRoundExceedsMaximum(
+                pending.mission_id,
+            ));
+        }
+        if !pending.has_unique_stack_ids() {
+            return Err(SimulationBuildError::PendingCombatStackIdCollision(
+                pending.mission_id,
+            ));
+        }
+        if !pending.every_stack_hull_within_bounds() {
+            return Err(SimulationBuildError::PendingCombatHullExceedsMaximum(
+                pending.mission_id,
+            ));
         }
     }
 

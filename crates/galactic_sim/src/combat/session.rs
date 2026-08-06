@@ -1,0 +1,552 @@
+// COMBAT-001-C: pending-combat orchestration layer — the interactive
+// counterpart to `resolve_combat`'s synchronous auto-resolve façade. Calls
+// into `state`/`rounds`/`ai` (never the other way), mirroring how B's
+// `intel`/`ai` modules are pure leaves consumed by `combat.rs`.
+
+use galactic_domain::{FactionId, FleetId, MissionId, PlanetId};
+
+use crate::{AttackMissionResult, AuthorizationError, GameState, StrategicTick};
+use crate::{combat_rules, default_ruleset};
+
+use super::ai::choose_ai_doctrine;
+use super::doctrine::CombatDoctrineId;
+use super::rounds::{apply_retreat_penalty, apply_round_resolution, resolve_combat_round};
+use super::state::{
+    CombatSide, FleetCombatPhase, FleetCombatState, finalize_fleet_combat, retreat_side,
+};
+use super::{
+    AttackMissionCommitment, CombatFleetSnapshot, PlanetDefenseSnapshot, apply_combat_resolution,
+    intel_inputs_from_state, run_combat_to_completion,
+};
+
+/// A tactical combat that has begun (the attacker fleet arrived, the target
+/// was still valid) but has not yet finalized — the persisted, save/load-safe
+/// counterpart to a `FleetCombatState` that used to live only for the
+/// duration of a single `resolve_combat` call. One entry per in-flight
+/// attack mission; several can coexist (doc §11, "plusieurs combats
+/// simultanés").
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PendingCombat {
+    pub mission_id: MissionId,
+    pub planet_id: PlanetId,
+    pub(crate) fleet_id: FleetId,
+    /// Frozen commitment snapshot — reused unchanged at finalization, exactly
+    /// like `resolve_and_apply_attack` already reuses `commitment.attacker`/
+    /// `commitment.defender` today.
+    pub(crate) attacker: CombatFleetSnapshot,
+    pub(crate) defender: PlanetDefenseSnapshot,
+    pub(crate) seed: u64,
+    pub(crate) state: FleetCombatState,
+}
+
+impl PendingCombat {
+    /// Save-integrity accessors for `reconstruction.rs`'s validation pass —
+    /// `combat::state`'s own types (`FleetCombatPhase`, `CombatStackId`) stay
+    /// `pub(crate)` and unreachable outside `combat`'s module tree (the
+    /// `state` submodule path itself is private), so these expose only
+    /// externally-safe primitives instead of widening that boundary.
+    pub(crate) fn round(&self) -> u16 {
+        self.state.round
+    }
+
+    pub(crate) fn maximum_rounds(&self) -> u16 {
+        self.state.maximum_rounds
+    }
+
+    pub(crate) fn is_completed(&self) -> bool {
+        self.state.phase == FleetCombatPhase::Completed
+    }
+
+    /// `true` if every group id on both sides is unique — a corrupted or
+    /// hand-edited save could otherwise collide two groups under one id.
+    pub(crate) fn has_unique_stack_ids(&self) -> bool {
+        let mut seen = std::collections::HashSet::new();
+        self.state
+            .attacker
+            .stacks
+            .iter()
+            .chain(self.state.defender.stacks.iter())
+            .all(|stack| seen.insert(stack.stack_id))
+    }
+
+    /// `true` if every group's current hull sits within its own maximum —
+    /// the same invariant the engine itself maintains every round (A), here
+    /// re-checked defensively against whatever a loaded save actually
+    /// contains.
+    pub(crate) fn every_stack_hull_within_bounds(&self) -> bool {
+        self.state
+            .attacker
+            .stacks
+            .iter()
+            .chain(self.state.defender.stacks.iter())
+            .all(|stack| stack.current_hull <= stack.maximum_hull)
+    }
+}
+
+/// Starts a new pending combat from a validated commitment and pushes it
+/// onto `state.pending_combats`. The caller (`mission.rs`'s
+/// `Outbound → OnSite` handling) has already confirmed the target is still
+/// valid — an invalid target never reaches this function (doc §11: "si la
+/// cible devient invalide avant l'arrivée, aucun écran tactique ne doit être
+/// créé").
+pub(crate) fn begin_pending_combat(
+    state: &mut GameState,
+    mission_id: MissionId,
+    planet_id: PlanetId,
+    fleet_id: FleetId,
+    resolved_at: StrategicTick,
+    commitment: &AttackMissionCommitment,
+) {
+    let (intel_precision, intel_report_age_ticks) =
+        intel_inputs_from_state(state, planet_id, resolved_at);
+    let fleet_combat_state = super::state::prepare_fleet_combat(
+        &commitment.attacker,
+        &commitment.defender,
+        commitment.seed,
+        combat_rules(),
+        default_ruleset().planetary_presence(),
+        intel_precision,
+        intel_report_age_ticks,
+    )
+    .expect("a commitment valid enough to reach begin_pending_combat always prepares successfully");
+    state.pending_combats.push(PendingCombat {
+        mission_id,
+        planet_id,
+        fleet_id,
+        attacker: commitment.attacker.clone(),
+        defender: commitment.defender.clone(),
+        seed: commitment.seed,
+        state: fleet_combat_state,
+    });
+}
+
+/// Every way a `ChooseCombatDoctrine`/`RetreatFromCombat`/`AutoResolveCombat`
+/// command can fail (doc §10's constraints, all in one shared type since the
+/// three commands share the same failure surface): no combat is pending for
+/// that mission (also covers "already finished" — finalizing removes the
+/// entry, replacing the old `CombatApplicationError::AlreadyApplied` guard);
+/// the issuer doesn't control the attacking side; the requested round is
+/// stale (only `ChooseCombatDoctrine` can produce this one).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CombatCommandError {
+    UnknownCombat(MissionId),
+    Access(AuthorizationError),
+    StaleRound { expected: u16, found: u16 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CombatDecisionRequired {
+    pub mission_id: MissionId,
+    pub planet_id: PlanetId,
+    pub round: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CombatRoundResolved {
+    pub mission_id: MissionId,
+    pub round: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CombatIntelUpdated {
+    pub mission_id: MissionId,
+    pub intel_percent: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CombatCompleted {
+    pub mission_id: MissionId,
+    pub result: AttackMissionResult,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CombatDoctrineRejected {
+    pub mission_id: MissionId,
+    pub round: u16,
+    pub doctrine: CombatDoctrineId,
+    pub error: CombatCommandError,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CombatRetreatRejected {
+    pub mission_id: MissionId,
+    pub error: CombatCommandError,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CombatAutoResolveRejected {
+    pub mission_id: MissionId,
+    pub error: CombatCommandError,
+}
+
+/// What `choose_combat_doctrine` produced, in enough detail for the caller
+/// (`Simulation::apply_command`) to build every `GameEventKind` doc §10
+/// expects from a single round: the round just resolved, whether intel moved
+/// (`CombatIntelUpdated` is only emitted when it did), and — if that round
+/// happened to finish the combat — the terminal result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CombatDoctrineOutcome {
+    pub(crate) round: u16,
+    pub(crate) intel_before: u8,
+    pub(crate) intel_after: u8,
+    pub(crate) completed: Option<AttackMissionResult>,
+}
+
+/// Finalizes a `PendingCombat` whose `FleetCombatState` has already reached
+/// `Completed` — the shared tail of all three commands once their engine
+/// work is done. Removes the entry via `apply_combat_resolution`.
+fn finalize_pending_combat(state: &mut GameState, mission_id: MissionId) -> AttackMissionResult {
+    let pending = state
+        .pending_combat(mission_id)
+        .expect("the caller only finalizes a combat it just confirmed is pending")
+        .clone();
+    let rules = combat_rules();
+    let resolution = finalize_fleet_combat(
+        &pending.state,
+        pending.attacker.cargo,
+        pending.attacker.cargo_capacity,
+        rules,
+    )
+    .expect("a completed combat always finalizes");
+    let resolved_at = state.clock.current_tick();
+    let (_, result) = apply_combat_resolution(
+        state,
+        mission_id,
+        resolved_at,
+        pending.fleet_id,
+        pending.planet_id,
+        &pending.attacker,
+        &pending.defender,
+        pending.seed,
+        resolution,
+    )
+    .expect("a validated pending combat always finalizes");
+    result
+}
+
+/// Resolves exactly one round for the player-controlled attacker, mirroring
+/// the shape of every other `apply_command` arm (`Ok` → success event(s),
+/// `Err` → a rejection event). The defender's doctrine still comes from B's
+/// `choose_ai_doctrine` — only the attacker side gains a real player choice
+/// here, doc §11's "aucun choix joueur interactif" gap this ticket closes.
+pub(crate) fn choose_combat_doctrine(
+    state: &mut GameState,
+    actor: FactionId,
+    mission_id: MissionId,
+    round: u16,
+    doctrine: CombatDoctrineId,
+) -> Result<CombatDoctrineOutcome, CombatCommandError> {
+    let rules = combat_rules();
+    let pending = state
+        .pending_combat(mission_id)
+        .ok_or(CombatCommandError::UnknownCombat(mission_id))?;
+    state
+        .authorize_management(actor, pending.attacker.owner)
+        .map_err(CombatCommandError::Access)?;
+    let pending = state.pending_combat(mission_id).expect("checked above");
+    let expected_round = pending.state.round.saturating_add(1);
+    if round != expected_round {
+        return Err(CombatCommandError::StaleRound {
+            expected: expected_round,
+            found: round,
+        });
+    }
+    let intel_before = pending.state.intel_percent;
+    let defender_doctrine = choose_ai_doctrine(
+        &pending.state.defender,
+        &pending.state.attacker,
+        round,
+        rules.ai(),
+    );
+
+    let pending_mut = state.pending_combat_mut(mission_id).expect("checked above");
+    let resolution = resolve_combat_round(
+        &pending_mut.state,
+        doctrine,
+        defender_doctrine,
+        rules,
+        rules.tactics(),
+    )
+    .expect("a pending combat awaiting a doctrine is never already completed");
+    apply_round_resolution(&mut pending_mut.state, resolution)
+        .expect("a pending combat awaiting a doctrine is never already completed");
+
+    let new_round = pending_mut.state.round;
+    let intel_after = pending_mut.state.intel_percent;
+    let is_completed = pending_mut.state.phase == FleetCombatPhase::Completed;
+
+    let completed = is_completed.then(|| finalize_pending_combat(state, mission_id));
+
+    Ok(CombatDoctrineOutcome {
+        round: new_round,
+        intel_before,
+        intel_after,
+        completed,
+    })
+}
+
+/// Retreats the attacker (the only side a real player controls today — see
+/// this module's doc), applying the configured damage penalty before
+/// finalizing (doc §16: retreating "peut subir une pénalité configurable").
+pub(crate) fn retreat_from_combat(
+    state: &mut GameState,
+    actor: FactionId,
+    mission_id: MissionId,
+) -> Result<AttackMissionResult, CombatCommandError> {
+    let rules = combat_rules();
+    let attacker_owner = state
+        .pending_combat(mission_id)
+        .ok_or(CombatCommandError::UnknownCombat(mission_id))?
+        .attacker
+        .owner;
+    state
+        .authorize_management(actor, attacker_owner)
+        .map_err(CombatCommandError::Access)?;
+
+    let pending_mut = state.pending_combat_mut(mission_id).expect("checked above");
+    apply_retreat_penalty(
+        &mut pending_mut.state,
+        CombatSide::Attacker,
+        rules,
+        rules.retreat(),
+    );
+    retreat_side(&mut pending_mut.state, CombatSide::Attacker)
+        .expect("a pending combat is never already completed while a player can still retreat");
+
+    Ok(finalize_pending_combat(state, mission_id))
+}
+
+/// Runs the same engine `resolve_combat` uses (`run_combat_to_completion`,
+/// `combat.rs`) to completion on an already-started `PendingCombat`,
+/// satisfying doc §21's "l'auto-résolution utilise le même moteur" from the
+/// interactive entry point too, not just the legacy synchronous façade.
+pub(crate) fn auto_resolve_combat(
+    state: &mut GameState,
+    actor: FactionId,
+    mission_id: MissionId,
+) -> Result<AttackMissionResult, CombatCommandError> {
+    let rules = combat_rules();
+    let attacker_owner = state
+        .pending_combat(mission_id)
+        .ok_or(CombatCommandError::UnknownCombat(mission_id))?
+        .attacker
+        .owner;
+    state
+        .authorize_management(actor, attacker_owner)
+        .map_err(CombatCommandError::Access)?;
+
+    let pending_mut = state.pending_combat_mut(mission_id).expect("checked above");
+    run_combat_to_completion(&mut pending_mut.state, rules);
+
+    Ok(finalize_pending_combat(state, mission_id))
+}
+
+#[cfg(test)]
+mod tests {
+    use galactic_domain::{ColonyId, FactionId, Owner, ResourceStock, UniverseConfig};
+
+    use super::*;
+    use crate::{
+        CraftableId, FleetComposition, FleetLocation, FleetState, ShipStack, Simulation,
+        prepare_attack_commitment,
+    };
+
+    fn fixture_state_and_commitment() -> (GameState, AttackMissionCommitment) {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+        let target = simulation
+            .state()
+            .planetary_presences
+            .iter()
+            .find(|presence| {
+                presence.occupant == Owner::Faction(FactionId::new(2))
+                    && !presence.forces.is_empty()
+            })
+            .expect("a hostile target exists")
+            .planet_id;
+        let colony_id = ColonyId::new(0);
+        let composition =
+            FleetComposition::from_stacks([ShipStack::new(CraftableId::FRIGATE_BULWARK, 3)])
+                .expect("combat composition");
+        simulation.state_mut().fleets.push(FleetState {
+            id: FleetId::new(0),
+            name: "Force de test".to_string(),
+            owner: Owner::Faction(FactionId::new(0)),
+            location: FleetLocation::Docked(colony_id),
+            composition,
+            cargo: ResourceStock::ZERO,
+            assignment: crate::FleetAssignment::Idle,
+        });
+        simulation.state_mut().next_fleet_id = 1;
+        let commitment = prepare_attack_commitment(simulation.state(), FleetId::new(0), target, 91)
+            .expect("attack snapshot");
+        (simulation.state().clone(), commitment)
+    }
+
+    #[test]
+    fn begin_pending_combat_creates_an_entry_awaiting_the_first_doctrine() {
+        let (mut state, commitment) = fixture_state_and_commitment();
+        let mission_id = MissionId::new(1);
+
+        begin_pending_combat(
+            &mut state,
+            mission_id,
+            commitment.defender.planet_id,
+            commitment.attacker.fleet_id,
+            StrategicTick::ZERO,
+            &commitment,
+        );
+
+        let pending = state.pending_combat(mission_id).expect("just created");
+        assert_eq!(pending.mission_id, mission_id);
+        assert_eq!(pending.planet_id, commitment.defender.planet_id);
+        assert_eq!(pending.state.round, 0);
+        assert_eq!(
+            pending.state.phase,
+            super::super::state::FleetCombatPhase::AwaitingDoctrine
+        );
+    }
+
+    #[test]
+    fn multiple_pending_combats_coexist_independently() {
+        let (mut state, commitment) = fixture_state_and_commitment();
+
+        begin_pending_combat(
+            &mut state,
+            MissionId::new(1),
+            commitment.defender.planet_id,
+            commitment.attacker.fleet_id,
+            StrategicTick::ZERO,
+            &commitment,
+        );
+        begin_pending_combat(
+            &mut state,
+            MissionId::new(2),
+            commitment.defender.planet_id,
+            commitment.attacker.fleet_id,
+            StrategicTick::ZERO,
+            &commitment,
+        );
+
+        assert!(state.pending_combat(MissionId::new(1)).is_some());
+        assert!(state.pending_combat(MissionId::new(2)).is_some());
+        assert_eq!(state.pending_combats.len(), 2);
+    }
+
+    fn pending_combat_state() -> (GameState, FactionId, MissionId) {
+        let (mut state, commitment) = fixture_state_and_commitment();
+        let mission_id = MissionId::new(1);
+        let actor = commitment
+            .attacker
+            .owner
+            .faction()
+            .expect("the fixture attacker is faction-owned");
+        begin_pending_combat(
+            &mut state,
+            mission_id,
+            commitment.defender.planet_id,
+            commitment.attacker.fleet_id,
+            StrategicTick::ZERO,
+            &commitment,
+        );
+        (state, actor, mission_id)
+    }
+
+    #[test]
+    fn choose_combat_doctrine_rejects_a_stale_round() {
+        let (mut state, actor, mission_id) = pending_combat_state();
+        assert_eq!(
+            choose_combat_doctrine(
+                &mut state,
+                actor,
+                mission_id,
+                2,
+                CombatDoctrineId::BalancedEngagement,
+            ),
+            Err(CombatCommandError::StaleRound {
+                expected: 1,
+                found: 2,
+            })
+        );
+        // The state is untouched by a rejected command.
+        assert_eq!(state.pending_combat(mission_id).unwrap().state.round, 0);
+    }
+
+    #[test]
+    fn choose_combat_doctrine_rejects_the_wrong_actor() {
+        let (mut state, actor, mission_id) = pending_combat_state();
+        let wrong_actor = FactionId::new(999);
+        state.factions.push(crate::FactionData {
+            id: wrong_actor,
+            name: "Rival de test".to_string(),
+            kind: crate::FactionKind::Neutral,
+            active: true,
+        });
+        assert_eq!(
+            choose_combat_doctrine(
+                &mut state,
+                wrong_actor,
+                mission_id,
+                1,
+                CombatDoctrineId::BalancedEngagement,
+            ),
+            Err(CombatCommandError::Access(AuthorizationError::NotOwner {
+                actor: wrong_actor,
+                owner: actor,
+            }))
+        );
+    }
+
+    #[test]
+    fn choosing_a_doctrine_twice_for_the_same_round_does_not_apply_two_rounds() {
+        let (mut state, actor, mission_id) = pending_combat_state();
+        let first = choose_combat_doctrine(
+            &mut state,
+            actor,
+            mission_id,
+            1,
+            CombatDoctrineId::BalancedEngagement,
+        )
+        .expect("the first round resolves");
+        assert_eq!(first.round, 1);
+
+        // A resubmission carries the same (now stale) round number.
+        assert_eq!(
+            choose_combat_doctrine(
+                &mut state,
+                actor,
+                mission_id,
+                1,
+                CombatDoctrineId::BalancedEngagement,
+            ),
+            Err(CombatCommandError::StaleRound {
+                expected: 2,
+                found: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn retreating_after_finalization_is_rejected() {
+        let (mut state, actor, mission_id) = pending_combat_state();
+        auto_resolve_combat(&mut state, actor, mission_id).expect("auto-resolves to completion");
+        assert!(state.pending_combat(mission_id).is_none());
+
+        assert_eq!(
+            retreat_from_combat(&mut state, actor, mission_id),
+            Err(CombatCommandError::UnknownCombat(mission_id))
+        );
+    }
+
+    #[test]
+    fn a_completed_combat_no_longer_appears_pending() {
+        let (mut state, actor, mission_id) = pending_combat_state();
+        let result = auto_resolve_combat(&mut state, actor, mission_id)
+            .expect("auto-resolves to completion");
+        assert!(state.pending_combat(mission_id).is_none());
+        assert!(state.combat_report(mission_id).is_some());
+        assert!(matches!(
+            result.outcome,
+            crate::AttackMissionOutcome::Resolved(_)
+        ));
+    }
+}

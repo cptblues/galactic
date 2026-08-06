@@ -2,6 +2,18 @@
 // COMBAT-001-A: split into combat/{state,doctrine,rounds} — this root file keeps
 // the snapshot/report types and the resolve_combat façade; the tactical round
 // engine lives in the submodules (mirrors the mission.rs/mission/ pattern).
+//
+// COMBAT-001-C: an attack mission's arrival no longer resolves synchronously.
+// `begin_attack` starts a `PendingCombat` (combat/session.rs) that persists
+// across ticks *and* saves, and only `GameCommand::ChooseCombatDoctrine`/
+// `RetreatFromCombat`/`AutoResolveCombat` (dispatched through
+// `Simulation::apply_command`) can advance or finalize it —
+// `apply_combat_resolution` is the single atomic write-back all three share.
+// No player-facing choice screen exists yet (that's COMBAT-001-D): until it
+// ships, `galactic_client`'s `presentation::combat_autopilot` module issues
+// `AutoResolveCombat` the instant a combat appears, so real gameplay is
+// unchanged. D's job is to delete that one file and replace it with an
+// actual per-round decision UI — the engine underneath does not change.
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -10,21 +22,30 @@ use serde::Deserialize;
 
 use crate::{
     CombatTargetBonuses, CombatTargetClass, CraftableCatalog, CraftableId, FleetComposition,
-    FleetState, GameState, NEUTRAL_COMBAT_BONUS_PER_MILLE, PlanetaryForceLoss, PlanetaryForceStack,
-    PlanetaryIntelPrecision, PlanetaryPresence, PlanetaryPresenceRules, ShipStack, StrategicTick,
-    default_ruleset, refresh_planetary_intelligence,
+    FleetState, GameState, MissionResult, NEUTRAL_COMBAT_BONUS_PER_MILLE, PlanetaryForceLoss,
+    PlanetaryForceStack, PlanetaryIntelPrecision, PlanetaryPresence, PlanetaryPresenceRules,
+    ShipStack, StrategicTick, default_ruleset, refresh_planetary_intelligence,
 };
 
 mod ai;
 mod doctrine;
 mod intel;
+mod retreat;
 mod rounds;
+mod session;
 mod state;
 
 use ai::{CombatAiRules, CombatAiRulesConfig};
 pub use doctrine::CombatDoctrineId;
 use doctrine::{CombatTacticsRules, CombatTacticsRulesConfig};
 use intel::{CombatIntelRules, CombatIntelRulesConfig};
+use retreat::{CombatRetreatRules, CombatRetreatRulesConfig};
+pub use session::{
+    CombatAutoResolveRejected, CombatCommandError, CombatCompleted, CombatDecisionRequired,
+    CombatDoctrineRejected, CombatIntelUpdated, CombatRetreatRejected, CombatRoundResolved,
+    PendingCombat,
+};
+pub(crate) use session::{auto_resolve_combat, choose_combat_doctrine, retreat_from_combat};
 use state::effective_hull;
 
 pub const MAX_COMBAT_SHIP_DEFINITIONS: usize = 64;
@@ -51,6 +72,7 @@ pub struct CombatRules {
     tactics: CombatTacticsRules,
     intel: CombatIntelRules,
     ai: CombatAiRules,
+    retreat: CombatRetreatRules,
 }
 
 impl CombatRules {
@@ -59,7 +81,7 @@ impl CombatRules {
         craftables: &CraftableCatalog,
         planetary_presence: &PlanetaryPresenceRules,
     ) -> Result<Self, CombatRulesError> {
-        if config.version != 4 {
+        if config.version != 5 {
             return Err(CombatRulesError::UnsupportedVersion(config.version));
         }
         if config.maximum_rounds == 0 {
@@ -113,6 +135,7 @@ impl CombatRules {
         let tactics = CombatTacticsRules::from_config(config.tactics)?;
         let intel = CombatIntelRules::from_config(config.intel)?;
         let ai = CombatAiRules::from_config(config.ai)?;
+        let retreat = CombatRetreatRules::from_config(config.retreat)?;
 
         Ok(Self {
             version: config.version,
@@ -125,6 +148,7 @@ impl CombatRules {
             tactics,
             intel,
             ai,
+            retreat,
         })
     }
 
@@ -146,6 +170,13 @@ impl CombatRules {
 
     pub(crate) const fn ai(&self) -> &CombatAiRules {
         &self.ai
+    }
+
+    // Consumed by `rounds::apply_retreat_penalty`, wired in starting
+    // COMBAT-001-C's session-orchestration step.
+    #[allow(dead_code)]
+    pub(crate) const fn retreat(&self) -> &CombatRetreatRules {
+        &self.retreat
     }
 
     pub fn ship(&self, craftable: CraftableId) -> Option<&CombatShipDefinition> {
@@ -184,7 +215,7 @@ impl CombatRules {
         output.push_str(&doctrine::ALL_COMBAT_DOCTRINES.len().to_string());
         output.push_str(";counters:");
         output.push_str(&self.tactics.counters_len().to_string());
-        output.push_str(";intel:1;ai:1;");
+        output.push_str(";intel:1;ai:1;retreat:1;");
     }
 
     fn snapshot_fleet(
@@ -285,6 +316,8 @@ pub enum CombatRulesError {
     InvalidIntelBounds,
     InvalidAiVersion(u32),
     InvalidAiScore,
+    InvalidRetreatVersion(u32),
+    InvalidRetreatPenalty,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -369,12 +402,23 @@ pub fn prepare_attack_commitment(
     })
 }
 
+/// Which side retreated — a small public-facing mirror of the engine-internal
+/// `CombatSide` (kept `pub(crate)`, never promoted to the public API surface;
+/// see `combat/state.rs`), so `CombatOutcome::Retreat` doesn't leak an
+/// internal engine type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum RetreatingSide {
+    Attacker,
+    Defender,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CombatOutcome {
     AttackerVictory,
     DefenderVictory,
     Stalemate,
     MutualDestruction,
+    Retreat { retreating_side: RetreatingSide },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -445,22 +489,24 @@ pub struct AttackMissionResult {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CombatApplicationError {
-    AlreadyApplied(MissionId),
-    UnknownFleet(FleetId),
-    UnknownPlanet(PlanetId),
     RevisionOverflow(PlanetId),
     InvalidSurvivingFleet(FleetId),
     CargoOverflow(FleetId),
 }
 
-/// Runs the same round-by-round tactical engine used by (a future)
-/// interactive combat screen to completion, picking both sides' doctrine via
-/// the rule-based AI profile (`ai::choose_ai_doctrine`) each round — the
-/// single implementation COMBAT-001 doc §8 requires, rather than a separate
-/// aggregate calculation for auto-resolution. Both sides use the same AI
-/// profile since no interactive player choice exists yet (COMBAT-001-C/D)
-/// and per-faction differentiation is out of scope for B (see `ai.rs`'s
-/// module doc).
+/// Superseded as the mission-facing entry point by COMBAT-001-C's
+/// `AutoResolveCombat` command (`session::auto_resolve_combat`, which shares
+/// this function's own `run_combat_to_completion` engine loop) — kept as a
+/// self-contained pure entry point (no `GameState`/`PendingCombat` needed)
+/// for tests that only care about the round engine's own properties
+/// (determinism, outcome classification, etc.), exercised only by this
+/// module's own tests today.
+///
+/// Runs the same round-by-round tactical engine picking both sides'
+/// doctrine via the rule-based AI profile (`ai::choose_ai_doctrine`) each
+/// round — the single implementation COMBAT-001 doc §8 requires, rather
+/// than a separate aggregate calculation for auto-resolution.
+#[allow(dead_code)]
 pub(crate) fn resolve_combat(
     attacker: &CombatFleetSnapshot,
     defender: &PlanetDefenseSnapshot,
@@ -481,6 +527,24 @@ pub(crate) fn resolve_combat(
     )
     .expect("a commitment valid enough to reach resolve_combat always prepares successfully");
 
+    run_combat_to_completion(&mut combat_state, rules);
+
+    state::finalize_fleet_combat(
+        &combat_state,
+        attacker.cargo,
+        attacker.cargo_capacity,
+        rules,
+    )
+    .expect("a completed combat always finalizes")
+}
+
+/// Drives an already-`prepare_fleet_combat`'d state to completion by picking
+/// both sides' doctrine via the AI profile each round — extracted so
+/// COMBAT-001-C's `AutoResolveCombat` command can run the exact same engine
+/// on a `FleetCombatState` that may already be mid-fight (not just a freshly
+/// prepared one), satisfying doc §21's "l'auto-résolution utilise le même
+/// moteur" from both entry points.
+fn run_combat_to_completion(combat_state: &mut state::FleetCombatState, rules: &CombatRules) {
     while combat_state.phase != state::FleetCombatPhase::Completed {
         let round = combat_state.round.saturating_add(1);
         let attacker_doctrine = ai::choose_ai_doctrine(
@@ -496,24 +560,16 @@ pub(crate) fn resolve_combat(
             rules.ai(),
         );
         let resolution = rounds::resolve_combat_round(
-            &combat_state,
+            combat_state,
             attacker_doctrine,
             defender_doctrine,
             rules,
             rules.tactics(),
         )
         .expect("the loop only resolves rounds while the combat is not yet completed");
-        rounds::apply_round_resolution(&mut combat_state, resolution)
+        rounds::apply_round_resolution(combat_state, resolution)
             .expect("the loop only applies rounds while the combat is not yet completed");
     }
-
-    state::finalize_fleet_combat(
-        &combat_state,
-        attacker.cargo,
-        attacker.cargo_capacity,
-        rules,
-    )
-    .expect("a completed, non-retreated combat always finalizes")
 }
 
 /// Gathers the two intel inputs only the live `GameState` can provide
@@ -542,33 +598,27 @@ fn intel_inputs_from_state(
     (precision, age_ticks)
 }
 
-pub fn resolve_and_apply_attack(
-    state: &mut GameState,
-    mission_id: MissionId,
-    resolved_at: StrategicTick,
-    commitment: &AttackMissionCommitment,
-) -> Result<(CombatReport, AttackMissionResult), CombatApplicationError> {
-    if state
-        .combat_reports
-        .iter()
-        .any(|report| report.mission_id == mission_id)
-    {
-        return Err(CombatApplicationError::AlreadyApplied(mission_id));
-    }
+/// The two ways an attack mission's arrival can go: either the target is no
+/// longer valid (resolved immediately, exactly as before COMBAT-001-C) or a
+/// real tactical combat begins and waits for a decision (`GameCommand::
+/// ChooseCombatDoctrine`/`RetreatFromCombat`/`AutoResolveCombat`).
+pub(crate) enum AttackBeginOutcome {
+    Invalid(AttackMissionResult),
+    Pending,
+}
 
-    let current_fleet =
-        state
-            .fleet(commitment.attacker.fleet_id)
-            .ok_or(CombatApplicationError::UnknownFleet(
-                commitment.attacker.fleet_id,
-            ))?;
+fn commitment_invalidity(
+    state: &GameState,
+    commitment: &AttackMissionCommitment,
+) -> Option<AttackInvalidReason> {
+    let current_fleet = state
+        .fleet(commitment.attacker.fleet_id)
+        .expect("a validated attack mission's fleet still exists at arrival");
     let current_presence = state
         .planetary_presence(commitment.defender.planet_id)
-        .ok_or(CombatApplicationError::UnknownPlanet(
-            commitment.defender.planet_id,
-        ))?;
+        .expect("a validated attack mission's target still exists at arrival");
 
-    let invalid = if current_presence.occupant != commitment.defender.occupant {
+    if current_presence.occupant != commitment.defender.occupant {
         Some(AttackInvalidReason::TargetOwnerChanged)
     } else if current_presence.revision != commitment.defender.revision
         || current_presence.forces != commitment.defender.forces
@@ -578,8 +628,25 @@ pub fn resolve_and_apply_attack(
         Some(AttackInvalidReason::AttackerFleetChanged)
     } else {
         None
-    };
-    if let Some(reason) = invalid {
+    }
+}
+
+/// Called once, at the `Outbound → OnSite` transition of an attack mission
+/// (`mission.rs`). Re-validates the frozen launch-time commitment against
+/// live state exactly as the old synchronous `resolve_and_apply_attack` did
+/// — an invalid target still resolves immediately with no tactical screen
+/// (doc §11: "si la cible devient invalide avant l'arrivée, aucun écran
+/// tactique ne doit être créé"). A valid target now starts a `PendingCombat`
+/// instead of resolving synchronously; the mission stays locked at `OnSite`
+/// until a command (`ChooseCombatDoctrine`/`RetreatFromCombat`/
+/// `AutoResolveCombat`) finalizes it via `apply_combat_resolution`.
+pub(crate) fn begin_attack(
+    state: &mut GameState,
+    mission_id: MissionId,
+    resolved_at: StrategicTick,
+    commitment: &AttackMissionCommitment,
+) -> AttackBeginOutcome {
+    if let Some(reason) = commitment_invalidity(state, commitment) {
         let report = CombatReport {
             mission_id,
             planet_id: commitment.defender.planet_id,
@@ -590,41 +657,55 @@ pub fn resolve_and_apply_attack(
             defender: commitment.defender.clone(),
             status: CombatReportStatus::TargetInvalid(reason),
         };
-        insert_combat_report(state, report.clone());
-        return Ok((
-            report,
-            AttackMissionResult {
-                target: commitment.defender.planet_id,
-                outcome: AttackMissionOutcome::TargetInvalid(reason),
-                secured: false,
-                attackers_destroyed: false,
-            },
-        ));
+        insert_combat_report(state, report);
+        return AttackBeginOutcome::Invalid(AttackMissionResult {
+            target: commitment.defender.planet_id,
+            outcome: AttackMissionOutcome::TargetInvalid(reason),
+            secured: false,
+            attackers_destroyed: false,
+        });
     }
-
-    let (intel_precision, intel_report_age_ticks) =
-        intel_inputs_from_state(state, commitment.defender.planet_id, resolved_at);
-    let resolution = resolve_combat(
-        &commitment.attacker,
-        &commitment.defender,
-        commitment.seed,
-        combat_rules(),
-        default_ruleset().planetary_presence(),
-        intel_precision,
-        intel_report_age_ticks,
+    session::begin_pending_combat(
+        state,
+        mission_id,
+        commitment.defender.planet_id,
+        commitment.attacker.fleet_id,
+        resolved_at,
+        commitment,
     );
+    AttackBeginOutcome::Pending
+}
+
+/// Atomically applies a finalized `CombatResolution` to strategic state
+/// (planetary presence, attacker fleet, planetary intel, the persistent
+/// `CombatReport` log, and the mission's own result) via the same
+/// clone-mutate-swap pattern the old synchronous `resolve_and_apply_attack`
+/// used — reused by all three combat commands (`choose_combat_doctrine`/
+/// `retreat_from_combat`/`auto_resolve_combat` in `combat/session.rs`), the
+/// single point where a finalized `PendingCombat` becomes strategic reality.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_combat_resolution(
+    state: &mut GameState,
+    mission_id: MissionId,
+    resolved_at: StrategicTick,
+    fleet_id: FleetId,
+    planet_id: PlanetId,
+    attacker: &CombatFleetSnapshot,
+    defender: &PlanetDefenseSnapshot,
+    seed: u64,
+    resolution: CombatResolution,
+) -> Result<(CombatReport, AttackMissionResult), CombatApplicationError> {
     let mut candidate = state.clone();
-    let planet_id = commitment.defender.planet_id;
     let next_revision = candidate
         .planetary_presence(planet_id)
-        .expect("the target presence was validated")
+        .expect("a finalized combat's target presence still exists")
         .revision
         .checked_add(1)
         .ok_or(CombatApplicationError::RevisionOverflow(planet_id))?;
     {
         let presence = candidate
             .planetary_presence_mut(planet_id)
-            .expect("the target presence was validated");
+            .expect("a finalized combat's target presence still exists");
         presence.forces = resolution.defender_survivors.clone();
         presence.revision = next_revision;
         if let CombatControlChange::Secured { current, .. } = resolution.control {
@@ -633,9 +714,7 @@ pub fn resolve_and_apply_attack(
     }
 
     if resolution.attacker_survivors.is_empty() {
-        candidate
-            .fleets
-            .retain(|fleet| fleet.id != commitment.attacker.fleet_id);
+        candidate.fleets.retain(|fleet| fleet.id != fleet_id);
     } else {
         let composition = FleetComposition::from_stacks(
             resolution
@@ -643,10 +722,10 @@ pub fn resolve_and_apply_attack(
                 .iter()
                 .map(|stack| ShipStack::new(stack.craftable, stack.quantity)),
         )
-        .map_err(|_| CombatApplicationError::InvalidSurvivingFleet(commitment.attacker.fleet_id))?;
+        .map_err(|_| CombatApplicationError::InvalidSurvivingFleet(fleet_id))?;
         let fleet = candidate
-            .fleet_mut(commitment.attacker.fleet_id)
-            .expect("the attacker fleet was validated");
+            .fleet_mut(fleet_id)
+            .expect("a finalized combat's attacker fleet still exists");
         fleet.composition = composition;
         fleet.cargo = fleet
             .cargo
@@ -659,16 +738,16 @@ pub fn resolve_and_apply_attack(
         PlanetaryIntelPrecision::Exact,
         resolved_at,
     )
-    .expect("the combat target has a validated planetary presence");
+    .expect("a finalized combat's target has a validated planetary presence");
 
     let report = CombatReport {
         mission_id,
         planet_id,
         resolved_at,
         rules_version: combat_rules().version,
-        seed: commitment.seed,
-        attacker: commitment.attacker.clone(),
-        defender: commitment.defender.clone(),
+        seed,
+        attacker: attacker.clone(),
+        defender: defender.clone(),
         status: CombatReportStatus::Resolved(resolution.clone()),
     };
     insert_combat_report(&mut candidate, report.clone());
@@ -678,6 +757,19 @@ pub fn resolve_and_apply_attack(
         secured: matches!(resolution.control, CombatControlChange::Secured { .. }),
         attackers_destroyed: resolution.attacker_survivors.is_empty(),
     };
+    // Finalization now happens from `apply_command`, outside
+    // `advance_missions`'s generic tail that used to set `mission.result` for
+    // the old synchronous path — set it here instead, on the same atomic
+    // clone. Also removes the now-finished `PendingCombat` entry, the
+    // idempotency guard for the new flow (a second command against the same
+    // `mission_id` finds nothing and rejects with `UnknownCombat`, replacing
+    // the old `CombatApplicationError::AlreadyApplied` check).
+    if let Some(mission) = candidate.mission_mut(mission_id) {
+        mission.result = Some(MissionResult::Attack(result));
+    }
+    candidate
+        .pending_combats
+        .retain(|pending| pending.mission_id != mission_id);
     *state = candidate;
     Ok((report, result))
 }
@@ -777,6 +869,12 @@ impl fmt::Display for CombatOutcome {
             Self::DefenderVictory => "defender victory",
             Self::Stalemate => "stalemate",
             Self::MutualDestruction => "mutual destruction",
+            Self::Retreat {
+                retreating_side: RetreatingSide::Attacker,
+            } => "attacker retreat",
+            Self::Retreat {
+                retreating_side: RetreatingSide::Defender,
+            } => "defender retreat",
         })
     }
 }
@@ -792,6 +890,7 @@ pub(crate) struct CombatRulesConfig {
     tactics: CombatTacticsRulesConfig,
     intel: CombatIntelRulesConfig,
     ai: CombatAiRulesConfig,
+    retreat: CombatRetreatRulesConfig,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -1025,7 +1124,12 @@ mod tests {
     }
 
     #[test]
-    fn applying_a_report_twice_is_rejected_without_mutation() {
+    fn a_finalized_combat_cannot_be_applied_twice() {
+        // Successor of the legacy `resolve_and_apply_attack`'s own
+        // `AlreadyApplied` guard: finalizing removes the `PendingCombat`
+        // entry, so a second command against the same mission finds nothing
+        // and is rejected with `UnknownCombat` — same property (a combat
+        // cannot be applied twice), new mechanism (COMBAT-001-C).
         let mut simulation = Simulation::new(UniverseConfig::mvp());
         let target = simulation
             .state()
@@ -1041,10 +1145,11 @@ mod tests {
         let composition =
             FleetComposition::from_stacks([ShipStack::new(CraftableId::FRIGATE_BULWARK, 3)])
                 .expect("combat composition");
+        let player_faction = simulation.state().player_faction;
         simulation.state_mut().fleets.push(FleetState {
             id: FleetId::new(0),
             name: "Force de test".to_string(),
-            owner: Owner::Faction(FactionId::new(0)),
+            owner: Owner::Faction(player_faction),
             location: FleetLocation::Docked(colony_id),
             composition,
             cargo: ResourceStock::ZERO,
@@ -1054,23 +1159,23 @@ mod tests {
         let commitment = prepare_attack_commitment(simulation.state(), FleetId::new(0), target, 91)
             .expect("attack snapshot");
         let mission_id = MissionId::new(0);
-        resolve_and_apply_attack(
-            simulation.state_mut(),
-            mission_id,
-            StrategicTick::new(10),
-            &commitment,
-        )
-        .expect("first application");
-        let after_first = simulation.state().clone();
-
-        assert_eq!(
-            resolve_and_apply_attack(
+        assert!(matches!(
+            begin_attack(
                 simulation.state_mut(),
                 mission_id,
                 StrategicTick::new(10),
                 &commitment,
             ),
-            Err(CombatApplicationError::AlreadyApplied(mission_id)),
+            AttackBeginOutcome::Pending
+        ));
+
+        auto_resolve_combat(simulation.state_mut(), player_faction, mission_id)
+            .expect("first application");
+        let after_first = simulation.state().clone();
+
+        assert_eq!(
+            auto_resolve_combat(simulation.state_mut(), player_faction, mission_id),
+            Err(CombatCommandError::UnknownCombat(mission_id)),
         );
         assert_eq!(simulation.state(), &after_first);
     }

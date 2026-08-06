@@ -7,16 +7,16 @@ use galactic_domain::{
 };
 
 use crate::{
-    AttackMissionCommitment, AttackMissionOutcome, AttackMissionResult, AuthorizationError,
-    ColonizationBlocker, ColonizationMissionCommitment, ColonizationMissionOutcome,
-    ColonizationMissionResult, ColonyEstablished, ColonyFoundation, CombatApplicationError,
+    AttackBeginOutcome, AttackMissionCommitment, AttackMissionOutcome, AttackMissionResult,
+    AuthorizationError, ColonizationBlocker, ColonizationMissionCommitment,
+    ColonizationMissionOutcome, ColonizationMissionResult, ColonyEstablished, ColonyFoundation,
     CombatSnapshotError, CraftableId, FleetAssignment, FleetCompositionError, FleetError,
     FleetLocation, FleetState, GameState, KnowledgeChange, KnowledgeLevel, KnowledgeTarget,
     PlanetaryIntelPrecision, StrategicDuration, StrategicTick, TechnologyUnlock,
-    UniverseRepository, assess_planet_colonizability, build_planet_analysis_report,
+    UniverseRepository, assess_planet_colonizability, begin_attack, build_planet_analysis_report,
     colonization_arrival_blocker, combat_rules, extraction_rules,
     initialize_colony_from_foundation, planetary_analysis_rules, prepare_attack_commitment,
-    refresh_planetary_intelligence, resolve_and_apply_attack, stock_for,
+    refresh_planetary_intelligence, stock_for,
 };
 
 mod analyze;
@@ -463,6 +463,16 @@ pub(crate) enum MissionEngineEvent {
     Colony {
         recipient: FactionId,
         colony: ColonyEstablished,
+    },
+    /// COMBAT-001-C: an attack mission arrived at a still-valid target and a
+    /// `PendingCombat` was created — fired exactly once, at creation (never
+    /// re-fired while the mission stays parked at `OnSite` awaiting a
+    /// decision, see the `OnSite → Returning` guard).
+    CombatPending {
+        recipient: FactionId,
+        mission_id: MissionId,
+        planet_id: PlanetId,
+        round: u16,
     },
 }
 
@@ -1107,6 +1117,7 @@ pub const fn validate_mission_transition(
 pub fn validate_mission_state(
     mission: &MissionState,
     universe: &UniverseRepository,
+    has_pending_combat: bool,
 ) -> Result<(), MissionStateError> {
     if let MissionTarget::Planet {
         system_id,
@@ -1227,7 +1238,7 @@ pub fn validate_mission_state(
     match mission.order.kind {
         MissionKind::Probe => validate_probe_result(mission)?,
         MissionKind::Analyze => validate_analyze_result(mission)?,
-        MissionKind::Attack => validate_attack_result(mission)?,
+        MissionKind::Attack => validate_attack_result(mission, has_pending_combat)?,
         MissionKind::Transport => validate_transport_result(mission)?,
         MissionKind::Harvest => validate_harvest_result(mission)?,
         MissionKind::Colonize => validate_colonize_result(mission)?,
@@ -1275,7 +1286,10 @@ pub(crate) fn advance_missions(
                 {
                     (MissionPhase::Completed, mission.phase_started_at)
                 }
-                MissionPhase::OnSite if current_tick >= mission.plan.return_departure_at => {
+                MissionPhase::OnSite
+                    if current_tick >= mission.plan.return_departure_at
+                        && state.pending_combat(mission.id).is_none() =>
+                {
                     (MissionPhase::Returning, mission.plan.return_departure_at)
                 }
                 MissionPhase::Returning if current_tick >= mission.plan.return_arrival_at => {
@@ -1309,6 +1323,7 @@ pub(crate) fn advance_missions(
             let mut established_colony = None;
             let mut transport_update = None;
             let mut harvest_update = None;
+            let mut combat_pending = None;
 
             validate_mission_transition(from, next_phase)
                 .expect("engine transitions must follow the mission state machine");
@@ -1475,25 +1490,32 @@ pub(crate) fn advance_missions(
                             occurred_at: transition_at,
                         });
                     } else if kind == MissionKind::Attack {
-                        let (_, result) = resolve_and_apply_attack(
-                            state,
-                            mission_id,
-                            transition_at,
-                            attack
-                                .as_ref()
-                                .expect("a validated attack has a commitment"),
-                        )
-                        .unwrap_or_else(|error| match error {
-                            CombatApplicationError::AlreadyApplied(_) => {
-                                panic!("a combat mission attempted to apply twice")
+                        // COMBAT-001-C: an invalid target still resolves
+                        // instantly, exactly as before — no tactical screen
+                        // is ever opened for it (doc §11). A valid target now
+                        // starts a `PendingCombat` instead: `resolution` stays
+                        // `None`, so the generic tail below does not set
+                        // `mission.result` yet, and the `OnSite → Returning`
+                        // guard a few match arms up keeps this mission
+                        // parked at `OnSite` until a command
+                        // (`ChooseCombatDoctrine`/`RetreatFromCombat`/
+                        // `AutoResolveCombat`) finalizes it.
+                        let commitment = attack
+                            .as_ref()
+                            .expect("a validated attack has a commitment");
+                        let planet_id = commitment.defender.planet_id;
+                        match begin_attack(state, mission_id, transition_at, commitment) {
+                            AttackBeginOutcome::Invalid(result) => {
+                                resolution = Some(MissionResolution {
+                                    mission_id,
+                                    result: MissionResult::Attack(result),
+                                    occurred_at: transition_at,
+                                });
                             }
-                            _ => panic!("validated combat application failed: {error:?}"),
-                        });
-                        resolution = Some(MissionResolution {
-                            mission_id,
-                            result: MissionResult::Attack(result),
-                            occurred_at: transition_at,
-                        });
+                            AttackBeginOutcome::Pending => {
+                                combat_pending = Some(planet_id);
+                            }
+                        }
                     } else if kind == MissionKind::Colonize {
                         let commitment =
                             colonization.expect("a validated colonization has a commitment");
@@ -1780,6 +1802,14 @@ pub(crate) fn advance_missions(
                     colony,
                 });
             }
+            if let Some(planet_id) = combat_pending {
+                events.push(MissionEngineEvent::CombatPending {
+                    recipient: owner,
+                    mission_id,
+                    planet_id,
+                    round: 1,
+                });
+            }
             if matches!(next_phase, MissionPhase::Completed | MissionPhase::Failed) {
                 let final_result = resolution.map(|value| value.result).or(mission_result);
                 let outcome = if next_phase == MissionPhase::Failed
@@ -1893,9 +1923,10 @@ mod tests {
 
     use crate::{
         AttackInvalidReason, AttackMissionOutcome, CombatOutcome, CombatReportStatus, CraftableId,
-        FleetComposition, GameAction, KnowledgeLevel, PlanetaryForceLoss, ResearchState, ShipStack,
-        Simulation, TechnologyId, analyze_planet, apply_planetary_force_losses,
-        default_building_catalog, disband_fleet, enqueue_building_upgrade, form_fleet,
+        FleetComposition, GameAction, KnowledgeLevel, PlanetaryForceLoss, ResearchState,
+        RetreatingSide, ShipStack, Simulation, TechnologyId, analyze_planet,
+        apply_planetary_force_losses, default_building_catalog, disband_fleet,
+        enqueue_building_upgrade, form_fleet, retreat_from_combat,
     };
 
     use super::*;
@@ -2731,6 +2762,11 @@ mod tests {
         )));
         let mission_id = simulation.state().missions[0].id;
         simulation.advance(Duration::from_secs(120));
+        // COMBAT-001-C: arrival now opens a pending combat instead of
+        // resolving synchronously — auto-resolve it (mirrors the temporary
+        // client-side auto-pilot bridge) before the mission can return.
+        simulation.apply_player_action(GameAction::AutoResolveCombat { mission_id });
+        simulation.advance(Duration::from_secs(120));
 
         let presence = simulation
             .state()
@@ -2785,6 +2821,12 @@ mod tests {
             },
         });
         let fleet_id = simulation.state().missions[0].order.fleet_id;
+        let mission_id = simulation.state().missions[0].id;
+        simulation.advance(Duration::from_secs(120));
+        // COMBAT-001-C: arrival now opens a pending combat instead of
+        // resolving synchronously — auto-resolve it before the mission can
+        // return.
+        simulation.apply_player_action(GameAction::AutoResolveCombat { mission_id });
         simulation.advance(Duration::from_secs(120));
         let returned = simulation
             .state()
@@ -2801,6 +2843,99 @@ mod tests {
             .expect("a returned survivor fleet can be disbanded");
 
         assert!(simulation.state().fleet(fleet_id).is_none());
+    }
+
+    #[test]
+    fn arrival_creates_exactly_one_pending_combat_and_locks_the_mission_at_on_site() {
+        let (mut simulation, target) = simulation_with_attack_target();
+        let colony_id = simulation.state().colonies[0].id;
+        simulation.apply_player_action(GameAction::LaunchAttack {
+            colony_id,
+            target: MissionTarget::Planet {
+                system_id: target.system_id(),
+                planet_id: target,
+            },
+        });
+        let mission_id = simulation.state().missions[0].id;
+
+        simulation.advance(Duration::from_secs(120));
+        assert_eq!(simulation.state().pending_combats.len(), 1);
+        assert_eq!(
+            simulation
+                .state()
+                .pending_combat(mission_id)
+                .unwrap()
+                .planet_id,
+            target
+        );
+        assert_eq!(simulation.state().missions[0].phase, MissionPhase::OnSite);
+        assert!(simulation.state().missions[0].result.is_none());
+        assert!(simulation.state().combat_report(mission_id).is_none());
+
+        // The mission stays parked here across arbitrarily many further
+        // ticks — no round pacing is tied to strategic time (doc §11).
+        simulation.advance(Duration::from_secs(600));
+        assert_eq!(simulation.state().pending_combats.len(), 1);
+        assert_eq!(simulation.state().missions[0].phase, MissionPhase::OnSite);
+
+        // The pending combat is created exactly once — a further advance
+        // does not duplicate it.
+        simulation.advance(Duration::from_secs(600));
+        assert_eq!(simulation.state().pending_combats.len(), 1);
+    }
+
+    #[test]
+    fn retreating_keeps_survivors_and_resumes_the_mission() {
+        let (mut simulation, target) = simulation_with_attack_target();
+        let actor = simulation.state().player_faction;
+        let colony_id = simulation.state().colonies[0].id;
+        simulation.apply_player_action(GameAction::LaunchAttack {
+            colony_id,
+            target: MissionTarget::Planet {
+                system_id: target.system_id(),
+                planet_id: target,
+            },
+        });
+        let mission_id = simulation.state().missions[0].id;
+        let fleet_id = simulation.state().missions[0].order.fleet_id;
+        simulation.advance(Duration::from_secs(120));
+        assert_eq!(simulation.state().pending_combats.len(), 1);
+
+        let result = retreat_from_combat(simulation.state_mut(), actor, mission_id)
+            .expect("the attacker can retreat while a decision is pending");
+        assert!(matches!(
+            result.outcome,
+            AttackMissionOutcome::Resolved(CombatOutcome::Retreat {
+                retreating_side: RetreatingSide::Attacker,
+            })
+        ));
+        assert!(!result.secured);
+        assert_eq!(simulation.state().pending_combats.len(), 0);
+        assert_eq!(
+            simulation
+                .state()
+                .planetary_presence(target)
+                .unwrap()
+                .occupant,
+            simulation
+                .state()
+                .combat_report(mission_id)
+                .unwrap()
+                .defender
+                .occupant,
+            "a retreat never secures the target"
+        );
+
+        simulation.advance(Duration::from_secs(120));
+        assert_eq!(
+            simulation.state().missions[0].phase,
+            MissionPhase::Completed
+        );
+        let fleet = simulation
+            .state()
+            .fleet(fleet_id)
+            .expect("a retreat keeps the surviving attacker fleet");
+        assert_eq!(fleet.location, FleetLocation::Docked(colony_id));
     }
 
     #[test]

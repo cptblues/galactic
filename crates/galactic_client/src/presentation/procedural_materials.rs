@@ -448,6 +448,34 @@ pub(crate) fn event_label(event: GameEvent) -> String {
         GameEventKind::MissionCancellationRejected(rejected) => {
             format!("annulation de mission refusée : {:?}", rejected.error)
         }
+        GameEventKind::CombatDecisionRequired(pending) => format!(
+            "combat en attente de décision : mission {:?}, round {}",
+            pending.mission_id, pending.round,
+        ),
+        GameEventKind::CombatRoundResolved(resolved) => format!(
+            "round {} résolu : mission {:?}",
+            resolved.round, resolved.mission_id,
+        ),
+        GameEventKind::CombatIntelUpdated(updated) => format!(
+            "renseignement mis à jour : mission {:?}, {} %",
+            updated.mission_id, updated.intel_percent,
+        ),
+        GameEventKind::CombatCompleted(completed) => format!(
+            "combat terminé : mission {:?}, {:?}",
+            completed.mission_id, completed.result.outcome,
+        ),
+        GameEventKind::CombatDoctrineRejected(rejected) => format!(
+            "choix de doctrine refusé : mission {:?} : {:?}",
+            rejected.mission_id, rejected.error,
+        ),
+        GameEventKind::CombatRetreatRejected(rejected) => format!(
+            "retraite refusée : mission {:?} : {:?}",
+            rejected.mission_id, rejected.error,
+        ),
+        GameEventKind::CombatAutoResolveRejected(rejected) => format!(
+            "auto-résolution refusée : mission {:?} : {:?}",
+            rejected.mission_id, rejected.error,
+        ),
     }
 }
 

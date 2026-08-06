@@ -90,6 +90,7 @@ pub fn snapshot_from_simulation(simulation: &Simulation) -> SaveGame {
             next_mission_id: state.next_mission_id,
             mission_reports: state.mission_reports.clone(),
             combat_reports: state.combat_reports.clone(),
+            pending_combats: state.pending_combats.clone(),
             colony_foundations: state.colony_foundations.clone(),
             planet_analysis_reports: state.planet_analysis_reports.clone(),
             extraction_sites: state.extraction_sites.clone(),
