@@ -40,19 +40,31 @@ pub struct PendingCombat {
 }
 
 impl PendingCombat {
-    /// Save-integrity accessors for `reconstruction.rs`'s validation pass —
-    /// `combat::state`'s own types (`FleetCombatPhase`, `CombatStackId`) stay
-    /// `pub(crate)` and unreachable outside `combat`'s module tree (the
-    /// `state` submodule path itself is private), so these expose only
-    /// externally-safe primitives instead of widening that boundary.
-    pub(crate) fn round(&self) -> u16 {
+    /// The round about to be played, i.e. the value `GameAction::
+    /// ChooseCombatDoctrine{round}` must carry to be accepted — COMBAT-001-D
+    /// (the combat UI) reads this directly rather than trusting the `round`
+    /// field of a `CombatDecisionRequired` event, which is always `1`
+    /// regardless of how many rounds have actually been played.
+    pub fn round(&self) -> u16 {
         self.state.round
     }
 
-    pub(crate) fn maximum_rounds(&self) -> u16 {
+    pub fn maximum_rounds(&self) -> u16 {
         self.state.maximum_rounds
     }
 
+    /// Attacker's knowledge of the defender's composition, 0-100 — see
+    /// `combat/intel.rs`'s module doc for why this is one-directional.
+    pub fn intel_percent(&self) -> u8 {
+        self.state.intel_percent
+    }
+
+    /// Save-integrity accessor for `reconstruction.rs`'s validation pass —
+    /// `combat::state`'s own `FleetCombatPhase` stays `pub(crate)` (a
+    /// `PendingCombat` still present in `state.pending_combats` is always
+    /// `AwaitingDoctrine` in practice — finalizing removes the entry in the
+    /// same atomic step), so this exposes only the boolean reconstruction.rs
+    /// actually needs instead of widening that boundary.
     pub(crate) fn is_completed(&self) -> bool {
         self.state.phase == FleetCombatPhase::Completed
     }

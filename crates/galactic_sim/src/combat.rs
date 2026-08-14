@@ -9,11 +9,9 @@
 // `RetreatFromCombat`/`AutoResolveCombat` (dispatched through
 // `Simulation::apply_command`) can advance or finalize it —
 // `apply_combat_resolution` is the single atomic write-back all three share.
-// No player-facing choice screen exists yet (that's COMBAT-001-D): until it
-// ships, `galactic_client`'s `presentation::combat_autopilot` module issues
-// `AutoResolveCombat` the instant a combat appears, so real gameplay is
-// unchanged. D's job is to delete that one file and replace it with an
-// actual per-round decision UI — the engine underneath does not change.
+// COMBAT-001-D: `galactic_client`'s `combat_ui` module drives these commands
+// from a real per-round decision screen — the engine underneath is
+// unchanged from C.
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -34,11 +32,16 @@ mod retreat;
 mod rounds;
 mod session;
 mod state;
+mod view;
 
 use ai::{CombatAiRules, CombatAiRulesConfig};
-pub use doctrine::CombatDoctrineId;
+pub use doctrine::{ALL_COMBAT_DOCTRINES, CombatDoctrineId};
 use doctrine::{CombatTacticsRules, CombatTacticsRulesConfig};
 use intel::{CombatIntelRules, CombatIntelRulesConfig};
+pub use intel::{
+    CombatIntelTier, CombatStackView, IntegrityBand, IntegrityReveal, QuantityBand, QuantityReveal,
+    ThreatLevel, intel_tier,
+};
 use retreat::{CombatRetreatRules, CombatRetreatRulesConfig};
 pub use session::{
     CombatAutoResolveRejected, CombatCommandError, CombatCompleted, CombatDecisionRequired,
@@ -47,6 +50,15 @@ pub use session::{
 };
 pub(crate) use session::{auto_resolve_combat, choose_combat_doctrine, retreat_from_combat};
 use state::effective_hull;
+pub use state::{
+    CombatRoundEvent, CombatRoundRecord, CombatSide, CombatStackId, CombatStackLoss,
+    CombatTacticalRole, CombatUnitRef,
+};
+pub use view::{
+    AlliedSideSummary, AlliedStackView, DoctrineOverview, EnemyIntelView, QualitativePrediction,
+    RepetitionPenaltyPreview, allied_side_summary, allied_stacks, doctrine_overview, enemy_intel,
+    qualitative_prediction, repetition_penalty_preview, round_history,
+};
 
 pub const MAX_COMBAT_SHIP_DEFINITIONS: usize = 64;
 

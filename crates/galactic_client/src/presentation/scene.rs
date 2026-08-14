@@ -913,6 +913,7 @@ pub(crate) fn spawn_ui(mut commands: Commands, icon_assets: Res<IconAssets>) {
             Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
             Interaction::None,
             UiPointerBlocker,
+            InspectorPanelRoot,
         ))
         .with_children(|parent| {
             parent.spawn((

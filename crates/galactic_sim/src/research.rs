@@ -120,7 +120,7 @@ impl TechnologyCatalog {
         config: TechnologyCatalogConfig,
         buildings: &BuildingCatalog,
     ) -> Result<Self, TechnologyCatalogError> {
-        if config.version != 1 {
+        if config.version != 2 {
             return Err(TechnologyCatalogError::UnsupportedVersion(config.version));
         }
         if config.technologies.is_empty() || config.technologies.len() > MAX_RULESET_TECHNOLOGIES {
@@ -863,8 +863,15 @@ mod tests {
         );
     }
 
+    /// COMBAT-001-E-era playtest feedback ("recherche enchaînée sans aucune
+    /// contrainte, trop facilement") tightened this: `research_queue_limit`
+    /// dropped from 6 (exactly the whole tree) to 3, so the whole configured
+    /// tree can no longer be queued in one sitting — replaces the old
+    /// `configured_tree_can_be_queued_in_order` test, whose premise this
+    /// change deliberately breaks. Proves both halves: a valid order still
+    /// queues cleanly up to the new limit, and the next one is rejected.
     #[test]
-    fn configured_tree_can_be_queued_in_order() {
+    fn queueing_beyond_the_reduced_queue_limit_is_rejected() {
         let mut simulation = simulation_with_lab();
         let actor = simulation.state().player_faction;
         {
@@ -879,16 +886,35 @@ mod tests {
                 .set_level(BuildingKind::CONSTRUCTION_CENTER, 3);
             colony.energy = default_building_catalog().energy_grid_for_levels(colony.buildings);
         }
-        for technology in technology_catalog().ids() {
-            enqueue_research(simulation.state_mut(), actor, technology)
-                .expect("ordered tree is valid");
-        }
+        enqueue_research(
+            simulation.state_mut(),
+            actor,
+            TechnologyId::SPATIAL_DETECTION,
+        )
+        .expect("spatial detection has no prerequisite");
+        enqueue_research(simulation.state_mut(), actor, TechnologyId::PROPULSION)
+            .expect("propulsion's prerequisites are satisfied");
+        enqueue_research(
+            simulation.state_mut(),
+            actor,
+            TechnologyId::PLANETARY_ANALYSIS,
+        )
+        .expect("planetary analysis's prerequisites are satisfied");
+        assert_eq!(simulation.state().research.queue_len(), 3);
+
         assert_eq!(
-            simulation.state().research.queue_len(),
-            technology_catalog().ids().count(),
+            enqueue_research(simulation.state_mut(), actor, TechnologyId::CARGO_CAPACITY),
+            Err(ResearchError::QueueFull { maximum: 3 }),
         );
     }
 
+    /// COMBAT-001-E-era playtest feedback: several technologies now also
+    /// require a `research_lab` level, not just an unlocked-and-queued
+    /// prerequisite technology and nonzero output — replaces the old
+    /// version of this test, which queued 4 technologies (now over the
+    /// reduced queue limit) before ever reaching a building-gated one.
+    /// `propulsion` is building-gated from the very first tier now, so this
+    /// is reachable in a single step.
     #[test]
     fn a_missing_building_prerequisite_blocks_research_even_with_science_and_tech_ready() {
         let mut simulation = simulation_with_lab();
@@ -899,25 +925,15 @@ mod tests {
             TechnologyId::SPATIAL_DETECTION,
         )
         .expect("spatial detection has no prerequisite");
-        enqueue_research(simulation.state_mut(), actor, TechnologyId::PROPULSION)
-            .expect("propulsion has no unmet prerequisite");
-        enqueue_research(simulation.state_mut(), actor, TechnologyId::CARGO_CAPACITY)
-            .expect("cargo capacity has no unmet prerequisite");
-        enqueue_research(
-            simulation.state_mut(),
-            actor,
-            TechnologyId::PLANETARY_ANALYSIS,
-        )
-        .expect("planetary analysis has no unmet prerequisite");
 
-        // Tech-to-tech prerequisites are satisfied (both are queued), but the home colony's
-        // The research_lab building is still level 1, below colonization's building
-        // requirement of level 4.
+        // The tech-to-tech prerequisite is satisfied (spatial detection is
+        // queued), but the home colony's research_lab is still level 1,
+        // below propulsion's building requirement of level 2.
         assert_eq!(
-            research_quote(simulation.state(), actor, TechnologyId::COLONIZATION),
+            research_quote(simulation.state(), actor, TechnologyId::PROPULSION),
             Err(ResearchError::MissingBuildingPrerequisite {
                 building: BuildingKind::RESEARCH_LAB,
-                required: 4,
+                required: 2,
                 found: 1,
             }),
         );
@@ -933,29 +949,16 @@ mod tests {
             TechnologyId::SPATIAL_DETECTION,
         )
         .expect("spatial detection has no prerequisite");
-        enqueue_research(simulation.state_mut(), actor, TechnologyId::PROPULSION)
-            .expect("propulsion has no unmet prerequisite");
-        enqueue_research(simulation.state_mut(), actor, TechnologyId::CARGO_CAPACITY)
-            .expect("cargo capacity has no unmet prerequisite");
-        enqueue_research(
-            simulation.state_mut(),
-            actor,
-            TechnologyId::PLANETARY_ANALYSIS,
-        )
-        .expect("planetary analysis has no unmet prerequisite");
 
         let colony = simulation
             .state_mut()
             .colonies
             .first_mut()
             .expect("home colony exists");
-        colony.buildings.set_level(BuildingKind::RESEARCH_LAB, 4);
-        colony
-            .buildings
-            .set_level(BuildingKind::CONSTRUCTION_CENTER, 3);
+        colony.buildings.set_level(BuildingKind::RESEARCH_LAB, 2);
         colony.energy = default_building_catalog().energy_grid_for_levels(colony.buildings);
 
-        assert!(research_quote(simulation.state(), actor, TechnologyId::COLONIZATION).is_ok());
+        assert!(research_quote(simulation.state(), actor, TechnologyId::PROPULSION).is_ok());
     }
 
     #[test]
@@ -989,7 +992,7 @@ mod tests {
     #[test]
     fn a_new_technology_with_a_known_unlock_is_data_only() {
         let source = r#"(
-            version: 1,
+            version: 2,
             technologies: [(
                 id: "approved_truth",
                 name: "Vérité homologuée",
@@ -1011,7 +1014,7 @@ mod tests {
     #[test]
     fn a_technology_referencing_an_unknown_building_is_rejected_at_load_time() {
         let source = r#"(
-            version: 1,
+            version: 2,
             technologies: [(
                 id: "approved_truth",
                 name: "Vérité homologuée",

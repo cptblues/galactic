@@ -129,7 +129,7 @@ impl PlanetaryPresenceRules {
         config: PlanetaryPresenceRulesConfig,
         factions: &[StartingFactionConfig],
     ) -> Result<Self, PlanetaryPresenceRulesError> {
-        if config.version != 2 {
+        if config.version != 3 {
             return Err(PlanetaryPresenceRulesError::UnsupportedVersion(
                 config.version,
             ));

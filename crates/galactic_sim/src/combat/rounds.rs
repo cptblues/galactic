@@ -142,6 +142,23 @@ pub(crate) fn offense_pool(
     })
 }
 
+// COMBAT-001-E: `offense_pool` already weights every stack's contribution by
+// its own live `surviving_quantity` — the authoritative "how much of this
+// stack is still operational" signal, recomputed every round. An earlier
+// version of this function additionally re-scaled the pooled result by
+// `scaled_power(offense, ...side_hull_totals(own_stacks))`, the side's
+// *aggregate* hull fraction. That double-counted the same attrition for any
+// multi-unit stack (`proportional_survivors` already shrinks
+// `surviving_quantity` roughly in proportion to hull lost — `ceil(quantity ×
+// remaining/initial)` — so re-applying the side's hull fraction squared the
+// effective decay), while a single-unit stack barely decayed at all before
+// that re-scaling (`surviving_quantity` stays pinned at 1 until the stack's
+// hull hits exactly zero, per `proportional_survivors`'s `ceil` rounding) —
+// so a lone high-value unit only ever lost the *one* layer of decay a
+// grouped stack lost *twice*. That asymmetry let a single powerful unit (a
+// Croiseur, say) out-damage many weaker ones of comparable raw total power
+// far longer than intended. Using `offense_pool`'s result directly removes
+// the redundant layer, consistently for stacks of any size.
 #[allow(clippy::too_many_arguments)]
 fn side_damage(
     own_stacks: &[CombatStackState],
@@ -156,9 +173,7 @@ fn side_damage(
     round: u16,
     seed_tag: u64,
 ) -> u128 {
-    let (current_hull, maximum_hull) = side_hull_totals(own_stacks);
-    let offense = offense_pool(own_stacks, opposing_stacks);
-    let base_power = scaled_power(offense, current_hull, maximum_hull);
+    let base_power = offense_pool(own_stacks, opposing_stacks);
     let scaled = base_power.saturating_mul(u128::from(rules.damage_scale));
     let varied = varied_damage(
         scaled,

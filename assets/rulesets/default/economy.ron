@@ -1,7 +1,7 @@
 (
     base_storage: (metal: 1000, crystal: 800, fuel: 600),
     construction_queue_limit: 5,
-    research_queue_limit: 6,
+    research_queue_limit: 3,
     craft_queue_limit: 5,
     production_refresh_seconds: 5,
 )

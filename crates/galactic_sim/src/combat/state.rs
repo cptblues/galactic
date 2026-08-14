@@ -72,19 +72,23 @@ use super::{
     PlanetaryPresenceRules,
 };
 
+/// Stable per-stack identity within one combat — small, immutable "identity"
+/// data, safe to expose to `galactic_client` (COMBAT-001-D) unlike the
+/// mutable aggregate state types below (`CombatStackState`/`CombatSideState`/
+/// `FleetCombatState`), which stay `pub(crate)` forever.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]
-pub(crate) struct CombatStackId(pub(crate) u32);
+pub struct CombatStackId(pub(crate) u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum CombatSide {
+pub enum CombatSide {
     Attacker,
     Defender,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum CombatUnitRef {
+pub enum CombatUnitRef {
     Ship(CraftableId),
     PlanetaryForce(PlanetaryForceId),
 }
@@ -96,7 +100,7 @@ pub(crate) enum CombatUnitRef {
 /// fixtures, but currently unreachable through real game data. See
 /// `FlankingManeuver` in `doctrine.rs`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum CombatTacticalRole {
+pub enum CombatTacticalRole {
     Line,
     Support,
 }
@@ -157,13 +161,13 @@ pub(crate) struct FleetCombatState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct CombatStackLoss {
-    pub(crate) stack_id: CombatStackId,
-    pub(crate) quantity: u64,
+pub struct CombatStackLoss {
+    pub stack_id: CombatStackId,
+    pub quantity: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum CombatRoundEvent {
+pub enum CombatRoundEvent {
     StackDestroyed {
         side: CombatSide,
         stack_id: CombatStackId,
@@ -179,18 +183,18 @@ pub(crate) enum CombatRoundEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct CombatRoundRecord {
-    pub(crate) round: u16,
-    pub(crate) attacker_doctrine: CombatDoctrineId,
-    pub(crate) defender_doctrine: CombatDoctrineId,
-    pub(crate) attacker_damage: u128,
-    pub(crate) defender_damage: u128,
-    pub(crate) attacker_losses: Vec<CombatStackLoss>,
-    pub(crate) defender_losses: Vec<CombatStackLoss>,
-    pub(crate) notable_events: Vec<CombatRoundEvent>,
+pub struct CombatRoundRecord {
+    pub round: u16,
+    pub attacker_doctrine: CombatDoctrineId,
+    pub defender_doctrine: CombatDoctrineId,
+    pub attacker_damage: u128,
+    pub defender_damage: u128,
+    pub attacker_losses: Vec<CombatStackLoss>,
+    pub defender_losses: Vec<CombatStackLoss>,
+    pub notable_events: Vec<CombatRoundEvent>,
     /// Attacker's intel percent *after* this round's gain is applied — the
     /// additive field COMBAT-001-A left room for.
-    pub(crate) intel_after: u8,
+    pub intel_after: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -319,6 +323,25 @@ pub(crate) fn prepare_fleet_combat(
     })
 }
 
+/// Total cargo capacity of only the ships that actually survived combat —
+/// COMBAT-001-E: `finalize_fleet_combat`'s `attacker_cargo_capacity`
+/// parameter is the fleet's *pre-combat* capacity (frozen at commitment
+/// time), which can now legitimately exceed what's left once real losses
+/// happen (an engine-balance fix elsewhere made losing ships an actually
+/// reachable outcome instead of a near-impossible edge case). Salvage must
+/// fit in what survivors can carry, not what the whole pre-battle fleet
+/// could.
+fn surviving_cargo_capacity(survivors: &[super::CombatShipStack]) -> u64 {
+    survivors.iter().fold(0_u64, |total, stack| {
+        let capacity = crate::craftable_catalog()
+            .definition(stack.craftable)
+            .ship
+            .map(|ship| ship.cargo_capacity)
+            .unwrap_or(0);
+        total.saturating_add(capacity.saturating_mul(stack.quantity))
+    })
+}
+
 fn ship_survivors(stacks: &[CombatStackState]) -> Vec<super::CombatShipStack> {
     stacks
         .iter()
@@ -396,8 +419,10 @@ fn planetary_losses(stacks: &[CombatStackState]) -> Vec<crate::PlanetaryForceLos
 /// `CombatResolution` shape `resolve_and_apply_attack` already consumes —
 /// only how it is produced changes. `attacker_cargo`/`attacker_cargo_capacity`
 /// come from the original launch-time snapshot (the engine itself tracks no
-/// logistics, only combat stacks), matching the legacy salvage-capping logic
-/// exactly. `CombatResolution.control` (planet-control flip on attacker
+/// logistics, only combat stacks) — salvage is additionally capped against
+/// `surviving_cargo_capacity`, since real ship losses during combat can
+/// leave the fleet with less capacity than it started with.
+/// `CombatResolution.control` (planet-control flip on attacker
 /// victory) is computed here exactly as today, preserving the doc's §4.7
 /// "décision de compatibilité temporaire".
 pub(crate) fn finalize_fleet_combat(
@@ -442,7 +467,9 @@ pub(crate) fn finalize_fleet_combat(
     let salvage_recovered = if matches!(outcome, super::CombatOutcome::Retreat { .. }) {
         galactic_domain::ResourceStock::ZERO
     } else if outcome == super::CombatOutcome::AttackerVictory && !attacker_survivors.is_empty() {
-        super::cap_salvage(salvage_recoverable, attacker_cargo, attacker_cargo_capacity)
+        let effective_capacity =
+            attacker_cargo_capacity.min(surviving_cargo_capacity(&attacker_survivors));
+        super::cap_salvage(salvage_recoverable, attacker_cargo, effective_capacity)
     } else {
         galactic_domain::ResourceStock::ZERO
     };

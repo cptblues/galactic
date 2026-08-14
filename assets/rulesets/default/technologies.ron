@@ -1,5 +1,5 @@
 (
-    version: 1,
+    version: 2,
     technologies: [
         (
             id: "spatial_detection",
@@ -17,7 +17,9 @@
             description: "Augmente la vitesse des vaisseaux grâce à des moteurs plus puissants et à une réduction contrôlée des marges de prudence.",
             required_milli_points: 20000,
             prerequisites: ["spatial_detection"],
-            building_prerequisites: [],
+            building_prerequisites: [
+                (id: "research_lab", level: 2),
+            ],
             unlock: InterstellarTravel,
             unlock_label: "Transit interstellaire",
         ),
@@ -27,7 +29,9 @@
             description: "Optimise l'espace de chargement en supprimant les volumes inutilement réservés au confort de l'équipage.",
             required_milli_points: 32000,
             prerequisites: ["propulsion"],
-            building_prerequisites: [],
+            building_prerequisites: [
+                (id: "research_lab", level: 3),
+            ],
             unlock: ExpandedCargo,
             unlock_label: "Capacité cargo augmentée",
         ),
@@ -37,7 +41,9 @@
             description: "Permet aux installations minières de poursuivre leur production avec une intervention humaine réduite et une reconnaissance sociale équivalente.",
             required_milli_points: 42000,
             prerequisites: ["cargo_capacity"],
-            building_prerequisites: [],
+            building_prerequisites: [
+                (id: "research_lab", level: 3),
+            ],
             unlock: RemoteExtraction,
             unlock_label: "Récolte distante automatisée",
         ),
@@ -47,7 +53,9 @@
             description: "Révèle les ressources et propriétés des mondes observés. Une planète correctement cataloguée est déjà partiellement administrée.",
             required_milli_points: 25000,
             prerequisites: ["spatial_detection"],
-            building_prerequisites: [],
+            building_prerequisites: [
+                (id: "research_lab", level: 2),
+            ],
             unlock: AnalyzePlanets,
             unlock_label: "Rapport planétaire complet",
         ),

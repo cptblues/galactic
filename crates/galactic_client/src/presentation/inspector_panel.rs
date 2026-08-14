@@ -17,9 +17,10 @@ use crate::presentation::procedural_materials::{
 use crate::presentation::scene::{action_button_color, action_button_outline, known_sector_labels};
 use crate::presentation::strategic_navigation::{StrategicNavigation, StrategicViewMode};
 use crate::{
-    InspectorContent, InspectorSection, InspectorTabBarRoot, InspectorTabButton,
-    InspectorTabButtonQuery, InspectorTabLabelQuery, InspectorTabState, InspectorTextQuery,
-    InspectorTextRole, PresentationLog, SimulationResource, TopBarText,
+    InspectorContent, InspectorPanelRoot, InspectorSection, InspectorTabBarRoot,
+    InspectorTabButton, InspectorTabButtonQuery, InspectorTabLabelQuery, InspectorTabState,
+    InspectorTextQuery, InspectorTextRole, OpenPanel, PresentationLog, SimulationResource,
+    TopBarText,
 };
 
 pub(crate) fn information_panel_content(simulation: &Simulation) -> InspectorContent {
@@ -1187,13 +1188,25 @@ pub(crate) struct InspectorPanelWidgets<'w, 's> {
         Query<'w, 's, &'static mut Node, (With<InspectorTabBarRoot>, Without<InspectorTabButton>)>,
     tab_buttons: InspectorTabButtonQuery<'w, 's>,
     tab_labels: InspectorTabLabelQuery<'w, 's>,
+    roots: Query<'w, 's, &'static mut Visibility, With<InspectorPanelRoot>>,
 }
 
 pub(crate) fn update_info_panel(
     simulation: Res<SimulationResource>,
+    open_panel: Res<OpenPanel>,
     mut tab_state: ResMut<InspectorTabState>,
     mut widgets: InspectorPanelWidgets,
 ) {
+    let visibility = if *open_panel == OpenPanel::None {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    };
+    for mut root in &mut widgets.roots {
+        if *root != visibility {
+            *root = visibility;
+        }
+    }
     let content = information_panel_content(simulation.simulation());
     tab_state.sync(&content.sections);
     let active = tab_state.active;

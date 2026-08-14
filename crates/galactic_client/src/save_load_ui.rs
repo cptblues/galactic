@@ -1,14 +1,14 @@
 // MVP-031: manual save/load screen backed by `galactic_persistence`.
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bevy::input::{ButtonState, keyboard::KeyboardInput};
 use bevy::prelude::*;
 use bevy::ui::RelativeCursorPosition;
 use galactic_domain::SystemId;
 use galactic_persistence::{
-    SaveFileError, SaveFileHeader, SaveSlotMetadata, default_save_directory, list_save_slots,
-    load_from_path, restore_from_snapshot, save_to_path, snapshot_from_simulation,
+    SaveFileError, SaveFileHeader, SaveSlotMetadata, default_save_directory, delete_save,
+    list_save_slots, load_from_path, restore_from_snapshot, save_to_path, snapshot_from_simulation,
 };
 
 use crate::presentation::{
@@ -54,6 +54,7 @@ impl Plugin for SaveLoadUiPlugin {
                     update_save_load_visibility,
                     update_save_name_field,
                     update_save_slot_rows,
+                    update_delete_button_label,
                 )
                     .chain()
                     .in_set(PresentationUpdateSet::Management),
@@ -68,6 +69,9 @@ pub(crate) struct SaveLoadUiState {
     feedback: String,
     name_buffer: String,
     name_editing: bool,
+    /// Two-press delete confirmation (mirrors `combat_ui.rs`'s retreat
+    /// pattern) — `Some(deadline)` while armed; expires back to `None`.
+    delete_armed_until: Option<Duration>,
 }
 
 pub(crate) fn save_name_is_editing(ui: &SaveLoadUiState) -> bool {
@@ -80,6 +84,8 @@ enum SaveLoadButtonAction {
     Close,
     Save,
     Load,
+    Overwrite,
+    Delete,
     SelectSlot(usize),
     ToggleNameEditing,
 }
@@ -105,6 +111,9 @@ enum SaveLoadTextRole {
 struct SaveSlotRow {
     slot: usize,
 }
+
+#[derive(Component)]
+struct DeleteButtonLabel;
 
 pub(crate) fn spawn_save_load_toggle(parent: &mut ChildSpawnerCommands) {
     parent
@@ -205,6 +214,8 @@ fn spawn_save_load_header(root: &mut ChildSpawnerCommands) {
             ));
             spawn_save_load_small_button(header, "Enregistrer", SaveLoadButtonAction::Save, 120.0);
             spawn_save_load_small_button(header, "Charger", SaveLoadButtonAction::Load, 100.0);
+            spawn_save_load_small_button(header, "Écraser", SaveLoadButtonAction::Overwrite, 100.0);
+            spawn_delete_button(header);
             spawn_save_load_small_button(
                 header,
                 "Fermer  [J / Échap]",
@@ -247,6 +258,42 @@ fn spawn_save_load_small_button(
                 Text::new(label),
                 ui_text_font(11.0),
                 TextColor(Color::srgb(0.92, 0.88, 1.0)),
+            ));
+        });
+}
+
+/// Destructive — two-press confirmation (`delete_armed_until`), label swaps
+/// between "Supprimer" and "Confirmer ?" via `DeleteButtonLabel`, mirroring
+/// `combat_ui.rs`'s retreat-confirmation pattern.
+fn spawn_delete_button(parent: &mut ChildSpawnerCommands) {
+    parent
+        .spawn((
+            Button,
+            Node {
+                width: Val::Px(140.0),
+                min_height: Val::Px(32.0),
+                padding: UiRect::axes(Val::Px(8.0), Val::Px(5.0)),
+                border: UiRect::all(Val::Px(1.0)),
+                border_radius: BorderRadius::all(Val::Px(5.0)),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.12, 0.10, 0.17, 0.98)),
+            Outline::new(
+                Val::Px(1.0),
+                Val::ZERO,
+                Color::srgba(0.70, 0.62, 0.90, 0.60),
+            ),
+            SaveLoadButtonAction::Delete,
+            UiPointerBlocker,
+        ))
+        .with_children(|button| {
+            button.spawn((
+                Text::new("Supprimer"),
+                ui_text_font(11.0),
+                TextColor(Color::srgb(0.92, 0.88, 1.0)),
+                DeleteButtonLabel,
             ));
         });
 }
@@ -517,6 +564,75 @@ fn load_selected_slot(
     }
 }
 
+/// Rewrites the selected slot's own file in place — same path, fresh
+/// timestamp, same display name (an in-place update, not a rename) —
+/// instead of `save_current_game`'s always-new-file behavior.
+fn overwrite_selected_slot(
+    simulation: &SimulationResource,
+    navigation: &super::StrategicNavigation,
+    ui: &mut SaveLoadUiState,
+) {
+    let Some(index) = ui.selected_slot else {
+        ui.feedback = "Sélectionne une sauvegarde à écraser.".to_string();
+        return;
+    };
+    let Some(slot) = ui.slots.get(index) else {
+        ui.feedback = "Sélectionne une sauvegarde à écraser.".to_string();
+        return;
+    };
+    let path = slot.path.clone();
+    let display_name = slot.display_name.clone();
+    let header = SaveFileHeader {
+        display_name: display_name.clone(),
+        saved_at_unix_seconds: unix_seconds_now(),
+    };
+    let save = snapshot_from_simulation(simulation.simulation());
+
+    match save_to_path(&path, header, &save) {
+        Ok(()) => {
+            write_nav_sidecar(&path, ClientViewMode::from(navigation.mode));
+            ui.feedback = format!("Sauvegarde écrasée ({display_name}).");
+            refresh_save_slots(ui);
+        }
+        Err(error) => {
+            ui.feedback = save_file_error_message(&error);
+        }
+    }
+}
+
+/// Two-press confirmation, mirroring `combat_ui.rs`'s
+/// `CombatUiAction::Retreat` handler: first call (or a call after the 3s
+/// window expired) arms it, a second call inside the window deletes.
+fn delete_selected_slot(ui: &mut SaveLoadUiState, now: Duration) {
+    let Some(index) = ui.selected_slot else {
+        ui.feedback = "Sélectionne une sauvegarde à supprimer.".to_string();
+        return;
+    };
+    let Some(slot) = ui.slots.get(index).cloned() else {
+        ui.feedback = "Sélectionne une sauvegarde à supprimer.".to_string();
+        return;
+    };
+
+    match ui.delete_armed_until {
+        Some(deadline) if now <= deadline => {
+            ui.delete_armed_until = None;
+            match delete_save(&slot.path) {
+                Ok(()) => {
+                    std::fs::remove_file(nav_sidecar_path(&slot.path)).ok();
+                    ui.feedback = format!("Sauvegarde supprimée ({}).", slot.display_name);
+                    refresh_save_slots(ui);
+                }
+                Err(error) => {
+                    ui.feedback = save_file_error_message(&error);
+                }
+            }
+        }
+        _ => {
+            ui.delete_armed_until = Some(now + Duration::from_secs(3));
+        }
+    }
+}
+
 fn save_file_error_message(error: &SaveFileError) -> String {
     match error {
         SaveFileError::Incompatible(_) => {
@@ -576,9 +692,11 @@ fn handle_quicksave_shortcuts(
     mut rebuild: ResMut<super::ViewRebuildRequest>,
     navigation_ui: Res<super::navigation_ui::NavigationUiState>,
     fleet_ui: Res<crate::fleet_ui::FleetUiState>,
+    craft_ui: Res<crate::craft_ui::CraftUiState>,
 ) {
     if super::navigation_ui::navigation_text_or_filter_is_active(&navigation_ui)
-        || crate::fleet_ui::fleet_name_is_editing(&fleet_ui)
+        || crate::fleet_ui::fleet_text_input_is_active(&fleet_ui)
+        || crate::craft_ui::craft_quantity_is_editing(&craft_ui)
         || ui.name_editing
     {
         return;
@@ -661,9 +779,11 @@ fn handle_save_load_shortcuts(
     mut open_panel: ResMut<OpenPanel>,
     mut navigation_ui: ResMut<super::navigation_ui::NavigationUiState>,
     fleet_ui: Res<crate::fleet_ui::FleetUiState>,
+    craft_ui: Res<crate::craft_ui::CraftUiState>,
 ) {
     if super::navigation_ui::navigation_text_or_filter_is_active(&navigation_ui)
-        || crate::fleet_ui::fleet_name_is_editing(&fleet_ui)
+        || crate::fleet_ui::fleet_text_input_is_active(&fleet_ui)
+        || crate::craft_ui::craft_quantity_is_editing(&craft_ui)
         || ui.name_editing
     {
         return;
@@ -677,6 +797,7 @@ fn handle_save_load_shortcuts(
             OpenPanel::None
         };
         ui.feedback.clear();
+        ui.delete_armed_until = None;
         if opening {
             navigation_ui.search_open = false;
             navigation_ui.filters_open = false;
@@ -687,6 +808,7 @@ fn handle_save_load_shortcuts(
 
     if *open_panel == OpenPanel::SaveLoad && keyboard.just_pressed(KeyCode::Escape) {
         *open_panel = OpenPanel::None;
+        ui.delete_armed_until = None;
     }
 }
 
@@ -733,6 +855,7 @@ fn handle_save_load_buttons(
     mut navigation: ResMut<super::StrategicNavigation>,
     mut navigation_ui: ResMut<super::navigation_ui::NavigationUiState>,
     interactions: SaveLoadButtonInteractionQuery,
+    time: Res<Time>,
 ) {
     for (interaction, action) in &interactions {
         if *interaction != Interaction::Pressed {
@@ -748,20 +871,31 @@ fn handle_save_load_buttons(
                     OpenPanel::None
                 };
                 ui.feedback.clear();
+                ui.delete_armed_until = None;
                 if opening {
                     navigation_ui.search_open = false;
                     navigation_ui.filters_open = false;
                     refresh_save_slots(&mut ui);
                 }
             }
-            SaveLoadButtonAction::Close => *open_panel = OpenPanel::None,
+            SaveLoadButtonAction::Close => {
+                *open_panel = OpenPanel::None;
+                ui.delete_armed_until = None;
+            }
             SaveLoadButtonAction::Save => save_current_game(&simulation, &navigation, &mut ui),
             SaveLoadButtonAction::Load => {
                 load_selected_slot(&mut simulation, &mut rebuild, &mut navigation, &mut ui);
             }
+            SaveLoadButtonAction::Overwrite => {
+                overwrite_selected_slot(&simulation, &navigation, &mut ui);
+            }
+            SaveLoadButtonAction::Delete => {
+                delete_selected_slot(&mut ui, time.elapsed());
+            }
             SaveLoadButtonAction::SelectSlot(slot) => {
                 ui.selected_slot = Some(slot);
                 ui.feedback.clear();
+                ui.delete_armed_until = None;
             }
             SaveLoadButtonAction::ToggleNameEditing => {
                 ui.name_editing = !ui.name_editing;
@@ -824,6 +958,22 @@ fn update_save_name_field(
         if *role == SaveLoadTextRole::NameField && text.0 != label {
             text.0 = label.clone();
         }
+    }
+}
+
+fn update_delete_button_label(
+    ui: Res<SaveLoadUiState>,
+    time: Res<Time>,
+    mut texts: Query<&mut Text, With<DeleteButtonLabel>>,
+) {
+    let armed = ui
+        .delete_armed_until
+        .is_some_and(|deadline| time.elapsed() <= deadline);
+    let label = if armed { "Confirmer ?" } else { "Supprimer" };
+    if let Ok(mut text) = texts.single_mut()
+        && text.0 != label
+    {
+        text.0 = label.to_string();
     }
 }
 
@@ -1233,5 +1383,106 @@ mod tests {
         assert!(!save_name_is_editing(&ui));
         ui.name_editing = true;
         assert!(save_name_is_editing(&ui));
+    }
+
+    #[test]
+    fn overwriting_a_slot_keeps_its_path_and_display_name() {
+        let _dir = TempSaveDir::new("overwrite");
+
+        let source = SimulationResource {
+            simulation: Simulation::new(UniverseConfig::mvp()),
+            pending_events: Vec::new(),
+        };
+        let mut ui = SaveLoadUiState::default();
+        save_current_game(&source, &StrategicNavigation::default(), &mut ui);
+        let original_path = ui.slots[0].path.clone();
+        let original_name = ui.slots[0].display_name.clone();
+        ui.selected_slot = Some(0);
+
+        overwrite_selected_slot(&source, &StrategicNavigation::default(), &mut ui);
+
+        assert!(
+            ui.feedback.starts_with("Sauvegarde écrasée"),
+            "unexpected feedback: {}",
+            ui.feedback
+        );
+        assert_eq!(ui.slots.len(), 1, "overwrite must not create a new file");
+        assert_eq!(ui.slots[0].path, original_path);
+        assert_eq!(ui.slots[0].display_name, original_name);
+    }
+
+    #[test]
+    fn overwriting_without_a_selected_slot_reports_feedback_and_writes_nothing() {
+        let _dir = TempSaveDir::new("overwrite-no-selection");
+
+        let source = SimulationResource {
+            simulation: Simulation::new(UniverseConfig::mvp()),
+            pending_events: Vec::new(),
+        };
+        let mut ui = SaveLoadUiState::default();
+
+        overwrite_selected_slot(&source, &StrategicNavigation::default(), &mut ui);
+
+        assert!(!ui.feedback.is_empty());
+        assert!(ui.slots.is_empty());
+    }
+
+    #[test]
+    fn deleting_a_slot_requires_a_second_press_within_the_confirmation_window() {
+        let _dir = TempSaveDir::new("delete-two-press");
+
+        let source = SimulationResource {
+            simulation: Simulation::new(UniverseConfig::mvp()),
+            pending_events: Vec::new(),
+        };
+        let mut ui = SaveLoadUiState::default();
+        save_current_game(&source, &StrategicNavigation::default(), &mut ui);
+        let path = ui.slots[0].path.clone();
+        ui.selected_slot = Some(0);
+
+        // First press arms the confirmation — nothing is deleted yet.
+        delete_selected_slot(&mut ui, Duration::from_secs(0));
+        assert!(path.exists(), "the file must survive the first press");
+        assert!(ui.delete_armed_until.is_some());
+
+        // Second press, still inside the 3s window, actually deletes.
+        delete_selected_slot(&mut ui, Duration::from_secs(1));
+        assert!(!path.exists());
+        assert!(ui.feedback.starts_with("Sauvegarde supprimée"));
+        assert!(ui.delete_armed_until.is_none());
+        assert!(ui.slots.is_empty());
+    }
+
+    #[test]
+    fn deleting_expires_the_confirmation_window_and_requires_rearming() {
+        let _dir = TempSaveDir::new("delete-expired");
+
+        let source = SimulationResource {
+            simulation: Simulation::new(UniverseConfig::mvp()),
+            pending_events: Vec::new(),
+        };
+        let mut ui = SaveLoadUiState::default();
+        save_current_game(&source, &StrategicNavigation::default(), &mut ui);
+        let path = ui.slots[0].path.clone();
+        ui.selected_slot = Some(0);
+
+        delete_selected_slot(&mut ui, Duration::from_secs(0));
+        // A press arriving after the 3s window re-arms instead of deleting.
+        delete_selected_slot(&mut ui, Duration::from_secs(10));
+
+        assert!(path.exists(), "an expired confirmation must not delete");
+        assert!(ui.delete_armed_until.is_some());
+    }
+
+    #[test]
+    fn deleting_without_a_selected_slot_reports_feedback_and_deletes_nothing() {
+        let _dir = TempSaveDir::new("delete-no-selection");
+
+        let mut ui = SaveLoadUiState::default();
+
+        delete_selected_slot(&mut ui, Duration::from_secs(0));
+
+        assert!(!ui.feedback.is_empty());
+        assert!(ui.delete_armed_until.is_none());
     }
 }

@@ -9,8 +9,8 @@ mod settings;
 mod snapshot;
 
 pub use file::{
-    SaveFileError, SaveFileHeader, SaveSlotMetadata, default_save_directory, list_save_slots,
-    load_from_path, save_to_path,
+    SaveFileError, SaveFileHeader, SaveSlotMetadata, default_save_directory, delete_save,
+    list_save_slots, load_from_path, save_to_path,
 };
 pub use restore::restore_from_snapshot;
 pub use save::{

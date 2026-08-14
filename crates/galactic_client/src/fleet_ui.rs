@@ -47,6 +47,7 @@ impl Plugin for FleetUiPlugin {
                     handle_fleet_shortcuts,
                     handle_fleet_tab_buttons,
                     handle_ship_stepper_buttons,
+                    handle_fleet_quantity_input,
                     handle_form_fleet_button,
                     handle_fleet_management_buttons,
                     handle_fleet_name_input,
@@ -64,6 +65,7 @@ impl Plugin for FleetUiPlugin {
                     update_fleet_name_editor,
                     update_fleet_rename_buttons,
                     update_ship_stepper_rows,
+                    update_quantity_editor_text,
                     update_active_mission_rows,
                     update_report_rows,
                     update_feedback_text,
@@ -90,6 +92,12 @@ pub(crate) struct FleetUiState {
     selected_report_id: Option<MissionId>,
     rename_buffer: String,
     rename_editing: bool,
+    /// Which stepper row's quantity box is being typed into, if any — a
+    /// numeric text-entry alternative to the `+`/`-` steppers, mirroring the
+    /// fleet-rename text-input pattern (playtest feedback: typing a quantity
+    /// directly is faster than repeated clicking for large numbers).
+    quantity_editing: Option<CraftableId>,
+    quantity_buffer: String,
     feedback: String,
 }
 
@@ -102,6 +110,8 @@ impl Default for FleetUiState {
             selected_report_id: None,
             rename_buffer: String::new(),
             rename_editing: false,
+            quantity_editing: None,
+            quantity_buffer: String::new(),
             feedback: String::new(),
         }
     }
@@ -113,6 +123,7 @@ enum FleetButtonAction {
     Close,
     SelectTab(FleetUiTab),
     Ship(CraftableId, i64),
+    StartQuantityEdit(CraftableId),
     FormFleet,
     SelectFleet(usize),
     StartFleetRename,
@@ -166,6 +177,9 @@ struct FleetNameEditorText;
 struct ShipStepperRow {
     craftable: CraftableId,
 }
+
+#[derive(Component)]
+struct QuantityEditorText(CraftableId);
 
 #[derive(Component)]
 struct MissionRow {
@@ -526,12 +540,12 @@ fn spawn_fleet_list_panel(row: &mut ChildSpawnerCommands) {
 fn spawn_fleet_composer_panel(row: &mut ChildSpawnerCommands) {
     row.spawn((
         Node {
-            width: Val::Px(360.0),
-            padding: UiRect::all(Val::Px(9.0)),
+            width: Val::Px(560.0),
+            padding: UiRect::all(Val::Px(11.0)),
             border: UiRect::all(Val::Px(1.0)),
             border_radius: BorderRadius::all(Val::Px(6.0)),
             flex_direction: FlexDirection::Column,
-            row_gap: Val::Px(6.0),
+            row_gap: Val::Px(7.0),
             overflow: Overflow::scroll_y(),
             ..default()
         },
@@ -541,7 +555,7 @@ fn spawn_fleet_composer_panel(row: &mut ChildSpawnerCommands) {
     .with_children(|composer| {
         composer.spawn((
             Text::new("COMPOSER UNE NOUVELLE FLOTTE"),
-            ui_text_font(12.0),
+            ui_text_font(13.0),
             TextColor(Color::srgb(0.78, 0.86, 1.0)),
         ));
         for definition in craftable_catalog().definitions() {
@@ -584,16 +598,16 @@ fn spawn_ship_stepper_row(parent: &mut ChildSpawnerCommands, craftable: Craftabl
     parent
         .spawn((Node {
             width: Val::Percent(100.0),
-            min_height: Val::Px(28.0),
+            min_height: Val::Px(38.0),
             flex_direction: FlexDirection::Row,
             align_items: AlignItems::Center,
-            column_gap: Val::Px(6.0),
+            column_gap: Val::Px(7.0),
             ..default()
         },))
         .with_children(|row| {
             row.spawn((
                 Text::new(""),
-                ui_text_font(10.5),
+                ui_text_font(12.0),
                 TextColor(Color::srgb(0.84, 0.90, 0.98)),
                 Node {
                     flex_grow: 1.0,
@@ -602,6 +616,7 @@ fn spawn_ship_stepper_row(parent: &mut ChildSpawnerCommands, craftable: Craftabl
                 ShipStepperRow { craftable },
             ));
             spawn_stepper_button(row, "-", FleetButtonAction::Ship(craftable, -1));
+            spawn_quantity_editor(row, craftable);
             spawn_stepper_button(row, "+", FleetButtonAction::Ship(craftable, 1));
         });
 }
@@ -611,8 +626,8 @@ fn spawn_stepper_button(parent: &mut ChildSpawnerCommands, label: &str, action: 
         .spawn((
             Button,
             Node {
-                width: Val::Px(28.0),
-                min_height: Val::Px(24.0),
+                width: Val::Px(36.0),
+                min_height: Val::Px(34.0),
                 justify_content: JustifyContent::Center,
                 align_items: AlignItems::Center,
                 border: UiRect::all(Val::Px(1.0)),
@@ -627,8 +642,40 @@ fn spawn_stepper_button(parent: &mut ChildSpawnerCommands, label: &str, action: 
         .with_children(|button| {
             button.spawn((
                 Text::new(label),
-                ui_text_font(11.0),
+                ui_text_font(13.0),
                 TextColor(Color::srgb(0.86, 0.92, 1.0)),
+            ));
+        });
+}
+
+/// A click-to-edit numeric box between the `-`/`+` steppers — types a
+/// quantity directly instead of repeated clicking (playtest feedback).
+/// Reuses the fleet-rename text-input convention (`handle_fleet_quantity_input`
+/// mirrors `handle_fleet_name_input`'s shape exactly).
+fn spawn_quantity_editor(parent: &mut ChildSpawnerCommands, craftable: CraftableId) {
+    parent
+        .spawn((
+            Button,
+            Node {
+                width: Val::Px(64.0),
+                min_height: Val::Px(34.0),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                border: UiRect::all(Val::Px(1.0)),
+                border_radius: BorderRadius::all(Val::Px(4.0)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.04, 0.07, 0.12, 0.98)),
+            Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
+            FleetButtonAction::StartQuantityEdit(craftable),
+            UiPointerBlocker,
+        ))
+        .with_children(|button| {
+            button.spawn((
+                Text::new("0"),
+                ui_text_font(13.0),
+                TextColor(Color::srgb(0.92, 0.96, 1.0)),
+                QuantityEditorText(craftable),
             ));
         });
 }
@@ -994,10 +1041,14 @@ fn handle_fleet_tab_buttons(
             }
             FleetButtonAction::Close => {
                 ui.rename_editing = false;
+                ui.quantity_editing = None;
+                ui.quantity_buffer.clear();
                 *open_panel = OpenPanel::None;
             }
             FleetButtonAction::SelectTab(tab) => {
                 ui.rename_editing = false;
+                ui.quantity_editing = None;
+                ui.quantity_buffer.clear();
                 ui.tab = tab;
             }
             _ => {}
@@ -1016,19 +1067,55 @@ fn handle_ship_stepper_buttons(
         if *interaction != Interaction::Pressed {
             continue;
         }
-        let FleetButtonAction::Ship(craftable, delta) = *action else {
-            continue;
-        };
-        let available = available_by_craftable.map_or(0, |inventory| inventory.quantity(craftable));
-        let entry = ui.pending_composition.entry(craftable).or_insert(0);
-        let next = if delta.is_negative() {
-            entry.saturating_sub(1)
-        } else {
-            (*entry + 1).min(available)
-        };
-        *entry = next;
-        ui.feedback.clear();
+        match *action {
+            FleetButtonAction::Ship(craftable, delta) => {
+                // A stepper click is a clear "use the buttons" signal —
+                // cancel any in-progress numeric text entry rather than
+                // silently applying it alongside the click.
+                ui.quantity_editing = None;
+                ui.quantity_buffer.clear();
+                let available =
+                    available_by_craftable.map_or(0, |inventory| inventory.quantity(craftable));
+                let entry = ui.pending_composition.entry(craftable).or_insert(0);
+                let next = if delta.is_negative() {
+                    entry.saturating_sub(1)
+                } else {
+                    (*entry + 1).min(available)
+                };
+                *entry = next;
+                ui.feedback.clear();
+            }
+            FleetButtonAction::StartQuantityEdit(craftable) => {
+                if let Some(previous) = ui.quantity_editing
+                    && previous != craftable
+                {
+                    commit_quantity_edit(&simulation, &mut ui, previous);
+                }
+                let current = ui.pending_composition.get(&craftable).copied().unwrap_or(0);
+                ui.quantity_buffer = current.to_string();
+                ui.quantity_editing = Some(craftable);
+                ui.feedback.clear();
+            }
+            _ => {}
+        }
     }
+}
+
+/// Parses `ui.quantity_buffer` and applies it to `craftable`'s pending
+/// composition, clamped to what the active colony's dock actually has —
+/// same bound the `+` stepper already enforces.
+fn commit_quantity_edit(
+    simulation: &SimulationResource,
+    ui: &mut FleetUiState,
+    craftable: CraftableId,
+) {
+    let available = active_colony(simulation.simulation())
+        .map_or(0, |colony| colony.inventory.quantity(craftable));
+    let requested: u64 = ui.quantity_buffer.parse().unwrap_or(0);
+    ui.pending_composition
+        .insert(craftable, requested.min(available));
+    ui.quantity_editing = None;
+    ui.quantity_buffer.clear();
 }
 
 fn handle_form_fleet_button(
@@ -1039,6 +1126,9 @@ fn handle_form_fleet_button(
     for (interaction, action) in &interactions {
         if *interaction != Interaction::Pressed || *action != FleetButtonAction::FormFleet {
             continue;
+        }
+        if let Some(craftable) = ui.quantity_editing {
+            commit_quantity_edit(&simulation, &mut ui, craftable);
         }
         form_selected_fleet(&mut simulation, &mut ui);
     }
@@ -1173,6 +1263,55 @@ fn cancel_fleet_rename(simulation: &SimulationResource, ui: &mut FleetUiState) {
     }
     ui.rename_editing = false;
     ui.feedback.clear();
+}
+
+const MAX_QUANTITY_DIGITS: usize = 6;
+
+/// Mirrors `handle_fleet_name_input`'s shape exactly (`Backspace`/`Enter`/
+/// `Escape` special-cased, everything else pushes filtered characters) —
+/// only the character filter (ASCII digits instead of "not a control
+/// character") and the commit action differ.
+fn handle_fleet_quantity_input(
+    mut events: MessageReader<KeyboardInput>,
+    open_panel: Res<OpenPanel>,
+    simulation: Res<SimulationResource>,
+    mut ui: ResMut<FleetUiState>,
+) {
+    if *open_panel != OpenPanel::Fleet || ui.tab != FleetUiTab::Fleets {
+        return;
+    }
+    let Some(craftable) = ui.quantity_editing else {
+        return;
+    };
+
+    for event in events.read() {
+        if event.state != ButtonState::Pressed {
+            continue;
+        }
+        match event.key_code {
+            KeyCode::Backspace => {
+                ui.quantity_buffer.pop();
+            }
+            KeyCode::Enter => {
+                commit_quantity_edit(&simulation, &mut ui, craftable);
+            }
+            KeyCode::Escape => {
+                ui.quantity_editing = None;
+                ui.quantity_buffer.clear();
+            }
+            _ => {
+                if let Some(text) = &event.text {
+                    for ch in text.chars() {
+                        if ch.is_ascii_digit()
+                            && ui.quantity_buffer.chars().count() < MAX_QUANTITY_DIGITS
+                        {
+                            ui.quantity_buffer.push(ch);
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn handle_active_mission_buttons(
@@ -1537,12 +1676,31 @@ fn update_ship_stepper_rows(
     for (row, mut text) in &mut rows {
         let definition = craftable_definition(row.craftable);
         let available = colony.map_or(0, |colony| colony.inventory.quantity(row.craftable));
-        let selected = ui
-            .pending_composition
-            .get(&row.craftable)
-            .copied()
-            .unwrap_or(0);
-        let label = format!("{} — {} / {} au dock", definition.name, selected, available);
+        let label = format!("{} — {} au dock", definition.name, available);
+        if text.0 != label {
+            text.0 = label;
+        }
+    }
+}
+
+fn update_quantity_editor_text(
+    ui: Res<FleetUiState>,
+    open_panel: Res<OpenPanel>,
+    mut texts: Query<(&QuantityEditorText, &mut Text)>,
+) {
+    if *open_panel != OpenPanel::Fleet || ui.tab != FleetUiTab::Fleets {
+        return;
+    }
+    for (marker, mut text) in &mut texts {
+        let label = if ui.quantity_editing == Some(marker.0) {
+            format!("{}_", ui.quantity_buffer)
+        } else {
+            ui.pending_composition
+                .get(&marker.0)
+                .copied()
+                .unwrap_or(0)
+                .to_string()
+        };
         if text.0 != label {
             text.0 = label;
         }
@@ -1853,8 +2011,13 @@ pub(crate) fn active_colony(simulation: &Simulation) -> Option<&galactic_sim::Co
     simulation.state().active_player_colony()
 }
 
-pub(crate) fn fleet_name_is_editing(ui: &FleetUiState) -> bool {
-    ui.rename_editing
+/// True while the fleet screen is capturing free-text keyboard input —
+/// either the rename field or a stepper row's numeric quantity box — so
+/// every other screen's shortcut guard (already consulting this under its
+/// old, rename-only name) also suspends its own shortcuts during quantity
+/// entry without each call site needing a second check.
+pub(crate) fn fleet_text_input_is_active(ui: &FleetUiState) -> bool {
+    ui.rename_editing || ui.quantity_editing.is_some()
 }
 
 fn fleet_tab_button_color(active: bool, interaction: &Interaction) -> Color {
@@ -1924,6 +2087,87 @@ mod tests {
         update_fleet_rename_buttons
     );
     assert_disjoint_queries!(update_report_rows_queries_are_disjoint, update_report_rows);
+    assert_disjoint_queries!(
+        update_quantity_editor_text_queries_are_disjoint,
+        update_quantity_editor_text
+    );
+
+    fn fresh_simulation_resource() -> SimulationResource {
+        SimulationResource {
+            simulation: Simulation::new(UniverseConfig::mvp()),
+            pending_events: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn commit_quantity_edit_clamps_to_what_the_dock_actually_has() {
+        // A freshly-started colony has 0 of every craftable docked (nothing
+        // built yet) — `.min(0)` still exercises the real clamp path, just
+        // against a zero bound: no public test-only way to seed inventory
+        // exists outside `galactic_sim` (`CraftInventory::add` is
+        // `pub(crate)`), and that's an intentional boundary, not a gap to
+        // work around.
+        let simulation = fresh_simulation_resource();
+        let mut ui = FleetUiState {
+            quantity_buffer: "999".to_string(),
+            quantity_editing: Some(CraftableId::FRIGATE_BULWARK),
+            ..Default::default()
+        };
+
+        commit_quantity_edit(&simulation, &mut ui, CraftableId::FRIGATE_BULWARK);
+
+        assert_eq!(
+            ui.pending_composition.get(&CraftableId::FRIGATE_BULWARK),
+            Some(&0)
+        );
+        assert_eq!(ui.quantity_editing, None);
+        assert!(ui.quantity_buffer.is_empty());
+    }
+
+    #[test]
+    fn commit_quantity_edit_treats_an_empty_buffer_as_zero() {
+        let simulation = fresh_simulation_resource();
+        let mut ui = FleetUiState::default();
+        ui.quantity_buffer.clear();
+
+        commit_quantity_edit(&simulation, &mut ui, CraftableId::FRIGATE_BULWARK);
+
+        assert_eq!(
+            ui.pending_composition.get(&CraftableId::FRIGATE_BULWARK),
+            Some(&0)
+        );
+    }
+
+    #[test]
+    fn commit_quantity_edit_ignores_non_numeric_garbage() {
+        let simulation = fresh_simulation_resource();
+        // The keyboard filter only ever pushes ASCII digits, but the parse
+        // fallback is still worth locking down directly.
+        let mut ui = FleetUiState {
+            quantity_buffer: "abc".to_string(),
+            ..Default::default()
+        };
+
+        commit_quantity_edit(&simulation, &mut ui, CraftableId::FRIGATE_BULWARK);
+
+        assert_eq!(
+            ui.pending_composition.get(&CraftableId::FRIGATE_BULWARK),
+            Some(&0)
+        );
+    }
+
+    #[test]
+    fn fleet_text_input_is_active_covers_both_rename_and_quantity_editing() {
+        let mut ui = FleetUiState::default();
+        assert!(!fleet_text_input_is_active(&ui));
+
+        ui.rename_editing = true;
+        assert!(fleet_text_input_is_active(&ui));
+        ui.rename_editing = false;
+
+        ui.quantity_editing = Some(CraftableId::FRIGATE_BULWARK);
+        assert!(fleet_text_input_is_active(&ui));
+    }
 
     #[test]
     fn active_fleet_tab_uses_a_distinct_button_style() {

@@ -1,5 +1,4 @@
 pub(crate) mod colony_management_ui;
-pub(crate) mod combat_autopilot;
 pub(crate) mod components;
 pub(crate) mod graphics_settings;
 pub(crate) mod icons;

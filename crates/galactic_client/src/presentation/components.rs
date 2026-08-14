@@ -179,6 +179,8 @@ pub(crate) enum ScrollIndicatorId {
     MissionReportList,
     MissionReportDetail,
     SaveSlotList,
+    CombatAlliedColumn,
+    CombatEnemyColumn,
 }
 
 #[derive(Component, Debug, Clone, Copy)]
@@ -212,6 +214,14 @@ pub(crate) enum InspectorTextRole {
     /// shown under the tab content, outside the scroll area.
     Footer,
 }
+
+/// The planet-analysis inspector panel's own root — was previously unmarked
+/// and thus never hidden while any other big panel (`OpenPanel != None`) was
+/// open, producing a visible overlap in the shared top-right screen region
+/// (playtest feedback). `update_info_panel` hides it whenever a panel is
+/// open, shows it otherwise.
+#[derive(Component)]
+pub(crate) struct InspectorPanelRoot;
 
 /// Wraps the fixed pool of inspector tab buttons so the whole row can be hidden when the
 /// current selection only has a single section (no tabs needed).

@@ -484,10 +484,12 @@ fn handle_research_shortcuts(
     mut navigation_ui: ResMut<super::navigation_ui::NavigationUiState>,
     fleet_ui: Res<crate::fleet_ui::FleetUiState>,
     save_load_ui: Res<crate::save_load_ui::SaveLoadUiState>,
+    craft_ui: Res<crate::craft_ui::CraftUiState>,
 ) {
     if super::navigation_ui::navigation_text_or_filter_is_active(&navigation_ui)
-        || crate::fleet_ui::fleet_name_is_editing(&fleet_ui)
+        || crate::fleet_ui::fleet_text_input_is_active(&fleet_ui)
         || crate::save_load_ui::save_name_is_editing(&save_load_ui)
+        || crate::craft_ui::craft_quantity_is_editing(&craft_ui)
     {
         return;
     }
@@ -1082,6 +1084,17 @@ mod tests {
     #[test]
     fn queue_text_distinguishes_active_and_waiting() {
         let mut simulation = simulation_with_lab();
+        // Propulsion now requires research_lab level 2 (COMBAT-001-E-era
+        // playtest feedback) — bump past `simulation_with_lab`'s level-1
+        // baseline so queueing it actually succeeds and ends up "waiting"
+        // behind spatial detection.
+        simulation
+            .state_mut()
+            .colonies
+            .first_mut()
+            .expect("home colony exists")
+            .buildings
+            .set_level(BuildingKind::RESEARCH_LAB, 2);
         simulation.apply_player_action(GameAction::QueueResearch {
             technology: TechnologyId::SPATIAL_DETECTION,
         });
@@ -1109,6 +1122,7 @@ mod tests {
         world.insert_resource(navigation_ui);
         world.insert_resource(crate::fleet_ui::FleetUiState::default());
         world.insert_resource(crate::save_load_ui::SaveLoadUiState::default());
+        world.insert_resource(crate::craft_ui::CraftUiState::default());
         let mut keyboard = ButtonInput::<KeyCode>::default();
         keyboard.press(KeyCode::KeyT);
         world.insert_resource(keyboard);

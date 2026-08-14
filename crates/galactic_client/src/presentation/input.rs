@@ -24,10 +24,14 @@ pub(crate) fn handle_simulation_input(
     navigation_ui: Res<navigation_ui::NavigationUiState>,
     fleet_ui: Res<crate::fleet_ui::FleetUiState>,
     save_load_ui: Res<crate::save_load_ui::SaveLoadUiState>,
+    craft_ui: Res<crate::craft_ui::CraftUiState>,
+    combat_ui: Res<crate::combat_ui::CombatUiState>,
 ) {
     if navigation_ui::navigation_text_or_filter_is_active(&navigation_ui)
-        || crate::fleet_ui::fleet_name_is_editing(&fleet_ui)
+        || crate::fleet_ui::fleet_text_input_is_active(&fleet_ui)
         || crate::save_load_ui::save_name_is_editing(&save_load_ui)
+        || crate::craft_ui::craft_quantity_is_editing(&craft_ui)
+        || combat_ui.current.is_some()
     {
         return;
     }
@@ -48,10 +52,12 @@ pub(crate) fn toggle_debug_overlay(
     navigation_ui: Res<navigation_ui::NavigationUiState>,
     fleet_ui: Res<crate::fleet_ui::FleetUiState>,
     save_load_ui: Res<crate::save_load_ui::SaveLoadUiState>,
+    craft_ui: Res<crate::craft_ui::CraftUiState>,
 ) {
     if navigation_ui::navigation_text_or_filter_is_active(&navigation_ui)
-        || crate::fleet_ui::fleet_name_is_editing(&fleet_ui)
+        || crate::fleet_ui::fleet_text_input_is_active(&fleet_ui)
         || crate::save_load_ui::save_name_is_editing(&save_load_ui)
+        || crate::craft_ui::craft_quantity_is_editing(&craft_ui)
     {
         return;
     }
@@ -87,6 +93,7 @@ pub(crate) struct ViewInputState<'w> {
     management: ResMut<'w, ColonyManagementState>,
     history: ResMut<'w, NavigationHistory>,
     open_panel: ResMut<'w, OpenPanel>,
+    combat_ui: Res<'w, crate::combat_ui::CombatUiState>,
 }
 
 pub(crate) fn handle_view_input(
@@ -102,7 +109,12 @@ pub(crate) fn handle_view_input(
         mut management,
         mut history,
         mut open_panel,
+        combat_ui,
     } = input;
+
+    if combat_ui.current.is_some() {
+        return;
+    }
 
     if matches!(
         *open_panel,

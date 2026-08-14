@@ -4,3 +4,6 @@
 
 # Local backups created by MVP migration scripts
 .mvp*-backup/
+
+# MVP-035 benchmark exports (dev/QA artifacts, not user data)
+/benchmark-results/

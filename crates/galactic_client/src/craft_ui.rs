@@ -1,4 +1,5 @@
 // MVP-017: dedicated minimal shipyard screen.
+use bevy::input::{ButtonState, keyboard::KeyboardInput};
 use bevy::prelude::*;
 use galactic_sim::{
     BuildingKind, CraftError, CraftQuote, CraftableId, GameAction, GameEventKind,
@@ -31,7 +32,11 @@ impl Plugin for CraftUiPlugin {
             )
             .add_systems(
                 Update,
-                (handle_craft_shortcuts, handle_craft_buttons)
+                (
+                    handle_craft_shortcuts,
+                    handle_craft_buttons,
+                    handle_craft_quantity_input,
+                )
                     .chain()
                     .in_set(PresentationUpdateSet::Interaction),
             )
@@ -54,6 +59,8 @@ impl Plugin for CraftUiPlugin {
 pub(crate) struct CraftUiState {
     selected: CraftableId,
     quantity: u64,
+    quantity_editing: bool,
+    quantity_buffer: String,
     feedback: String,
 }
 
@@ -65,9 +72,19 @@ impl Default for CraftUiState {
                 .next()
                 .expect("validated ruleset contains at least one craftable"),
             quantity: 1,
+            quantity_editing: false,
+            quantity_buffer: String::new(),
             feedback: String::new(),
         }
     }
+}
+
+/// Whether the batch-quantity numeric box is mid-edit — mirrors
+/// `fleet_ui::fleet_text_input_is_active`, wired into the same shared
+/// keyboard-shortcut guard chain so digit keys typed here don't also
+/// trigger global hotkeys.
+pub(crate) fn craft_quantity_is_editing(ui: &CraftUiState) -> bool {
+    ui.quantity_editing
 }
 
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,6 +96,7 @@ enum CraftButtonAction {
     Select(CraftableId),
     AdjustQuantity(i64),
     SetQuantityMax,
+    StartQuantityEdit,
     QueueSelected,
     CancelActive,
 }
@@ -111,6 +129,7 @@ enum CraftTextRole {
     Summary,
     Detail,
     Quantity,
+    MaxAffordable,
     Queue,
     QueueButton,
     Feedback,
@@ -156,7 +175,7 @@ pub(crate) fn spawn_craft_toggle(parent: &mut ChildSpawnerCommands) {
         ))
         .with_children(|button| {
             button.spawn((
-                Text::new("Chantier flotte  [Y]"),
+                Text::new(format!("{}  [Y]", shipyard_building_name())),
                 ui_text_font(12.0),
                 TextColor(Color::srgb(1.0, 0.86, 0.66)),
                 CraftTextRole::Toggle,
@@ -229,7 +248,7 @@ fn spawn_craft_header(root: &mut ChildSpawnerCommands) {
     },))
         .with_children(|header| {
             header.spawn((
-                Text::new("CHANTIER SPATIAL"),
+                Text::new(shipyard_building_name().to_uppercase()),
                 ui_text_font(18.0),
                 TextColor(Color::srgb(1.0, 0.86, 0.68)),
                 Node {
@@ -402,21 +421,17 @@ fn spawn_craftable_detail(row: &mut ChildSpawnerCommands) {
             .with_children(|row| {
                 spawn_quantity_button(row, "-10", CraftButtonAction::AdjustQuantity(-10));
                 spawn_quantity_button(row, "-1", CraftButtonAction::AdjustQuantity(-1));
-                row.spawn((
-                    Text::new("1"),
-                    ui_text_font(13.0),
-                    TextColor(Color::srgb(1.0, 0.92, 0.80)),
-                    Node {
-                        width: Val::Px(64.0),
-                        justify_content: JustifyContent::Center,
-                        ..default()
-                    },
-                    CraftTextRole::Quantity,
-                ));
+                spawn_craft_quantity_editor(row);
                 spawn_quantity_button(row, "+1", CraftButtonAction::AdjustQuantity(1));
                 spawn_quantity_button(row, "+10", CraftButtonAction::AdjustQuantity(10));
                 spawn_quantity_button(row, "MAX", CraftButtonAction::SetQuantityMax);
             });
+        detail.spawn((
+            Text::new(""),
+            ui_text_font(10.5),
+            TextColor(Color::srgba(0.74, 0.80, 0.86, 0.80)),
+            CraftTextRole::MaxAffordable,
+        ));
         detail
             .spawn((
                 Button,
@@ -479,6 +494,41 @@ fn spawn_quantity_button(
                 Text::new(label),
                 ui_text_font(11.0),
                 TextColor(Color::srgb(0.94, 0.84, 0.72)),
+            ));
+        });
+}
+
+/// A click-to-edit numeric box between the `-1`/`+1` steppers — types a
+/// batch quantity directly instead of repeated clicking (playtest
+/// feedback). Mirrors `fleet_ui::spawn_quantity_editor` exactly.
+fn spawn_craft_quantity_editor(parent: &mut ChildSpawnerCommands) {
+    parent
+        .spawn((
+            Button,
+            Node {
+                width: Val::Px(64.0),
+                min_height: Val::Px(30.0),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                border: UiRect::all(Val::Px(1.0)),
+                border_radius: BorderRadius::all(Val::Px(5.0)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.15, 0.09, 0.04, 0.98)),
+            Outline::new(
+                Val::Px(1.0),
+                Val::ZERO,
+                Color::srgba(0.94, 0.54, 0.20, 0.60),
+            ),
+            CraftButtonAction::StartQuantityEdit,
+            UiPointerBlocker,
+        ))
+        .with_children(|button| {
+            button.spawn((
+                Text::new("1"),
+                ui_text_font(13.0),
+                TextColor(Color::srgb(1.0, 0.92, 0.80)),
+                CraftTextRole::Quantity,
             ));
         });
 }
@@ -573,8 +623,9 @@ fn handle_craft_shortcuts(
     save_load_ui: Res<crate::save_load_ui::SaveLoadUiState>,
 ) {
     if super::navigation_ui::navigation_text_or_filter_is_active(&navigation_ui)
-        || crate::fleet_ui::fleet_name_is_editing(&fleet_ui)
+        || crate::fleet_ui::fleet_text_input_is_active(&fleet_ui)
         || crate::save_load_ui::save_name_is_editing(&save_load_ui)
+        || craft_quantity_is_editing(&ui)
     {
         return;
     }
@@ -610,6 +661,9 @@ fn handle_craft_buttons(
         if *interaction != Interaction::Pressed {
             continue;
         }
+        if ui.quantity_editing && *action != CraftButtonAction::StartQuantityEdit {
+            commit_craft_quantity_edit(&mut ui, &simulation);
+        }
 
         match *action {
             CraftButtonAction::Toggle => {
@@ -642,6 +696,10 @@ fn handle_craft_buttons(
             }
             CraftButtonAction::SetQuantityMax => {
                 set_craft_quantity_max(&mut ui, &simulation);
+            }
+            CraftButtonAction::StartQuantityEdit => {
+                ui.quantity_buffer = ui.quantity.to_string();
+                ui.quantity_editing = true;
             }
             CraftButtonAction::QueueSelected => queue_selected_craft(&mut simulation, &mut ui),
             CraftButtonAction::CancelActive => cancel_active_craft(&mut simulation, &mut ui),
@@ -724,7 +782,7 @@ fn update_craft_visibility(
             let next = if is_open {
                 "Fermer chantier".to_string()
             } else {
-                "Chantier flotte  [Y]".to_string()
+                format!("{}  [Y]", shipyard_building_name())
             };
             if text.0 != next {
                 text.0 = next;
@@ -747,9 +805,10 @@ fn update_craft_summary(
     for (role, mut text) in &mut texts {
         match role {
             CraftTextRole::Title => {
+                let title = shipyard_building_name().to_uppercase();
                 text.0 = colony.map_or_else(
-                    || "CHANTIER SPATIAL".to_string(),
-                    |colony| format!("CHANTIER SPATIAL — {}", colony.name),
+                    || title.clone(),
+                    |colony| format!("{title} — {}", colony.name),
                 );
             }
             CraftTextRole::Summary => {
@@ -848,6 +907,8 @@ fn update_craft_detail(
         .active_colony_id
         .and_then(|id| state.colony(id))
         .is_some_and(|colony| !colony.craft_queue.is_empty());
+    let max_affordable =
+        max_affordable_craft_quantity(&simulation, ui.selected).min(MAX_CRAFT_BATCH_QUANTITY);
 
     for (role, mut text, mut color) in &mut texts {
         match role {
@@ -856,7 +917,15 @@ fn update_craft_detail(
                 color.0 = Color::srgb(0.94, 0.88, 0.80);
             }
             CraftTextRole::Quantity => {
-                text.0 = ui.quantity.to_string();
+                text.0 = if ui.quantity_editing {
+                    format!("{}_", ui.quantity_buffer)
+                } else {
+                    ui.quantity.to_string()
+                };
+            }
+            CraftTextRole::MaxAffordable => {
+                text.0 =
+                    format!("Maximum possible avec les ressources actuelles : {max_affordable}");
             }
             CraftTextRole::QueueButton => {
                 text.0 = button_label.clone();
@@ -959,6 +1028,63 @@ fn adjust_craft_quantity(ui: &mut CraftUiState, simulation: &SimulationResource,
 fn set_craft_quantity_max(ui: &mut CraftUiState, simulation: &SimulationResource) {
     ui.quantity =
         max_affordable_craft_quantity(simulation, ui.selected).min(MAX_CRAFT_BATCH_QUANTITY);
+}
+
+const MAX_QUANTITY_DIGITS: usize = 6;
+
+/// Parses `ui.quantity_buffer` and applies it to the selected craftable's
+/// batch quantity, clamped between 1 and what the active colony can
+/// currently afford — same bound the stepper buttons and MAX already
+/// enforce. An empty or non-numeric buffer falls back to 1, not 0 — unlike
+/// `fleet_ui`'s quantity editor, a craft batch of 0 isn't a meaningful
+/// state to leave the field in.
+fn commit_craft_quantity_edit(ui: &mut CraftUiState, simulation: &SimulationResource) {
+    let max = max_affordable_craft_quantity(simulation, ui.selected).min(MAX_CRAFT_BATCH_QUANTITY);
+    let requested: u64 = ui.quantity_buffer.parse().unwrap_or(0);
+    ui.quantity = requested.clamp(1, max);
+    ui.quantity_editing = false;
+    ui.quantity_buffer.clear();
+}
+
+/// Mirrors `fleet_ui::handle_fleet_quantity_input`'s shape exactly
+/// (`Backspace`/`Enter`/`Escape` special-cased, everything else pushes
+/// filtered ASCII digits).
+fn handle_craft_quantity_input(
+    mut events: MessageReader<KeyboardInput>,
+    open_panel: Res<OpenPanel>,
+    simulation: Res<SimulationResource>,
+    mut ui: ResMut<CraftUiState>,
+) {
+    if *open_panel != OpenPanel::Craft || !ui.quantity_editing {
+        return;
+    }
+
+    for event in events.read() {
+        if event.state != ButtonState::Pressed {
+            continue;
+        }
+        match event.key_code {
+            KeyCode::Backspace => {
+                ui.quantity_buffer.pop();
+            }
+            KeyCode::Enter => commit_craft_quantity_edit(&mut ui, &simulation),
+            KeyCode::Escape => {
+                ui.quantity_editing = false;
+                ui.quantity_buffer.clear();
+            }
+            _ => {
+                if let Some(text) = &event.text {
+                    for ch in text.chars() {
+                        if ch.is_ascii_digit()
+                            && ui.quantity_buffer.chars().count() < MAX_QUANTITY_DIGITS
+                        {
+                            ui.quantity_buffer.push(ch);
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn cancel_active_craft(simulation: &mut SimulationResource, ui: &mut CraftUiState) {
@@ -1474,5 +1600,69 @@ mod tests {
             craftable_button_outline(true),
             craftable_button_outline(false)
         );
+    }
+
+    fn fresh_simulation_resource() -> SimulationResource {
+        SimulationResource {
+            simulation: Simulation::new(UniverseConfig::mvp()),
+            pending_events: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn commit_craft_quantity_edit_clamps_to_the_max_affordable_amount() {
+        let simulation = fresh_simulation_resource();
+        let craftable = first_craftable();
+        let max =
+            max_affordable_craft_quantity(&simulation, craftable).min(MAX_CRAFT_BATCH_QUANTITY);
+        let mut ui = CraftUiState {
+            selected: craftable,
+            quantity_buffer: (max + 1_000).to_string(),
+            quantity_editing: true,
+            ..CraftUiState::default()
+        };
+
+        commit_craft_quantity_edit(&mut ui, &simulation);
+
+        assert_eq!(ui.quantity, max);
+        assert!(!ui.quantity_editing);
+        assert!(ui.quantity_buffer.is_empty());
+    }
+
+    #[test]
+    fn commit_craft_quantity_edit_treats_an_empty_buffer_as_one() {
+        let simulation = fresh_simulation_resource();
+        let mut ui = CraftUiState {
+            quantity_editing: true,
+            ..CraftUiState::default()
+        };
+        ui.quantity_buffer.clear();
+
+        commit_craft_quantity_edit(&mut ui, &simulation);
+
+        assert_eq!(ui.quantity, 1);
+    }
+
+    #[test]
+    fn commit_craft_quantity_edit_ignores_non_numeric_garbage() {
+        let simulation = fresh_simulation_resource();
+        let mut ui = CraftUiState {
+            quantity_buffer: "abc".to_string(),
+            quantity_editing: true,
+            ..CraftUiState::default()
+        };
+
+        commit_craft_quantity_edit(&mut ui, &simulation);
+
+        assert_eq!(ui.quantity, 1);
+    }
+
+    #[test]
+    fn craft_quantity_is_editing_reflects_state() {
+        let mut ui = CraftUiState::default();
+        assert!(!craft_quantity_is_editing(&ui));
+
+        ui.quantity_editing = true;
+        assert!(craft_quantity_is_editing(&ui));
     }
 }

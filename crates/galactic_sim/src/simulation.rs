@@ -815,7 +815,16 @@ mod tests {
                     .expect("test funding fits capacity");
             }
 
-            for technology in crate::technology_catalog().ids() {
+            // COMBAT-001-E-era playtest feedback shrank `research_queue_limit`
+            // to 3 (previously exactly the whole 6-technology tree) — queue a
+            // valid-order subset instead of the entire catalog; this test's
+            // actual subject is frame-rate independence of whatever ends up
+            // queued, not exhausting the tree.
+            for technology in [
+                TechnologyId::SPATIAL_DETECTION,
+                TechnologyId::PROPULSION,
+                TechnologyId::PLANETARY_ANALYSIS,
+            ] {
                 let events =
                     simulation.apply_player_action(GameAction::QueueResearch { technology });
                 assert!(matches!(
@@ -1282,5 +1291,67 @@ mod tests {
             Simulation::from_parts(universe, state),
             Err(SimulationBuildError::PendingCombatRoundExceedsMaximum(_))
         ));
+    }
+
+    /// COMBAT-001-E "smoke test complet": drives a pending combat to
+    /// completion through real `GameAction::ChooseCombatDoctrine` commands
+    /// (the player's own path, not the auto-resolve façade), round by round,
+    /// and confirms the mission/report finalize correctly — the existing
+    /// `simulation_with_pending_combat`-based tests only ever exercise
+    /// save-reconstruction validation, never a real player-driven combat
+    /// all the way to `CombatCompleted`.
+    #[test]
+    fn a_full_combat_driven_by_player_doctrine_choices_finalizes_the_mission() {
+        let (mut simulation, mission_id) = simulation_with_pending_combat();
+
+        let mut rounds_played = 0;
+        let mut completed = false;
+        while let Some(pending) = simulation.state().pending_combat(mission_id) {
+            let round = pending.round() + 1;
+            assert!(
+                round <= pending.maximum_rounds(),
+                "the combat must finalize by its own configured round cap"
+            );
+            let events = simulation.apply_player_action(GameAction::ChooseCombatDoctrine {
+                mission_id,
+                round,
+                doctrine: crate::CombatDoctrineId::BalancedEngagement,
+            });
+            rounds_played += 1;
+            assert!(
+                events
+                    .iter()
+                    .any(|event| matches!(event.kind, GameEventKind::CombatRoundResolved(_))),
+                "every accepted doctrine choice must resolve exactly one round"
+            );
+            if events
+                .iter()
+                .any(|event| matches!(event.kind, GameEventKind::CombatCompleted(_)))
+            {
+                completed = true;
+            }
+            assert!(
+                rounds_played <= 12,
+                "must not loop forever if completion is never detected"
+            );
+        }
+
+        assert!(
+            completed,
+            "the combat must end with a CombatCompleted event"
+        );
+        assert!(simulation.state().pending_combat(mission_id).is_none());
+        assert!(
+            simulation.state().combat_report(mission_id).is_some(),
+            "a persistent combat report must exist once finalized"
+        );
+        let mission = simulation
+            .state()
+            .mission(mission_id)
+            .expect("the mission still exists once resolved");
+        assert!(
+            matches!(mission.result, Some(MissionResult::Attack(_))),
+            "the mission must carry its attack result"
+        );
     }
 }

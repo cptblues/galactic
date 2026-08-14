@@ -118,6 +118,17 @@ pub fn save_to_path(
     Ok(())
 }
 
+/// Removes a save file from disk. The persistence crate only knows about the
+/// `.ron` payload itself — a client-side sidecar (e.g. `galactic_client`'s
+/// navigation-view `.nav` file) is that caller's own concern to remove
+/// alongside this, exactly as it's already that caller's concern to write.
+pub fn delete_save(path: &Path) -> Result<(), SaveFileError> {
+    fs::remove_file(path).map_err(|error| SaveFileError::Io {
+        path: path.to_path_buf(),
+        message: error.to_string(),
+    })
+}
+
 /// Deserializes the envelope only — does not validate the payload against the
 /// current ruleset/universe. Callers that need a playable `Simulation` must
 /// follow up with `restore_from_snapshot`, converting its `Err(SaveError)`
@@ -381,6 +392,26 @@ mod tests {
             .find(|slot| slot.corrupted)
             .expect("one corrupted slot");
         assert_eq!(bad.display_name, "bad.ron");
+
+        fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn delete_save_removes_the_file_and_reports_a_missing_one() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("galactic-save-test-delete-{}", std::process::id()));
+        fs::create_dir_all(&temp_dir).expect("temp dir is creatable");
+        let path = temp_dir.join("slot.ron");
+
+        let simulation = Simulation::new(UniverseConfig::mvp());
+        let save = snapshot_from_simulation(&simulation);
+        save_to_path(&path, header("To delete"), &save).expect("save succeeds");
+        assert!(path.exists());
+
+        delete_save(&path).expect("delete succeeds");
+        assert!(!path.exists());
+
+        assert!(matches!(delete_save(&path), Err(SaveFileError::Io { .. })));
 
         fs::remove_dir_all(&temp_dir).ok();
     }

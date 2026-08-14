@@ -38,7 +38,7 @@ pub enum CombatDoctrineId {
     TacticalAnalysis,
 }
 
-pub(crate) const ALL_COMBAT_DOCTRINES: [CombatDoctrineId; 6] = [
+pub const ALL_COMBAT_DOCTRINES: [CombatDoctrineId; 6] = [
     CombatDoctrineId::BalancedEngagement,
     CombatDoctrineId::ConcentratedAssault,
     CombatDoctrineId::DefensiveScreen,
@@ -226,6 +226,22 @@ impl CombatTacticsRules {
 
     pub(crate) fn counters_len(&self) -> usize {
         self.counters.len()
+    }
+
+    /// Which doctrine counters `doctrine`, and the resulting damage
+    /// multiplier applied to `doctrine`'s output when the opponent plays it
+    /// — the reverse lookup of `counter_multiplier` (doctrine → its own
+    /// counterer, not doctrine vs. a specific opponent). `None` for the two
+    /// doctrines outside the 4-entry counter cycle
+    /// (`BalancedEngagement`/`TacticalAnalysis`).
+    pub(crate) fn countered_by(
+        &self,
+        doctrine: CombatDoctrineId,
+    ) -> Option<(CombatDoctrineId, u32)> {
+        self.counters
+            .iter()
+            .find(|rule| rule.doctrine == doctrine)
+            .map(|rule| (rule.countered_by, rule.damage_dealt_multiplier_per_mille))
     }
 }
 

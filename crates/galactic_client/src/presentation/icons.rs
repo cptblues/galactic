@@ -15,10 +15,22 @@ pub(crate) enum IconKind {
     Crystal,
     Fuel,
     Energy,
+    /// A generic ship chevron, tinted per-row at spawn time (combat stack
+    /// rows: allied by `tactical_role`, enemy by `target_class`) — one
+    /// shape, recolored via `ImageNode::color`, rather than a distinct
+    /// shape per role/class (playtest asked for "une petite icône", not a
+    /// full iconography).
+    CombatUnit,
 }
 
 impl IconKind {
-    pub(crate) const ALL: [Self; 4] = [Self::Metal, Self::Crystal, Self::Fuel, Self::Energy];
+    pub(crate) const ALL: [Self; 5] = [
+        Self::Metal,
+        Self::Crystal,
+        Self::Fuel,
+        Self::Energy,
+        Self::CombatUnit,
+    ];
 }
 
 #[derive(Resource)]
@@ -104,6 +116,7 @@ fn icon_mask(kind: IconKind, x: i32, y: i32) -> (u8, u8) {
         IconKind::Crystal => crystal_mask(x, y, cx, cy, size),
         IconKind::Fuel => fuel_mask(x, y, cx, size),
         IconKind::Energy => energy_mask(x, y, size),
+        IconKind::CombatUnit => combat_unit_mask(x, y, size),
     }
 }
 
@@ -167,6 +180,24 @@ fn energy_mask(x: i32, y: i32, size: i32) -> (u8, u8) {
 
     let point = (x as f32 + 0.5, y as f32 + 0.5);
     let dist = distance_to_segment(point, top, mid).min(distance_to_segment(point, mid, bottom));
+    if dist <= half_width {
+        (250, 255)
+    } else {
+        (0, 0)
+    }
+}
+
+/// A right-pointing chevron (">") from two thick diagonal strokes meeting at
+/// an apex — same `distance_to_segment` technique as `energy_mask`'s zigzag,
+/// just two segments instead of a full bolt.
+fn combat_unit_mask(x: i32, y: i32, size: i32) -> (u8, u8) {
+    let half_width = (size as f32 * 0.11).max(1.0);
+    let top = (size as f32 * 0.30, size as f32 * 0.18);
+    let apex = (size as f32 * 0.78, size as f32 * 0.50);
+    let bottom = (size as f32 * 0.30, size as f32 * 0.82);
+
+    let point = (x as f32 + 0.5, y as f32 + 0.5);
+    let dist = distance_to_segment(point, top, apex).min(distance_to_segment(point, apex, bottom));
     if dist <= half_width {
         (250, 255)
     } else {
@@ -243,5 +274,14 @@ mod tests {
         let (_, far_from_bolt) = energy_mask(0, size - 1, size);
         assert_eq!(on_bolt, 255);
         assert_eq!(far_from_bolt, 0);
+    }
+
+    #[test]
+    fn combat_unit_mask_marks_pixels_near_the_apex_and_not_far_from_it() {
+        let size = ICON_TEXTURE_SIZE as i32;
+        let (_, on_apex) = combat_unit_mask(size * 78 / 100, size / 2, size);
+        let (_, far_corner) = combat_unit_mask(0, size - 1, size);
+        assert_eq!(on_apex, 255);
+        assert_eq!(far_corner, 0);
     }
 }

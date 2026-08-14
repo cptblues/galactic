@@ -565,10 +565,12 @@ fn handle_objective_shortcuts(
     mut navigation_ui: ResMut<super::navigation_ui::NavigationUiState>,
     fleet_ui: Res<crate::fleet_ui::FleetUiState>,
     save_load_ui: Res<crate::save_load_ui::SaveLoadUiState>,
+    craft_ui: Res<crate::craft_ui::CraftUiState>,
 ) {
     if super::navigation_ui::navigation_text_or_filter_is_active(&navigation_ui)
-        || crate::fleet_ui::fleet_name_is_editing(&fleet_ui)
+        || crate::fleet_ui::fleet_text_input_is_active(&fleet_ui)
         || crate::save_load_ui::save_name_is_editing(&save_load_ui)
+        || crate::craft_ui::craft_quantity_is_editing(&craft_ui)
     {
         return;
     }
@@ -1049,7 +1051,7 @@ fn objective_hint_text(id: ObjectiveId) -> String {
             "Ouvre Recherche techno [T] et lance une doctrine disponible.".to_string()
         }
         ObjectiveId::BuildProbe => {
-            "Ouvre Chantier flotte [Y] et assemble une Sonde — Œil.".to_string()
+            "Ouvre Chantier naval [Y] et assemble une Sonde — Œil.".to_string()
         }
         ObjectiveId::ProbePlanet => {
             "Crée une flotte de sonde puis utilise Lancer mission depuis Flottes [V].".to_string()

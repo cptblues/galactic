@@ -1,9 +1,11 @@
 mod benchmark;
+mod combat_ui;
 mod craft_ui;
 mod fleet_ui;
 mod graphics_settings_ui;
 mod mission_wizard;
 mod navigation_ui;
+mod notifications_ui;
 mod objectives_ui;
 mod presentation;
 mod research_ui;
@@ -13,11 +15,13 @@ use benchmark::{
     BenchmarkConfig, BenchmarkResolution, drive_benchmark_sequence, graphics_preset_from_slug,
     sample_benchmark_metrics,
 };
+use combat_ui::CombatUiPlugin;
 use craft_ui::CraftUiPlugin;
 use fleet_ui::FleetUiPlugin;
 use graphics_settings_ui::GraphicsSettingsUiPlugin;
 use mission_wizard::MissionWizardPlugin;
 use navigation_ui::NavigationUiPlugin;
+use notifications_ui::NotificationsUiPlugin;
 use objectives_ui::ObjectivesUiPlugin;
 use presentation::colony_management_ui::{
     capture_colony_management_feedback, cycle_management_colony, handle_colony_management_buttons,
@@ -25,13 +29,12 @@ use presentation::colony_management_ui::{
     update_colony_management_queue, update_colony_management_resources,
     update_colony_management_visibility,
 };
-use presentation::combat_autopilot::auto_resolve_pending_combats;
 use presentation::components::{
-    ColonyManagementState, DebugOverlayState, HelpUiState, InspectorContent, InspectorSection,
-    InspectorTabBarRoot, InspectorTabButton, InspectorTabButtonQuery, InspectorTabLabelQuery,
-    InspectorTabState, InspectorTextQuery, InspectorTextRole, IntroPitchUiState, OpenPanel,
-    PointerSelectionState, SelectedMission, StrategicViewEntity, TopBarText, UiPointerBlocker,
-    VictoryUiState,
+    ColonyManagementState, DebugOverlayState, HelpUiState, InspectorContent, InspectorPanelRoot,
+    InspectorSection, InspectorTabBarRoot, InspectorTabButton, InspectorTabButtonQuery,
+    InspectorTabLabelQuery, InspectorTabState, InspectorTextQuery, InspectorTextRole,
+    IntroPitchUiState, OpenPanel, PointerSelectionState, SelectedMission, StrategicViewEntity,
+    TopBarText, UiPointerBlocker, VictoryUiState,
 };
 use presentation::icons::IconAssets;
 use presentation::input::{
@@ -243,6 +246,8 @@ impl Plugin for ClientPlugin {
             .add_plugins(ObjectivesUiPlugin)
             .add_plugins(SaveLoadUiPlugin)
             .add_plugins(GraphicsSettingsUiPlugin)
+            .add_plugins(CombatUiPlugin)
+            .add_plugins(NotificationsUiPlugin)
             .add_systems(Startup, log_startup)
             .add_systems(Update, log_memory_diagnostics);
     }
@@ -341,13 +346,7 @@ impl Plugin for SimulationBridgePlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             Update,
-            (
-                handle_simulation_input,
-                handle_view_input,
-                tick_simulation,
-                auto_resolve_pending_combats,
-            )
-                .chain(),
+            (handle_simulation_input, handle_view_input, tick_simulation).chain(),
         );
     }
 }

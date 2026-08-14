@@ -4,10 +4,18 @@ Galactic charge son ruleset au démarrage depuis
 `assets/rulesets/default/`. La variable d'environnement
 `GALACTIC_RULESET_DIR` permet de sélectionner un autre dossier.
 
-Le ruleset `default` est actuellement en `content_version: 18`. Cette version
-ajoute les seuils de réussite du MVP dans `victory.ron`, après l'alignement des
-factions, profils d'occupation et forces planétaires sur
-`docs/galactic_factions_lore.md`.
+Le ruleset `default` est actuellement en `content_version: 20`. Cette version
+resserre la progression de la recherche (retours de playtest) :
+`research_queue_limit` passe de 6 à 3 (`economy.ron`, on ne peut plus mettre
+tout l'arbre technologique en file d'un coup), et `technologies.ron`
+(`version: 2`) ajoute des prérequis de niveau de `research_lab` progressifs
+sur `propulsion`/`planetary_analysis` (niveau 2) et
+`cargo_capacity`/`remote_extraction` (niveau 3), en plus du prérequis déjà
+existant sur `colonization`. La version précédente retouchait l'équilibrage du
+combat (COMBAT-001-E) : les statistiques de `planetary_presence.ron`
+(`version: 3`) sont relevées pour que les garnisons résistent plus d'un round
+face à une flotte d'attaque significative, après l'alignement des factions,
+profils d'occupation et forces planétaires sur `docs/galactic_factions_lore.md`.
 
 Le ruleset est composé de douze fichiers RON :
 
@@ -155,19 +163,60 @@ automatiquement le dernier renseignement connu.
 
 ## Combat
 
-`combat.ron` versionne la résolution de combat V2. Il fixe le nombre maximal de
-rounds, l'échelle des dommages, le poids défensif, la variation déterministe et
-la récupération par défense détruite. Les vaisseaux utilisables en attaque sont
+`combat.ron` (`version: 5`) configure le moteur de combat tactique par round
+(épopée COMBAT-001). Il fixe le nombre maximal de rounds
+(`maximum_rounds: 12` — un plafond, pas une durée garantie : un combat se
+termine dès qu'un camp est totalement hors d'état de combattre), l'échelle des
+dommages (`damage_scale`), le poids défensif (`defense_weight_per_mille`), la
+variation déterministe par round (`damage_variance_per_mille`) et la
+récupération par défense détruite. Les vaisseaux utilisables en attaque sont
 dérivés des craftables militaires qui possèdent un bloc `ship.combat`.
 
-La puissance offensive de l'attaquant est pondérée par les classes de cible
-défensives engagées. Un bonus `offense_multiplier_per_mille: 1400` signifie
+La puissance offensive d'un camp est pondérée par les classes de cible
+adverses engagées. Un bonus `offense_multiplier_per_mille: 1400` signifie
 donc `x1.40` contre la classe correspondante, sans changer les valeurs
-d'attaque affichées du vaisseau.
+d'attaque affichées du vaisseau. Chaque round, la contribution offensive
+d'une pile est proportionnelle à ses survivants réels (`surviving_quantity`) —
+le moteur ne réapplique plus de fraction de coque à l'échelle du camp entier
+par-dessus cette valeur (COMBAT-001-E : cette double application pénalisait
+injustement les piles groupées par rapport à une pile à une seule unité, qui
+ne perdait alors sa puissance qu'une fois au lieu de deux).
 
-Modifier une statistique ou un paramètre exige une nouvelle version de contenu.
-Ajouter ou retirer un identifiant de vaisseau militaire change l'empreinte
-structurelle et rend explicitement incompatibles les sauvegardes précédentes.
+`combat.ron` regroupe quatre sous-blocs :
+
+- `tactics` : les six doctrines tactiques fixes (`BalancedEngagement`,
+  `ConcentratedAssault`, `DefensiveScreen`, `FlankingManeuver`,
+  `DispersedFormation`, `TacticalAnalysis`), chacune avec un multiplicateur
+  offensif et un multiplicateur de dégâts reçus, plus une pénalité de
+  répétition (jouer deux fois de suite la même doctrine réduit son efficacité,
+  sauf `BalancedEngagement` qui en est exemptée) et quatre relations de
+  contre fixes (`ConcentratedAssault` → contrée par `DefensiveScreen` → contrée
+  par `FlankingManeuver` → contrée par `DispersedFormation` → contrée par
+  `ConcentratedAssault`) ;
+- `intel` : la précision du renseignement de l'attaquant sur la composition du
+  défenseur, dérivée du dernier rapport d'analyse planétaire (précision et
+  ancienneté), d'un bonus de reconnaissance et d'un gain par round, bornée
+  entre 5 et 100 % ;
+- `ai` : le profil de décision automatique (un seul profil générique, utilisé
+  pour les deux camps) qui choisit une doctrine chaque round hors choix
+  explicite du joueur — utilisé par la résolution automatique et par le camp
+  défenseur, toujours ;
+- `retreat` : la pénalité de dégâts unique appliquée au camp qui se replie
+  (`GameAction::RetreatFromCombat`), sur le même barème de calcul que les
+  dégâts d'un round, mais réduite et sans récupération de butin.
+
+`planetary_presence.ron` (`version: 3`) fournit les statistiques d'attaque, de
+défense et de durabilité des garnisons — voir la section « Présences
+planétaires » ci-dessus pour le format des forces et profils. COMBAT-001-E a
+relevé ces statistiques (défense et durabilité environ ×1.6, attaque environ
+×1.2 sur toutes les forces terrestres et orbitales du ruleset par défaut) pour
+qu'une flotte d'attaque significative ne puisse plus anéantir une garnison
+entière dès le premier round.
+
+Modifier une statistique ou un paramètre exige une nouvelle version de contenu
+(le champ `version:` du fichier concerné). Ajouter ou retirer un identifiant
+de vaisseau militaire ou de force planétaire change l'empreinte structurelle
+et rend explicitement incompatibles les sauvegardes précédentes.
 
 ## Extraction distante
 

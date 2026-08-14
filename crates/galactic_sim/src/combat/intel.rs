@@ -163,9 +163,8 @@ pub(crate) fn apply_round_intel_gain(
 /// percent — no separate configuration, the boundaries are a structural part
 /// of the doc's design, not a balance lever (unlike the percent computation
 /// itself, which is fully ruleset-driven).
-#[allow(dead_code)] // wired into the combat UI in COMBAT-001-D
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CombatIntelTier {
+pub enum CombatIntelTier {
     Minimal,
     Rough,
     Approximate,
@@ -174,8 +173,7 @@ pub(crate) enum CombatIntelTier {
     Exact,
 }
 
-#[allow(dead_code)] // wired into the combat UI in COMBAT-001-D
-pub(crate) fn intel_tier(percent: u8) -> CombatIntelTier {
+pub fn intel_tier(percent: u8) -> CombatIntelTier {
     match percent {
         0..=19 => CombatIntelTier::Minimal,
         20..=39 => CombatIntelTier::Rough,
@@ -191,14 +189,13 @@ pub(crate) fn intel_tier(percent: u8) -> CombatIntelTier {
 /// all). Derived directly from the true totals: at this tier there is
 /// nothing precise enough to obfuscate in the first place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ThreatLevel {
+pub enum ThreatLevel {
     Low,
     Moderate,
     High,
     Overwhelming,
 }
 
-#[allow(dead_code)] // wired into the combat UI in COMBAT-001-D
 pub(crate) fn side_threat_level(side: &CombatSideState) -> ThreatLevel {
     let total_offense: u128 = side
         .stacks
@@ -215,7 +212,7 @@ pub(crate) fn side_threat_level(side: &CombatSideState) -> ThreatLevel {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum QuantityBand {
+pub enum QuantityBand {
     Few,
     Some,
     Many,
@@ -232,7 +229,7 @@ fn quantity_band(quantity: u64) -> QuantityBand {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum QuantityReveal {
+pub enum QuantityReveal {
     Unknown,
     Verbal(QuantityBand),
     Range { minimum: u64, maximum: u64 },
@@ -241,7 +238,7 @@ pub(crate) enum QuantityReveal {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum IntegrityBand {
+pub enum IntegrityBand {
     Critical,
     Low,
     Moderate,
@@ -266,7 +263,7 @@ fn integrity_band(percent: u8) -> IntegrityBand {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum IntegrityReveal {
+pub enum IntegrityReveal {
     Unknown,
     Qualitative(IntegrityBand),
     Exact(u8),
@@ -384,12 +381,12 @@ fn identity_reveal(stack: &CombatStackState, tier: CombatIntelTier) -> Option<Co
 /// quantity/integrity values (doc §6.5, "prévention des fuites
 /// d'information").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct CombatStackView {
-    pub(crate) stack_id: CombatStackId,
-    pub(crate) target_class: Option<CombatTargetClass>,
-    pub(crate) identity: Option<CombatUnitRef>,
-    pub(crate) quantity: QuantityReveal,
-    pub(crate) integrity: IntegrityReveal,
+pub struct CombatStackView {
+    pub stack_id: CombatStackId,
+    pub target_class: Option<CombatTargetClass>,
+    pub identity: Option<CombatUnitRef>,
+    pub quantity: QuantityReveal,
+    pub integrity: IntegrityReveal,
 }
 
 /// Deliberately does not add the `Exact` tier's (95-100 %, doc §6.3)
