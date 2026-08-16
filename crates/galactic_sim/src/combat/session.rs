@@ -12,11 +12,12 @@ use super::ai::choose_ai_plan;
 use super::doctrine::CombatDoctrineId;
 use super::rounds::{apply_retreat_penalty, apply_round_resolution, resolve_combat_round};
 use super::state::{
-    CombatSide, FleetCombatPhase, FleetCombatState, finalize_fleet_combat, retreat_side,
+    CombatSide, CombatSideState, FleetCombatPhase, FleetCombatState, finalize_fleet_combat,
+    retreat_side,
 };
 use super::{
-    AttackMissionCommitment, CombatCommandRules, CombatFleetSnapshot, CombatGroupPlanId,
-    CombatGroupRole, CombatIntervention, CombatInterventionRecord, CombatPlan,
+    AttackMissionCommitment, CombatCommandRules, CombatFleetSnapshot, CombatGroupPlan,
+    CombatGroupPlanId, CombatGroupRole, CombatIntervention, CombatInterventionRecord, CombatPlan,
     CombatPlanValidationError, CombatTargetPriority, PlanetDefenseSnapshot,
     apply_combat_resolution, intel_inputs_from_state, run_combat_to_completion,
 };
@@ -123,6 +124,24 @@ impl PendingCombat {
     pub(crate) fn command_points_are_valid(&self) -> bool {
         self.command_points_remaining <= self.command_points_maximum()
     }
+
+    pub(crate) fn current_plan_is_valid(&self) -> bool {
+        match &self.plan {
+            Some(plan) => plan.validate_for_side(&self.state.attacker).is_ok(),
+            None => true,
+        }
+    }
+
+    pub(crate) fn initial_plan_is_present_when_required(&self) -> bool {
+        self.state.round == 0 || self.initial_plan.is_some()
+    }
+
+    pub(crate) fn initial_plan_state_is_valid(&self) -> bool {
+        match &self.initial_plan {
+            Some(plan) => plan.validate_for_side(&self.state.attacker).is_ok(),
+            None => true,
+        }
+    }
 }
 
 /// Starts a new pending combat from a validated commitment and pushes it
@@ -163,7 +182,7 @@ pub(crate) fn begin_pending_combat(
         defender: commitment.defender.clone(),
         seed: commitment.seed,
         state: fleet_combat_state,
-        initial_plan: Some(plan.clone()),
+        initial_plan: None,
         plan: Some(plan),
         intervention_history: Vec::new(),
         command_points_remaining: combat_rules().command().starting_points(),
@@ -182,6 +201,7 @@ pub enum CombatCommandError {
     UnknownCombat(MissionId),
     Access(AuthorizationError),
     StaleRound { expected: u16, found: u16 },
+    PlanLocked { round: u16 },
     InvalidPlan(CombatPlanValidationError),
     InsufficientCommandPoints { required: u8, available: u8 },
     InvalidIntervention(CombatInterventionError),
@@ -189,10 +209,12 @@ pub enum CombatCommandError {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CombatInterventionError {
+    CombatNotStarted,
     InvalidFocusPriority,
     NoActiveGroup,
     ReserveGroupMissing(CombatGroupPlanId),
     ReserveGroupEmpty(CombatGroupPlanId),
+    ReserveGroupInoperable(CombatGroupPlanId),
     GroupIsNotReserve(CombatGroupPlanId),
 }
 
@@ -314,6 +336,11 @@ pub(crate) fn confirm_combat_plan(
     state
         .authorize_management(actor, pending.attacker.owner)
         .map_err(CombatCommandError::Access)?;
+    if pending.round() > 0 {
+        return Err(CombatCommandError::PlanLocked {
+            round: pending.round(),
+        });
+    }
     plan.validate_for_side(&pending.state.attacker)
         .map_err(CombatCommandError::InvalidPlan)?;
 
@@ -343,12 +370,26 @@ fn add_command_point_cost(total: &mut u8, cost: u8) {
     *total = total.saturating_add(cost);
 }
 
+fn group_has_operational_stack(side: &CombatSideState, group: &CombatGroupPlan) -> bool {
+    group.stacks.iter().any(|stack_id| {
+        side.stacks
+            .iter()
+            .any(|stack| stack.stack_id == *stack_id && stack.surviving_quantity > 0)
+    })
+}
+
 fn prepare_round_command(
     pending: &PendingCombat,
     doctrine: Option<CombatDoctrineId>,
     intervention: Option<CombatIntervention>,
     command_rules: &CombatCommandRules,
 ) -> Result<PreparedRoundCommand, CombatCommandError> {
+    if pending.state.round == 0 && intervention.is_some() {
+        return Err(CombatCommandError::InvalidIntervention(
+            CombatInterventionError::CombatNotStarted,
+        ));
+    }
+
     let mut persistent_plan = default_or_persisted_plan(pending);
     let mut command_point_cost = 0_u8;
     let mut intervention_cost = 0_u8;
@@ -356,10 +397,12 @@ fn prepare_round_command(
     if let Some(doctrine) = doctrine
         && persistent_plan.doctrine != doctrine
     {
-        add_command_point_cost(
-            &mut command_point_cost,
-            command_rules.change_doctrine_cost(),
-        );
+        if pending.state.round > 0 {
+            add_command_point_cost(
+                &mut command_point_cost,
+                command_rules.change_doctrine_cost(),
+            );
+        }
         persistent_plan.doctrine = doctrine;
     }
 
@@ -377,7 +420,9 @@ fn prepare_round_command(
             add_command_point_cost(&mut command_point_cost, intervention_cost);
             let mut active_group_count = 0;
             for group in &mut round_plan.groups {
-                if group.role != CombatGroupRole::Reserve && !group.stacks.is_empty() {
+                if group.role != CombatGroupRole::Reserve
+                    && group_has_operational_stack(&pending.state.attacker, group)
+                {
                     group.target_priority = priority;
                     active_group_count += 1;
                 }
@@ -404,6 +449,11 @@ fn prepare_round_command(
             if group.role != CombatGroupRole::Reserve {
                 return Err(CombatCommandError::InvalidIntervention(
                     CombatInterventionError::GroupIsNotReserve(group_id),
+                ));
+            }
+            if !group_has_operational_stack(&pending.state.attacker, group) {
+                return Err(CombatCommandError::InvalidIntervention(
+                    CombatInterventionError::ReserveGroupInoperable(group_id),
                 ));
             }
             group.role = CombatGroupRole::Assault;
@@ -481,6 +531,9 @@ pub(crate) fn choose_combat_doctrine(
 
     let pending_mut = state.pending_combat_mut(mission_id).expect("checked above");
     pending_mut.command_points_remaining -= prepared.command_point_cost;
+    if pending_mut.state.round == 0 && pending_mut.initial_plan.is_none() {
+        pending_mut.initial_plan = Some(prepared.persistent_plan.clone());
+    }
     pending_mut.plan = Some(prepared.persistent_plan);
     if let Some(record) = prepared.intervention_record {
         pending_mut.intervention_history.push(record);
@@ -563,6 +616,9 @@ pub(crate) fn auto_resolve_combat(
         .map_err(CombatCommandError::Access)?;
 
     let pending_mut = state.pending_combat_mut(mission_id).expect("checked above");
+    if pending_mut.state.round == 0 && pending_mut.initial_plan.is_none() {
+        pending_mut.initial_plan = Some(default_or_persisted_plan(pending_mut));
+    }
     run_combat_to_completion(&mut pending_mut.state, rules);
 
     Ok(finalize_pending_combat(state, mission_id))
@@ -592,7 +648,7 @@ mod tests {
             .planet_id;
         let colony_id = ColonyId::new(0);
         let composition =
-            FleetComposition::from_stacks([ShipStack::new(CraftableId::FRIGATE_BULWARK, 3)])
+            FleetComposition::from_stacks([ShipStack::new(CraftableId::FRIGATE_BULWARK, 2)])
                 .expect("combat composition");
         simulation.state_mut().fleets.push(FleetState {
             id: FleetId::new(0),
@@ -628,6 +684,7 @@ mod tests {
         assert_eq!(pending.planet_id, commitment.defender.planet_id);
         assert_eq!(pending.state.round, 0);
         assert!(pending.plan().is_some());
+        assert!(pending.initial_plan.is_none());
         assert_eq!(
             pending.command_points_remaining(),
             combat_rules().command().starting_points()
@@ -680,7 +737,23 @@ mod tests {
             StrategicTick::ZERO,
             &commitment,
         );
+        make_pending_combat_last_several_rounds(&mut state, mission_id);
         (state, actor, mission_id)
+    }
+
+    fn make_pending_combat_last_several_rounds(state: &mut GameState, mission_id: MissionId) {
+        let pending = state
+            .pending_combat_mut(mission_id)
+            .expect("pending combat exists");
+        for stack in &mut pending.state.attacker.stacks {
+            stack.maximum_hull = stack.maximum_hull.saturating_mul(10);
+            stack.current_hull = stack.maximum_hull;
+        }
+        for stack in &mut pending.state.defender.stacks {
+            stack.offense = 1;
+            stack.maximum_hull = stack.maximum_hull.saturating_mul(20);
+            stack.current_hull = stack.maximum_hull;
+        }
     }
 
     #[test]
@@ -736,6 +809,46 @@ mod tests {
             Err(CombatCommandError::InvalidPlan(
                 CombatPlanValidationError::EmptyPlan
             ))
+        );
+    }
+
+    #[test]
+    fn confirm_plan_after_first_round_is_rejected() {
+        let (mut state, actor, mission_id) = pending_combat_state();
+        choose_combat_doctrine(&mut state, actor, mission_id, 1, None, None)
+            .expect("first round resolves");
+        let plan = state
+            .pending_combat(mission_id)
+            .and_then(PendingCombat::plan)
+            .expect("plan remains persisted after round one")
+            .clone();
+
+        assert_eq!(
+            confirm_combat_plan(&mut state, actor, mission_id, plan),
+            Err(CombatCommandError::PlanLocked { round: 1 })
+        );
+    }
+
+    #[test]
+    fn rejected_plan_change_does_not_mutate_pending_combat() {
+        let (mut state, actor, mission_id) = pending_combat_state();
+        choose_combat_doctrine(&mut state, actor, mission_id, 1, None, None)
+            .expect("first round resolves");
+        let original = state
+            .pending_combat(mission_id)
+            .and_then(PendingCombat::plan)
+            .expect("plan remains persisted after round one")
+            .clone();
+        let mut changed = original.clone();
+        changed.doctrine = CombatDoctrineId::ConcentratedAssault;
+
+        assert_eq!(
+            confirm_combat_plan(&mut state, actor, mission_id, changed),
+            Err(CombatCommandError::PlanLocked { round: 1 })
+        );
+        assert_eq!(
+            state.pending_combat(mission_id).unwrap().plan(),
+            Some(&original)
         );
     }
 
@@ -818,7 +931,7 @@ mod tests {
     }
 
     #[test]
-    fn changing_doctrine_spends_and_persists_one_command_point() {
+    fn initial_doctrine_change_costs_zero_command_points() {
         let (mut state, actor, mission_id) = pending_combat_state();
         let starting_points = state
             .pending_combat(mission_id)
@@ -838,11 +951,159 @@ mod tests {
         let pending = state
             .pending_combat(mission_id)
             .expect("the fixture spans several rounds");
+        assert_eq!(pending.command_points_remaining(), starting_points);
+        assert_eq!(
+            pending.plan().map(|plan| plan.doctrine),
+            Some(CombatDoctrineId::ConcentratedAssault)
+        );
+    }
+
+    #[test]
+    fn doctrine_change_after_round_one_costs_command_points() {
+        let (mut state, actor, mission_id) = pending_combat_state();
+        let starting_points = state
+            .pending_combat(mission_id)
+            .expect("combat starts pending")
+            .command_points_remaining();
+
+        choose_combat_doctrine(&mut state, actor, mission_id, 1, None, None)
+            .expect("first round resolves");
+        choose_combat_doctrine(
+            &mut state,
+            actor,
+            mission_id,
+            2,
+            Some(CombatDoctrineId::ConcentratedAssault),
+            None,
+        )
+        .expect("post-opening doctrine change resolves a round");
+
+        let pending = state
+            .pending_combat(mission_id)
+            .expect("the fixture spans several rounds");
         assert_eq!(pending.command_points_remaining(), starting_points - 1);
         assert_eq!(
             pending.plan().map(|plan| plan.doctrine),
             Some(CombatDoctrineId::ConcentratedAssault)
         );
+    }
+
+    #[test]
+    fn first_round_snapshots_the_effective_plan() {
+        let (mut state, actor, mission_id) = pending_combat_state();
+        let mut plan = state
+            .pending_combat(mission_id)
+            .and_then(PendingCombat::plan)
+            .expect("default plan exists")
+            .clone();
+        plan.doctrine = CombatDoctrineId::ConcentratedAssault;
+        plan.groups[0].target_priority = CombatTargetPriority::Heavy;
+        confirm_combat_plan(&mut state, actor, mission_id, plan.clone())
+            .expect("pre-combat plan confirmation is valid");
+
+        choose_combat_doctrine(&mut state, actor, mission_id, 1, None, None)
+            .expect("first round resolves");
+
+        let pending = state
+            .pending_combat(mission_id)
+            .expect("the fixture spans several rounds");
+        assert_eq!(pending.initial_plan.as_ref(), Some(&plan));
+    }
+
+    #[test]
+    fn initial_plan_does_not_change_after_round_one() {
+        let (mut state, actor, mission_id) = pending_combat_state();
+        choose_combat_doctrine(
+            &mut state,
+            actor,
+            mission_id,
+            1,
+            Some(CombatDoctrineId::ConcentratedAssault),
+            None,
+        )
+        .expect("first round resolves");
+        let initial = state
+            .pending_combat(mission_id)
+            .and_then(|pending| pending.initial_plan.clone())
+            .expect("first round snapshots the plan");
+
+        choose_combat_doctrine(
+            &mut state,
+            actor,
+            mission_id,
+            2,
+            Some(CombatDoctrineId::DefensiveScreen),
+            None,
+        )
+        .expect("second round resolves");
+
+        assert_eq!(
+            state
+                .pending_combat(mission_id)
+                .and_then(|pending| pending.initial_plan.as_ref()),
+            Some(&initial)
+        );
+    }
+
+    #[test]
+    fn focus_fire_is_rejected_before_first_round() {
+        let (mut state, actor, mission_id) = pending_combat_state();
+
+        assert_eq!(
+            choose_combat_doctrine(
+                &mut state,
+                actor,
+                mission_id,
+                1,
+                None,
+                Some(CombatIntervention::FocusFire {
+                    priority: CombatTargetPriority::Heavy,
+                }),
+            ),
+            Err(CombatCommandError::InvalidIntervention(
+                CombatInterventionError::CombatNotStarted
+            ))
+        );
+        let pending = state.pending_combat(mission_id).expect("still pending");
+        assert_eq!(
+            pending.command_points_remaining(),
+            combat_rules().command().starting_points()
+        );
+        assert_eq!(pending.round(), 0);
+    }
+
+    #[test]
+    fn commit_reserve_is_rejected_before_first_round() {
+        let (mut state, actor, mission_id) = pending_combat_state();
+        let mut plan = state
+            .pending_combat(mission_id)
+            .and_then(PendingCombat::plan)
+            .expect("default plan exists")
+            .clone();
+        plan.groups[0].role = CombatGroupRole::Reserve;
+        confirm_combat_plan(&mut state, actor, mission_id, plan).expect("reserve plan is valid");
+
+        assert_eq!(
+            choose_combat_doctrine(
+                &mut state,
+                actor,
+                mission_id,
+                1,
+                None,
+                Some(CombatIntervention::CommitReserve {
+                    group_id: CombatGroupPlanId::Alpha,
+                }),
+            ),
+            Err(CombatCommandError::InvalidIntervention(
+                CombatInterventionError::CombatNotStarted
+            ))
+        );
+        let pending = state.pending_combat(mission_id).expect("still pending");
+        assert_eq!(
+            pending.command_points_remaining(),
+            combat_rules().command().starting_points()
+        );
+        assert_eq!(pending.round(), 0);
     }
 
     #[test]
@@ -855,11 +1116,14 @@ mod tests {
             .expect("default plan has an active group")
             .target_priority;
 
+        choose_combat_doctrine(&mut state, actor, mission_id, 1, None, None)
+            .expect("first round resolves");
+
         choose_combat_doctrine(
             &mut state,
             actor,
             mission_id,
-            1,
+            2,
             None,
             Some(CombatIntervention::FocusFire {
                 priority: CombatTargetPriority::Heavy,
@@ -884,7 +1148,7 @@ mod tests {
         assert_eq!(
             pending.intervention_history,
             vec![CombatInterventionRecord {
-                round: 1,
+                round: 2,
                 doctrine: CombatDoctrineId::BalancedEngagement,
                 intervention: CombatIntervention::FocusFire {
                     priority: CombatTargetPriority::Heavy,
@@ -908,11 +1172,14 @@ mod tests {
         plan.groups[0].role = CombatGroupRole::Reserve;
         confirm_combat_plan(&mut state, actor, mission_id, plan).expect("reserve plan is valid");
 
+        choose_combat_doctrine(&mut state, actor, mission_id, 1, None, None)
+            .expect("first round resolves");
+
         choose_combat_doctrine(
             &mut state,
             actor,
             mission_id,
-            1,
+            2,
             None,
             Some(CombatIntervention::CommitReserve {
                 group_id: CombatGroupPlanId::Alpha,
@@ -940,7 +1207,7 @@ mod tests {
         assert_eq!(
             pending.intervention_history,
             vec![CombatInterventionRecord {
-                round: 1,
+                round: 2,
                 doctrine: CombatDoctrineId::BalancedEngagement,
                 intervention: CombatIntervention::CommitReserve {
                     group_id: CombatGroupPlanId::Alpha,
@@ -954,8 +1221,95 @@ mod tests {
     }
 
     #[test]
+    fn destroyed_reserve_cannot_be_committed_and_does_not_spend_command_points() {
+        let (mut state, actor, mission_id) = pending_combat_state();
+        let mut plan = state
+            .pending_combat(mission_id)
+            .and_then(PendingCombat::plan)
+            .expect("default plan exists")
+            .clone();
+        plan.groups[0].role = CombatGroupRole::Reserve;
+        confirm_combat_plan(&mut state, actor, mission_id, plan.clone())
+            .expect("reserve plan is valid");
+        {
+            let pending = state.pending_combat_mut(mission_id).expect("still pending");
+            pending.state.round = 1;
+            pending.initial_plan = Some(plan);
+            let stack = pending
+                .state
+                .attacker
+                .stacks
+                .first_mut()
+                .expect("the fixture has an attacker stack");
+            stack.surviving_quantity = 0;
+            stack.current_hull = 0;
+        }
+        let starting_points = state
+            .pending_combat(mission_id)
+            .expect("still pending")
+            .command_points_remaining();
+
+        assert_eq!(
+            choose_combat_doctrine(
+                &mut state,
+                actor,
+                mission_id,
+                2,
+                None,
+                Some(CombatIntervention::CommitReserve {
+                    group_id: CombatGroupPlanId::Alpha,
+                }),
+            ),
+            Err(CombatCommandError::InvalidIntervention(
+                CombatInterventionError::ReserveGroupInoperable(CombatGroupPlanId::Alpha)
+            ))
+        );
+        assert_eq!(
+            state
+                .pending_combat(mission_id)
+                .expect("still pending")
+                .command_points_remaining(),
+            starting_points
+        );
+    }
+
+    #[test]
+    fn combat_can_continue_after_one_attacker_stack_is_destroyed() {
+        let (mut state, actor, mission_id) = pending_combat_state();
+        {
+            let pending = state.pending_combat_mut(mission_id).expect("still pending");
+            let mut second = pending.state.attacker.stacks[0].clone();
+            second.stack_id = super::super::state::CombatStackId(99);
+            pending.state.attacker.stacks.push(second);
+            pending.plan.as_mut().expect("default plan exists").groups[0]
+                .stacks
+                .push(super::super::state::CombatStackId(99));
+        }
+
+        choose_combat_doctrine(&mut state, actor, mission_id, 1, None, None)
+            .expect("first round resolves");
+        {
+            let pending = state.pending_combat_mut(mission_id).expect("still pending");
+            let stack = pending
+                .state
+                .attacker
+                .stacks
+                .iter_mut()
+                .find(|stack| stack.stack_id == super::super::state::CombatStackId(99))
+                .expect("second stack exists");
+            stack.surviving_quantity = 0;
+            stack.current_hull = 0;
+        }
+
+        choose_combat_doctrine(&mut state, actor, mission_id, 2, None, None)
+            .expect("a destroyed stack referenced by the plan does not block round two");
+    }
+
+    #[test]
     fn insufficient_command_points_reject_without_mutating_the_pending_round() {
         let (mut state, actor, mission_id) = pending_combat_state();
+        choose_combat_doctrine(&mut state, actor, mission_id, 1, None, None)
+            .expect("first round resolves");
         let original_plan = state
             .pending_combat(mission_id)
             .and_then(PendingCombat::plan)
@@ -971,7 +1325,7 @@ mod tests {
                 &mut state,
                 actor,
                 mission_id,
-                1,
+                2,
                 None,
                 Some(CombatIntervention::FocusFire {
                     priority: CombatTargetPriority::Heavy,
@@ -984,7 +1338,7 @@ mod tests {
         );
 
         let pending = state.pending_combat(mission_id).expect("still pending");
-        assert_eq!(pending.round(), 0);
+        assert_eq!(pending.round(), 1);
         assert_eq!(pending.command_points_remaining(), 0);
         assert_eq!(pending.plan(), Some(&original_plan));
         assert!(pending.intervention_history.is_empty());

@@ -19,7 +19,6 @@ use galactic_sim::{
 use crate::presentation::components::*;
 use crate::presentation::entity_visuals::EntityVisualCatalog;
 use crate::presentation::graphics_settings::{GraphicsPreset, GraphicsSettings};
-use crate::presentation::icons::{IconAssets, IconKind, spawn_icon};
 use crate::presentation::procedural_materials::{planet_material, star_color};
 use crate::presentation::resource_hud::*;
 use crate::presentation::strategic_navigation::*;
@@ -902,8 +901,8 @@ pub(crate) fn planet_pick_priority(
     }
 }
 
-pub(crate) fn spawn_ui(mut commands: Commands, icon_assets: Res<IconAssets>) {
-    spawn_resource_bar(&mut commands, &icon_assets);
+pub(crate) fn spawn_ui(mut commands: Commands, asset_server: Res<AssetServer>) {
+    spawn_resource_bar(&mut commands, &asset_server);
 
     commands.spawn((
         Text::new(""),
@@ -1932,6 +1931,7 @@ Réglages : [K] presets graphiques (Faible / Moyen / Élevé)"
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn window_resolution_grows_with_preset_and_medium_matches_todays_default() {
@@ -1943,6 +1943,20 @@ mod tests {
         let (high_width, high_height) = window_resolution_for_preset(GraphicsPreset::High);
         assert!(low_width < 1280 && low_height < 720);
         assert!(high_width > 1280 && high_height > 720);
+    }
+
+    #[test]
+    fn resource_bar_icons_use_runtime_png_assets() {
+        let asset_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+
+        for kind in ResourceHudKind::ALL {
+            let path = resource_bar_icon_path(kind);
+            assert!(path.starts_with("images/resources/"));
+            assert!(
+                asset_root.join(path).is_file(),
+                "missing resource bar icon {path}"
+            );
+        }
     }
 
     #[test]
@@ -2214,7 +2228,7 @@ pub(crate) fn spawn_management_small_button(
 /// Management panel (`spawn_management_resource_card`). Reflects the active player colony
 /// only — there is no empire-wide aggregate in `galactic_sim`, and inventing one here would
 /// be simulation-adjacent logic outside the scope of a presentation-only overhaul.
-pub(crate) fn spawn_resource_bar(commands: &mut Commands, icon_assets: &IconAssets) {
+pub(crate) fn spawn_resource_bar(commands: &mut Commands, asset_server: &AssetServer) {
     commands
         .spawn((
             Node {
@@ -2239,14 +2253,14 @@ pub(crate) fn spawn_resource_bar(commands: &mut Commands, icon_assets: &IconAsse
         ))
         .with_children(|row| {
             for kind in ResourceHudKind::ALL {
-                spawn_resource_bar_card(row, icon_assets, kind);
+                spawn_resource_bar_card(row, asset_server, kind);
             }
         });
 }
 
 fn spawn_resource_bar_card(
     parent: &mut ChildSpawnerCommands,
-    icon_assets: &IconAssets,
+    asset_server: &AssetServer,
     kind: ResourceHudKind,
 ) {
     parent
@@ -2257,13 +2271,18 @@ fn spawn_resource_bar_card(
             ..default()
         })
         .with_children(|card| {
-            spawn_icon(
-                card,
-                icon_assets,
-                resource_bar_icon_kind(kind),
-                20.0,
-                resource_kind_color(kind),
-            );
+            card.spawn((
+                ImageNode {
+                    image: asset_server.load(resource_bar_icon_path(kind)),
+                    color: Color::WHITE,
+                    ..default()
+                },
+                Node {
+                    width: Val::Px(22.0),
+                    height: Val::Px(22.0),
+                    ..default()
+                },
+            ));
             card.spawn((
                 Text::new("—"),
                 ui_text_font(12.0),
@@ -2273,12 +2292,12 @@ fn spawn_resource_bar_card(
         });
 }
 
-fn resource_bar_icon_kind(kind: ResourceHudKind) -> IconKind {
+fn resource_bar_icon_path(kind: ResourceHudKind) -> &'static str {
     match kind {
-        ResourceHudKind::Metal => IconKind::Metal,
-        ResourceHudKind::Crystal => IconKind::Crystal,
-        ResourceHudKind::Fuel => IconKind::Fuel,
-        ResourceHudKind::Energy => IconKind::Energy,
+        ResourceHudKind::Metal => "images/resources/metal.png",
+        ResourceHudKind::Crystal => "images/resources/crystal.png",
+        ResourceHudKind::Fuel => "images/resources/fuel.png",
+        ResourceHudKind::Energy => "images/resources/energy.png",
     }
 }
 

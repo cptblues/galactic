@@ -58,28 +58,6 @@ impl FromWorld for IconAssets {
     }
 }
 
-/// Spawns a small tinted `ImageNode` for `kind`, colored by `color` at display time.
-pub(crate) fn spawn_icon(
-    parent: &mut ChildSpawnerCommands<'_>,
-    icon_assets: &IconAssets,
-    kind: IconKind,
-    size: f32,
-    color: Color,
-) {
-    parent.spawn((
-        ImageNode {
-            image: icon_assets.handle(kind),
-            color,
-            ..default()
-        },
-        Node {
-            width: Val::Px(size),
-            height: Val::Px(size),
-            ..default()
-        },
-    ));
-}
-
 pub(crate) fn icon_texture(kind: IconKind) -> Image {
     let mut pixels = Vec::with_capacity((ICON_TEXTURE_SIZE * ICON_TEXTURE_SIZE * 4) as usize);
     for y in 0..ICON_TEXTURE_SIZE {

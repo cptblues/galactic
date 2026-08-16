@@ -15,6 +15,7 @@ use super::{
     collect_presentation_events, format_strategic_duration, panel_background, panel_outline,
     ui_text_font,
 };
+use crate::presentation::entity_visuals::EntityVisualCatalog;
 
 const CRAFT_Z_INDEX: i32 = 120;
 
@@ -142,6 +143,11 @@ struct CraftableButton {
 
 #[derive(Component)]
 struct CraftableButtonText {
+    craftable: CraftableId,
+}
+
+#[derive(Component)]
+struct CraftableButtonIcon {
     craftable: CraftableId,
 }
 
@@ -362,6 +368,9 @@ fn spawn_craftable_button(parent: &mut ChildSpawnerCommands, craftable: Craftabl
                 padding: UiRect::axes(Val::Px(9.0), Val::Px(7.0)),
                 border: UiRect::all(Val::Px(1.0)),
                 border_radius: BorderRadius::all(Val::Px(5.0)),
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                column_gap: Val::Px(8.0),
                 ..default()
             },
             BackgroundColor(Color::srgba(0.08, 0.05, 0.025, 0.98)),
@@ -376,9 +385,28 @@ fn spawn_craftable_button(parent: &mut ChildSpawnerCommands, craftable: Craftabl
         ))
         .with_children(|button| {
             button.spawn((
+                ImageNode {
+                    image: Handle::default(),
+                    color: Color::WHITE,
+                    ..default()
+                },
+                Node {
+                    width: Val::Px(34.0),
+                    height: Val::Px(34.0),
+                    flex_shrink: 0.0,
+                    ..default()
+                },
+                CraftableButtonIcon { craftable },
+            ));
+            button.spawn((
                 Text::new(""),
                 ui_text_font(11.0),
                 TextColor(Color::srgb(0.94, 0.84, 0.72)),
+                Node {
+                    flex_grow: 1.0,
+                    min_width: Val::Px(0.0),
+                    ..default()
+                },
                 CraftableButtonText { craftable },
             ));
         });
@@ -837,6 +865,7 @@ fn update_craftable_buttons(
     simulation: Res<SimulationResource>,
     ui: Res<CraftUiState>,
     open_panel: Res<OpenPanel>,
+    entity_visuals: Res<EntityVisualCatalog>,
     mut buttons: Query<(
         &CraftableButton,
         &Interaction,
@@ -844,6 +873,7 @@ fn update_craftable_buttons(
         &mut Outline,
     )>,
     mut labels: Query<(&CraftableButtonText, &mut Text, &mut TextColor)>,
+    mut icons: Query<(&CraftableButtonIcon, &mut ImageNode)>,
 ) {
     if *open_panel != OpenPanel::Craft {
         return;
@@ -869,6 +899,16 @@ fn update_craftable_buttons(
             Color::srgb(1.0, 0.92, 0.80)
         } else {
             Color::srgb(0.92, 0.84, 0.74)
+        };
+    }
+
+    for (marker, mut icon) in &mut icons {
+        let selected = marker.craftable == ui.selected;
+        icon.image = entity_visuals.ship(marker.craftable);
+        icon.color = if selected {
+            Color::WHITE
+        } else {
+            Color::srgba(0.86, 0.90, 0.94, 0.88)
         };
     }
 }
@@ -1606,6 +1646,46 @@ mod tests {
         SimulationResource {
             simulation: Simulation::new(UniverseConfig::mvp()),
             pending_events: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn craftable_catalog_buttons_use_ship_visuals() {
+        let mut app = bevy::app::App::new();
+        app.init_resource::<Assets<Image>>()
+            .insert_resource(fresh_simulation_resource())
+            .insert_resource(OpenPanel::Craft)
+            .init_resource::<CraftUiState>()
+            .add_systems(bevy::app::Startup, spawn_craft_screen)
+            .add_systems(bevy::app::Update, update_craftable_buttons);
+        let entity_visuals = {
+            let mut images = app.world_mut().resource_mut::<Assets<Image>>();
+            EntityVisualCatalog::for_tests(&mut images)
+        };
+        app.insert_resource(entity_visuals);
+
+        app.update();
+
+        let world = app.world_mut();
+        let expected = craftable_catalog()
+            .ids()
+            .map(|craftable| {
+                (
+                    craftable,
+                    world.resource::<EntityVisualCatalog>().ship(craftable),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut icons = world.query::<(&CraftableButtonIcon, &ImageNode)>();
+        let rendered = icons.iter(world).collect::<Vec<_>>();
+        assert_eq!(rendered.len(), expected.len());
+        for (craftable, expected_image) in expected {
+            let (_, icon) = rendered
+                .iter()
+                .find(|(marker, _)| marker.craftable == craftable)
+                .expect("every craftable row has an icon");
+            assert_eq!(icon.image, expected_image);
+            assert_ne!(icon.image, Handle::<Image>::default());
         }
     }
 

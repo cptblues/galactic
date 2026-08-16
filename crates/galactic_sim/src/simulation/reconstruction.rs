@@ -683,6 +683,21 @@ pub(crate) fn validate_state(
                 SimulationBuildError::PendingCombatCommandPointsExceedMaximum(pending.mission_id),
             );
         }
+        if !pending.current_plan_is_valid() {
+            return Err(SimulationBuildError::PendingCombatInvalidPlan(
+                pending.mission_id,
+            ));
+        }
+        if !pending.initial_plan_is_present_when_required() {
+            return Err(SimulationBuildError::PendingCombatMissingInitialPlan(
+                pending.mission_id,
+            ));
+        }
+        if !pending.initial_plan_state_is_valid() {
+            return Err(SimulationBuildError::PendingCombatInvalidInitialPlan(
+                pending.mission_id,
+            ));
+        }
     }
 
     validate_colony_foundations(state, universe)

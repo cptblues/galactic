@@ -164,7 +164,9 @@ impl CombatPlan {
             });
         }
 
-        let known: BTreeSet<CombatStackId> = side
+        let known: BTreeSet<CombatStackId> =
+            side.stacks.iter().map(|stack| stack.stack_id).collect();
+        let required: BTreeSet<CombatStackId> = side
             .stacks
             .iter()
             .filter(|stack| stack.surviving_quantity > 0)
@@ -190,7 +192,7 @@ impl CombatPlan {
             }
         }
 
-        for stack_id in known {
+        for stack_id in required {
             if !seen_stacks.contains(&stack_id) {
                 return Err(CombatPlanValidationError::MissingStack(stack_id));
             }
@@ -233,6 +235,14 @@ mod tests {
             target_class: CombatTargetClass::Medium,
             bonuses: CombatTargetBonuses::default(),
             tactical_role: role,
+        }
+    }
+
+    fn destroyed_stack(id: u32, role: CombatTacticalRole) -> CombatStackState {
+        CombatStackState {
+            surviving_quantity: 0,
+            current_hull: 0,
+            ..stack(id, role)
         }
     }
 
@@ -295,5 +305,130 @@ mod tests {
             plan.validate_for_side(&side),
             Err(CombatPlanValidationError::MissingStack(CombatStackId(1)))
         );
+    }
+
+    #[test]
+    fn destroyed_stack_referenced_by_plan_is_still_known() {
+        let side = CombatSideState {
+            stacks: vec![
+                stack(0, CombatTacticalRole::Line),
+                destroyed_stack(1, CombatTacticalRole::Support),
+            ],
+            ..side()
+        };
+        let plan = CombatPlan {
+            doctrine: CombatDoctrineId::BalancedEngagement,
+            groups: vec![CombatGroupPlan {
+                id: CombatGroupPlanId::Alpha,
+                stacks: vec![CombatStackId(0), CombatStackId(1)],
+                role: CombatGroupRole::Assault,
+                target_priority: CombatTargetPriority::Any,
+            }],
+        };
+
+        assert_eq!(plan.validate_for_side(&side), Ok(()));
+    }
+
+    #[test]
+    fn plan_may_omit_a_destroyed_stack() {
+        let side = CombatSideState {
+            stacks: vec![
+                stack(0, CombatTacticalRole::Line),
+                destroyed_stack(1, CombatTacticalRole::Support),
+            ],
+            ..side()
+        };
+        let plan = CombatPlan {
+            doctrine: CombatDoctrineId::BalancedEngagement,
+            groups: vec![CombatGroupPlan {
+                id: CombatGroupPlanId::Alpha,
+                stacks: vec![CombatStackId(0)],
+                role: CombatGroupRole::Assault,
+                target_priority: CombatTargetPriority::Any,
+            }],
+        };
+
+        assert_eq!(plan.validate_for_side(&side), Ok(()));
+    }
+
+    #[test]
+    fn all_operational_stacks_must_still_be_covered() {
+        let side = CombatSideState {
+            stacks: vec![
+                stack(0, CombatTacticalRole::Line),
+                stack(1, CombatTacticalRole::Support),
+                destroyed_stack(2, CombatTacticalRole::Support),
+            ],
+            ..side()
+        };
+        let plan = CombatPlan {
+            doctrine: CombatDoctrineId::BalancedEngagement,
+            groups: vec![CombatGroupPlan {
+                id: CombatGroupPlanId::Alpha,
+                stacks: vec![CombatStackId(0), CombatStackId(2)],
+                role: CombatGroupRole::Assault,
+                target_priority: CombatTargetPriority::Any,
+            }],
+        };
+
+        assert_eq!(
+            plan.validate_for_side(&side),
+            Err(CombatPlanValidationError::MissingStack(CombatStackId(1)))
+        );
+    }
+
+    #[test]
+    fn truly_unknown_stack_is_rejected() {
+        let side = CombatSideState {
+            stacks: vec![
+                stack(0, CombatTacticalRole::Line),
+                destroyed_stack(1, CombatTacticalRole::Support),
+            ],
+            ..side()
+        };
+        let plan = CombatPlan {
+            doctrine: CombatDoctrineId::BalancedEngagement,
+            groups: vec![CombatGroupPlan {
+                id: CombatGroupPlanId::Alpha,
+                stacks: vec![CombatStackId(0), CombatStackId(9)],
+                role: CombatGroupRole::Assault,
+                target_priority: CombatTargetPriority::Any,
+            }],
+        };
+
+        assert_eq!(
+            plan.validate_for_side(&side),
+            Err(CombatPlanValidationError::UnknownStack(CombatStackId(9)))
+        );
+    }
+
+    #[test]
+    fn destroyed_only_group_does_not_block_next_round() {
+        let side = CombatSideState {
+            stacks: vec![
+                stack(0, CombatTacticalRole::Line),
+                destroyed_stack(1, CombatTacticalRole::Support),
+            ],
+            ..side()
+        };
+        let plan = CombatPlan {
+            doctrine: CombatDoctrineId::BalancedEngagement,
+            groups: vec![
+                CombatGroupPlan {
+                    id: CombatGroupPlanId::Alpha,
+                    stacks: vec![CombatStackId(0)],
+                    role: CombatGroupRole::Assault,
+                    target_priority: CombatTargetPriority::Any,
+                },
+                CombatGroupPlan {
+                    id: CombatGroupPlanId::Gamma,
+                    stacks: vec![CombatStackId(1)],
+                    role: CombatGroupRole::Reserve,
+                    target_priority: CombatTargetPriority::Any,
+                },
+            ],
+        };
+
+        assert_eq!(plan.validate_for_side(&side), Ok(()));
     }
 }

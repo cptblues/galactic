@@ -13,6 +13,7 @@ use galactic_sim::{
 
 use crate::presentation::{
     components::{ScrollIndicatorArea, ScrollIndicatorId},
+    entity_visuals::EntityVisualCatalog,
     scene::spawn_scroll_indicator,
 };
 
@@ -62,6 +63,7 @@ impl Plugin for FleetUiPlugin {
                 (
                     update_fleet_visibility,
                     update_fleet_list_rows,
+                    update_fleet_list_icons,
                     update_fleet_name_editor,
                     update_fleet_rename_buttons,
                     update_ship_stepper_rows,
@@ -168,6 +170,9 @@ struct FleetListRow(usize);
 struct FleetListRowText(usize);
 
 #[derive(Component)]
+struct FleetListRowIcon(usize);
+
+#[derive(Component)]
 struct FleetDisbandButton(usize);
 
 #[derive(Component)]
@@ -175,6 +180,11 @@ struct FleetNameEditorText;
 
 #[derive(Component)]
 struct ShipStepperRow {
+    craftable: CraftableId,
+}
+
+#[derive(Component)]
+struct ShipStepperIcon {
     craftable: CraftableId,
 }
 
@@ -482,8 +492,10 @@ fn spawn_fleet_list_panel(row: &mut ChildSpawnerCommands) {
                         padding: UiRect::axes(Val::Px(7.0), Val::Px(4.0)),
                         border: UiRect::all(Val::Px(1.0)),
                         border_radius: BorderRadius::all(Val::Px(4.0)),
+                        flex_direction: FlexDirection::Row,
                         justify_content: JustifyContent::FlexStart,
                         align_items: AlignItems::Center,
+                        column_gap: Val::Px(7.0),
                         ..default()
                     },
                     BackgroundColor(Color::srgba(0.04, 0.06, 0.10, 0.9)),
@@ -497,9 +509,28 @@ fn spawn_fleet_list_panel(row: &mut ChildSpawnerCommands) {
                 ))
                 .with_children(|button| {
                     button.spawn((
+                        ImageNode {
+                            image: Handle::default(),
+                            color: Color::WHITE,
+                            ..default()
+                        },
+                        Node {
+                            width: Val::Px(24.0),
+                            height: Val::Px(24.0),
+                            flex_shrink: 0.0,
+                            ..default()
+                        },
+                        FleetListRowIcon(slot),
+                    ));
+                    button.spawn((
                         Text::new(""),
                         ui_text_font(10.5),
                         TextColor(Color::srgb(0.88, 0.92, 0.98)),
+                        Node {
+                            flex_grow: 1.0,
+                            min_width: Val::Px(0.0),
+                            ..default()
+                        },
                         FleetListRowText(slot),
                     ));
                 });
@@ -598,13 +629,27 @@ fn spawn_ship_stepper_row(parent: &mut ChildSpawnerCommands, craftable: Craftabl
     parent
         .spawn((Node {
             width: Val::Percent(100.0),
-            min_height: Val::Px(38.0),
+            min_height: Val::Px(42.0),
             flex_direction: FlexDirection::Row,
             align_items: AlignItems::Center,
             column_gap: Val::Px(7.0),
             ..default()
         },))
         .with_children(|row| {
+            row.spawn((
+                ImageNode {
+                    image: Handle::default(),
+                    color: Color::WHITE,
+                    ..default()
+                },
+                Node {
+                    width: Val::Px(34.0),
+                    height: Val::Px(34.0),
+                    flex_shrink: 0.0,
+                    ..default()
+                },
+                ShipStepperIcon { craftable },
+            ));
             row.spawn((
                 Text::new(""),
                 ui_text_font(12.0),
@@ -1600,6 +1645,35 @@ fn update_fleet_list_rows(
     }
 }
 
+fn update_fleet_list_icons(
+    simulation: Res<SimulationResource>,
+    ui: Res<FleetUiState>,
+    open_panel: Res<OpenPanel>,
+    entity_visuals: Res<EntityVisualCatalog>,
+    mut icons: Query<(&FleetListRowIcon, &mut ImageNode)>,
+) {
+    if *open_panel != OpenPanel::Fleet || ui.tab != FleetUiTab::Fleets {
+        return;
+    }
+    let fleets = simulation
+        .simulation()
+        .state()
+        .player_fleets()
+        .collect::<Vec<_>>();
+    for (row, mut icon) in &mut icons {
+        if let Some(fleet) = fleets.get(row.0)
+            && let Some(craftable) = fleet_primary_visual(fleet)
+        {
+            icon.image = entity_visuals.ship(craftable);
+            icon.color = if ui.selected_fleet_id == Some(fleet.id) {
+                Color::WHITE
+            } else {
+                Color::srgba(0.82, 0.90, 0.98, 0.88)
+            };
+        }
+    }
+}
+
 fn update_fleet_name_editor(
     simulation: Res<SimulationResource>,
     ui: Res<FleetUiState>,
@@ -1667,7 +1741,9 @@ fn update_ship_stepper_rows(
     simulation: Res<SimulationResource>,
     ui: Res<FleetUiState>,
     open_panel: Res<OpenPanel>,
+    entity_visuals: Res<EntityVisualCatalog>,
     mut rows: Query<(&ShipStepperRow, &mut Text)>,
+    mut icons: Query<(&ShipStepperIcon, &mut ImageNode)>,
 ) {
     if *open_panel != OpenPanel::Fleet || ui.tab != FleetUiTab::Fleets {
         return;
@@ -1680,6 +1756,20 @@ fn update_ship_stepper_rows(
         if text.0 != label {
             text.0 = label;
         }
+    }
+    for (marker, mut icon) in &mut icons {
+        let selected = ui
+            .pending_composition
+            .get(&marker.craftable)
+            .copied()
+            .unwrap_or(0)
+            > 0;
+        icon.image = entity_visuals.ship(marker.craftable);
+        icon.color = if selected {
+            Color::WHITE
+        } else {
+            Color::srgba(0.82, 0.90, 0.98, 0.82)
+        };
     }
 }
 
@@ -1909,6 +1999,17 @@ fn can_disband_fleet(fleet: &FleetState) -> bool {
     fleet.is_idle() && matches!(fleet.location, FleetLocation::Docked(_))
 }
 
+fn fleet_primary_visual(fleet: &FleetState) -> Option<CraftableId> {
+    let mut selected = None;
+    for stack in fleet.composition.entries() {
+        match selected {
+            Some((_, quantity)) if quantity >= stack.quantity => {}
+            _ => selected = Some((stack.craftable, stack.quantity)),
+        }
+    }
+    selected.map(|(craftable, _)| craftable)
+}
+
 pub(crate) fn fleet_composition_summary(fleet: &FleetState) -> String {
     fleet
         .composition
@@ -2083,6 +2184,10 @@ mod tests {
         update_fleet_list_rows
     );
     assert_disjoint_queries!(
+        update_fleet_list_icons_queries_are_disjoint,
+        update_fleet_list_icons
+    );
+    assert_disjoint_queries!(
         update_fleet_rename_buttons_queries_are_disjoint,
         update_fleet_rename_buttons
     );
@@ -2232,6 +2337,150 @@ mod tests {
 
         assert!(summary.contains("x3"));
         assert!(summary.contains(craftable_definition(CraftableId::LIGHT_PROBE).name));
+    }
+
+    #[test]
+    fn fleet_primary_visual_uses_largest_stack_and_stable_tie_break() {
+        let colony_id = ColonyId::new(0);
+        let fleet = FleetState {
+            id: FleetId::new(0),
+            name: "Ligne Alpha".to_string(),
+            owner: galactic_domain::Owner::Faction(galactic_domain::FactionId::new(0)),
+            location: FleetLocation::Docked(colony_id),
+            composition: FleetComposition::from_stacks([
+                ShipStack::new(CraftableId::LIGHT_PROBE, 1),
+                ShipStack::new(CraftableId::FRIGATE_BULWARK, 4),
+            ])
+            .expect("composition is valid"),
+            cargo: galactic_domain::ResourceStock::ZERO,
+            assignment: FleetAssignment::Idle,
+        };
+        assert_eq!(
+            fleet_primary_visual(&fleet),
+            Some(CraftableId::FRIGATE_BULWARK)
+        );
+
+        let tied_composition = FleetComposition::from_stacks([
+            ShipStack::new(CraftableId::FRIGATE_BULWARK, 2),
+            ShipStack::new(CraftableId::LIGHT_PROBE, 2),
+        ])
+        .expect("composition is valid");
+        let expected = tied_composition
+            .entries()
+            .next()
+            .expect("composition has a first stable entry")
+            .craftable;
+        let tied_fleet = FleetState {
+            id: FleetId::new(1),
+            name: "Mixte".to_string(),
+            owner: galactic_domain::Owner::Faction(galactic_domain::FactionId::new(0)),
+            location: FleetLocation::Docked(colony_id),
+            composition: tied_composition,
+            cargo: galactic_domain::ResourceStock::ZERO,
+            assignment: FleetAssignment::Idle,
+        };
+
+        assert_eq!(fleet_primary_visual(&tied_fleet), Some(expected));
+    }
+
+    #[test]
+    fn fleet_composer_rows_use_ship_visuals() {
+        let mut app = bevy::app::App::new();
+        app.init_resource::<Assets<Image>>()
+            .insert_resource(fresh_simulation_resource())
+            .insert_resource(OpenPanel::Fleet)
+            .insert_resource(FleetUiState::default())
+            .add_systems(bevy::app::Startup, spawn_fleet_screen)
+            .add_systems(bevy::app::Update, update_ship_stepper_rows);
+        let entity_visuals = {
+            let mut images = app.world_mut().resource_mut::<Assets<Image>>();
+            EntityVisualCatalog::for_tests(&mut images)
+        };
+        app.insert_resource(entity_visuals);
+
+        app.update();
+
+        let world = app.world_mut();
+        let expected = craftable_catalog()
+            .definitions()
+            .filter(|definition| definition.ship.is_some())
+            .map(|definition| {
+                (
+                    definition.id,
+                    world.resource::<EntityVisualCatalog>().ship(definition.id),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut icons = world.query::<(&ShipStepperIcon, &ImageNode)>();
+        let rendered = icons.iter(world).collect::<Vec<_>>();
+        assert_eq!(rendered.len(), expected.len());
+        for (craftable, expected_image) in expected {
+            let (_, icon) = rendered
+                .iter()
+                .find(|(marker, _)| marker.craftable == craftable)
+                .expect("every ship composer row has an icon");
+            assert_eq!(icon.image, expected_image);
+            assert_ne!(icon.image, Handle::<Image>::default());
+        }
+    }
+
+    #[test]
+    fn fleet_list_rows_use_the_primary_ship_visual() {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+        let colony_id = simulation
+            .state()
+            .active_colony_id
+            .expect("home colony is active");
+        let actor = simulation.state().player_faction;
+        let fleet_id = FleetId::new(0);
+        simulation.state_mut().fleets.push(FleetState {
+            id: fleet_id,
+            name: "Escorte Alpha".to_string(),
+            owner: galactic_domain::Owner::Faction(actor),
+            location: FleetLocation::Docked(colony_id),
+            composition: FleetComposition::from_stacks([
+                ShipStack::new(CraftableId::LIGHT_PROBE, 1),
+                ShipStack::new(CraftableId::FRIGATE_BULWARK, 3),
+            ])
+            .expect("composition is valid"),
+            cargo: galactic_domain::ResourceStock::ZERO,
+            assignment: FleetAssignment::Idle,
+        });
+        let mut app = bevy::app::App::new();
+        app.init_resource::<Assets<Image>>()
+            .insert_resource(SimulationResource {
+                simulation,
+                pending_events: Vec::new(),
+            })
+            .insert_resource(OpenPanel::Fleet)
+            .insert_resource(FleetUiState {
+                selected_fleet_id: Some(fleet_id),
+                ..Default::default()
+            })
+            .add_systems(bevy::app::Startup, spawn_fleet_screen)
+            .add_systems(
+                bevy::app::Update,
+                (update_fleet_list_rows, update_fleet_list_icons).chain(),
+            );
+        let entity_visuals = {
+            let mut images = app.world_mut().resource_mut::<Assets<Image>>();
+            EntityVisualCatalog::for_tests(&mut images)
+        };
+        app.insert_resource(entity_visuals);
+
+        app.update();
+
+        let world = app.world_mut();
+        let expected = world
+            .resource::<EntityVisualCatalog>()
+            .ship(CraftableId::FRIGATE_BULWARK);
+        let mut icons = world.query::<(&FleetListRowIcon, &ImageNode)>();
+        let (_, icon) = icons
+            .iter(world)
+            .find(|(marker, _)| marker.0 == 0)
+            .expect("fleet slot 0 has an icon");
+        assert_eq!(icon.image, expected);
+        assert_ne!(icon.image, Handle::<Image>::default());
     }
 
     #[test]

@@ -169,6 +169,7 @@ impl CombatPlanDraft {
 #[derive(Resource, Default)]
 pub(super) struct CombatPlanDraftState {
     mission_id: Option<MissionId>,
+    synced_round: Option<u16>,
     draft: Option<CombatPlanDraft>,
     selected_stack: Option<CombatStackId>,
     dirty: bool,
@@ -177,6 +178,7 @@ pub(super) struct CombatPlanDraftState {
 impl CombatPlanDraftState {
     pub(super) fn rebuild(&mut self, mission_id: MissionId, pending: &PendingCombat) {
         self.mission_id = Some(mission_id);
+        self.synced_round = Some(pending.round());
         self.draft = Some(CombatPlanDraft::from_pending(pending));
         self.selected_stack = None;
         self.dirty = false;
@@ -184,6 +186,7 @@ impl CombatPlanDraftState {
 
     fn clear(&mut self) {
         self.mission_id = None;
+        self.synced_round = None;
         self.draft = None;
         self.selected_stack = None;
         self.dirty = false;
@@ -192,10 +195,27 @@ impl CombatPlanDraftState {
     pub(super) fn draft(&self) -> Option<&CombatPlanDraft> {
         self.draft.as_ref()
     }
+
+    pub(super) fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    #[cfg(test)]
+    pub(super) fn mark_dirty_for_tests(&mut self) {
+        self.dirty = true;
+    }
+
+    #[cfg(test)]
+    pub(super) fn synced_round_for_tests(&self) -> Option<u16> {
+        self.synced_round
+    }
 }
 
 #[derive(Component)]
 pub(super) struct CombatPlanPanelRoot;
+
+#[derive(Component)]
+pub(super) struct DraftHeadingText;
 
 #[derive(Component)]
 pub(super) struct DraftStackRow(usize);
@@ -217,7 +237,7 @@ pub(super) enum DraftAction {
 }
 
 #[derive(Component, Clone, Copy)]
-pub(super) struct DraftActionButton(DraftAction);
+pub(super) struct DraftActionButton(pub(super) DraftAction);
 
 pub(super) fn spawn_group_panel(root: &mut ChildSpawnerCommands) {
     root.spawn((
@@ -251,6 +271,7 @@ pub(super) fn spawn_group_panel(root: &mut ChildSpawnerCommands) {
                     Text::new("PLAN DE BATAILLE"),
                     ui_text_font(12.0),
                     TextColor(Color::srgba(0.78, 0.86, 1.0, 0.88)),
+                    DraftHeadingText,
                 ));
                 heading
                     .spawn(Node {
@@ -418,13 +439,16 @@ pub(super) fn sync_combat_plan_draft(
         draft.clear();
         return;
     };
-    if draft.mission_id == Some(mission_id) && draft.draft.is_some() {
-        return;
-    }
     let Some(pending) = simulation.simulation().state().pending_combat(mission_id) else {
         draft.clear();
         return;
     };
+    if draft.mission_id == Some(mission_id)
+        && draft.draft.is_some()
+        && (pending.round() == 0 || draft.synced_round == Some(pending.round()))
+    {
+        return;
+    }
     draft.rebuild(mission_id, pending);
 }
 
@@ -458,6 +482,11 @@ fn apply_draft_action(
         state.clear();
         return;
     };
+    if pending.round() > 0 {
+        ui.feedback = "Le plan actif est verrouillé ; utilisez le commandement.".to_string();
+        state.rebuild(mission_id, pending);
+        return;
+    }
 
     match action {
         DraftAction::SelectStack(slot) => {
@@ -510,6 +539,15 @@ pub(super) fn confirm_current_draft(
     let Some(plan) = state.draft.as_ref().map(CombatPlanDraft::to_plan) else {
         return;
     };
+    let Some(pending) = simulation.simulation().state().pending_combat(mission_id) else {
+        state.clear();
+        return;
+    };
+    if pending.round() > 0 {
+        ui.feedback = "Le plan actif est verrouillé ; utilisez le commandement.".to_string();
+        state.rebuild(mission_id, pending);
+        return;
+    }
     if plan.groups.is_empty() {
         ui.feedback = "Le plan de bataille est vide.".to_string();
         return;
@@ -558,6 +596,21 @@ type DraftGroupTextQuery<'w, 's> = Query<
     ),
 >;
 
+type DraftHeadingTextQuery<'w, 's> = Query<
+    'w,
+    's,
+    &'static mut Text,
+    (
+        With<DraftHeadingText>,
+        Without<DraftStackText>,
+        Without<DraftGroupText>,
+        Without<super::CombatHeaderText>,
+        Without<super::CombatIntelBarText>,
+        Without<super::CombatRoundLogText>,
+        Without<super::CombatFeedbackText>,
+    ),
+>;
+
 type DraftStackRowQuery<'w, 's> = Query<
     'w,
     's,
@@ -590,6 +643,7 @@ pub(super) fn update_combat_plan_panel(
     simulation: Res<SimulationResource>,
     draft: Res<CombatPlanDraftState>,
     mut roots: Query<&mut Visibility, With<CombatPlanPanelRoot>>,
+    mut heading_texts: DraftHeadingTextQuery,
     mut stack_rows: DraftStackRowQuery,
     mut stack_texts: DraftStackTextQuery,
     mut group_texts: DraftGroupTextQuery,
@@ -610,8 +664,17 @@ pub(super) fn update_combat_plan_panel(
     let Some(pending) = simulation.simulation().state().pending_combat(mission_id) else {
         return;
     };
+    let locked = pending.round() > 0;
     let allied = allied_stacks(pending);
     let draft_ref = draft.draft.as_ref();
+
+    for mut text in &mut heading_texts {
+        text.0 = if locked {
+            "PLAN ACTIF — VERROUILLÉ".to_string()
+        } else {
+            "PLAN DE BATAILLE".to_string()
+        };
+    }
 
     for (row, button, mut visibility, mut background, mut outline, interaction) in &mut stack_rows {
         let Some(stack) = allied.get(row.0) else {
@@ -619,9 +682,9 @@ pub(super) fn update_combat_plan_panel(
             continue;
         };
         *visibility = Visibility::Inherited;
-        let active = draft.selected_stack == Some(stack.stack_id);
-        background.0 = action_button_color(true, active, interaction);
-        outline.color = action_button_outline(true, active, interaction);
+        let active = !locked && draft.selected_stack == Some(stack.stack_id);
+        background.0 = action_button_color(!locked, active, interaction);
+        outline.color = action_button_outline(!locked, active, interaction);
         debug_assert_eq!(button.0, DraftAction::SelectStack(row.0));
     }
 
@@ -661,13 +724,20 @@ pub(super) fn update_combat_plan_panel(
     }
 
     for (button, mut background, mut outline, interaction) in &mut buttons {
-        let (available, active) = draft_button_state(button.0, &draft);
+        let (available, active) = draft_button_state(button.0, &draft, locked);
         background.0 = action_button_color(available, active, interaction);
         outline.color = action_button_outline(available, active, interaction);
     }
 }
 
-fn draft_button_state(action: DraftAction, state: &CombatPlanDraftState) -> (bool, bool) {
+fn draft_button_state(
+    action: DraftAction,
+    state: &CombatPlanDraftState,
+    locked: bool,
+) -> (bool, bool) {
+    if locked {
+        return (false, false);
+    }
     match action {
         DraftAction::SelectStack(_) => (true, false),
         DraftAction::AssignSelected(group_id) => {

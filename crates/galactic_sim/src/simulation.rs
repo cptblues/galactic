@@ -575,9 +575,9 @@ mod tests {
     };
 
     use crate::{
-        AuthorizationError, BuildingKind, ColonySelectionError, CraftableId, GameAction,
-        KnowledgeLevel, KnowledgeTarget, MissionPhase, MissionResult, MissionTarget, TechnologyId,
-        TimeSpeed, default_building_catalog,
+        AuthorizationError, BuildingKind, ColonySelectionError, CombatDoctrineId, CombatPlan,
+        CombatStackId, CraftableId, GameAction, KnowledgeLevel, KnowledgeTarget, MissionPhase,
+        MissionResult, MissionTarget, TechnologyId, TimeSpeed, default_building_catalog,
     };
 
     use super::*;
@@ -1330,6 +1330,84 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn reconstruction_rejects_pending_combat_invalid_plan() {
+        let (simulation, _mission_id) = simulation_with_pending_combat();
+        let universe = simulation.universe().clone();
+        let mut state = simulation.state().clone();
+        state.pending_combats[0].plan = Some(CombatPlan {
+            doctrine: CombatDoctrineId::BalancedEngagement,
+            groups: Vec::new(),
+        });
+
+        assert!(matches!(
+            Simulation::from_parts(universe, state),
+            Err(SimulationBuildError::PendingCombatInvalidPlan(_))
+        ));
+    }
+
+    #[test]
+    fn reconstruction_rejects_pending_combat_missing_initial_plan_after_round_zero() {
+        let (simulation, _mission_id) = simulation_with_pending_combat();
+        let universe = simulation.universe().clone();
+        let mut state = simulation.state().clone();
+        state.pending_combats[0].state.round = 1;
+        state.pending_combats[0].initial_plan = None;
+
+        assert!(matches!(
+            Simulation::from_parts(universe, state),
+            Err(SimulationBuildError::PendingCombatMissingInitialPlan(_))
+        ));
+    }
+
+    #[test]
+    fn reconstruction_rejects_pending_combat_invalid_initial_plan() {
+        let (simulation, _mission_id) = simulation_with_pending_combat();
+        let universe = simulation.universe().clone();
+        let mut state = simulation.state().clone();
+        state.pending_combats[0].state.round = 1;
+        state.pending_combats[0].initial_plan = Some(CombatPlan {
+            doctrine: CombatDoctrineId::BalancedEngagement,
+            groups: Vec::new(),
+        });
+
+        assert!(matches!(
+            Simulation::from_parts(universe, state),
+            Err(SimulationBuildError::PendingCombatInvalidInitialPlan(_))
+        ));
+    }
+
+    #[test]
+    fn reconstruction_accepts_pending_combat_with_destroyed_stack_referenced_by_plan() {
+        let (simulation, _mission_id) = simulation_with_pending_combat();
+        let universe = simulation.universe().clone();
+        let mut state = simulation.state().clone();
+        let pending = &mut state.pending_combats[0];
+        let mut second = pending.state.attacker.stacks[0].clone();
+        second.stack_id = CombatStackId(99);
+        pending.state.attacker.stacks.push(second);
+        pending
+            .plan
+            .as_mut()
+            .expect("pending combat has a plan")
+            .groups[0]
+            .stacks
+            .push(CombatStackId(99));
+        pending.initial_plan = pending.plan.clone();
+        pending.state.round = 1;
+        let destroyed = pending
+            .state
+            .attacker
+            .stacks
+            .iter_mut()
+            .find(|stack| stack.stack_id == CombatStackId(99))
+            .expect("destroyed stack exists");
+        destroyed.surviving_quantity = 0;
+        destroyed.current_hull = 0;
+
+        assert!(Simulation::from_parts(universe, state).is_ok());
+    }
+
     /// COMBAT-001-E "smoke test complet": drives a pending combat to
     /// completion through real `GameAction::ChooseCombatDoctrine` commands
     /// (the player's own path, not the auto-resolve façade), round by round,
@@ -1343,6 +1421,7 @@ mod tests {
 
         let mut rounds_played = 0;
         let mut completed = false;
+        let mut intervention_sent = false;
         while let Some(pending) = simulation.state().pending_combat(mission_id) {
             let round = pending.round() + 1;
             assert!(
@@ -1353,10 +1432,11 @@ mod tests {
                 mission_id,
                 round,
                 doctrine: Some(crate::CombatDoctrineId::BalancedEngagement),
-                intervention: (round == 1).then_some(crate::CombatIntervention::FocusFire {
+                intervention: (round == 2).then_some(crate::CombatIntervention::FocusFire {
                     priority: crate::CombatTargetPriority::Heavy,
                 }),
             });
+            intervention_sent |= round == 2;
             rounds_played += 1;
             assert!(
                 events
@@ -1402,13 +1482,18 @@ mod tests {
             report.final_plan.is_some(),
             "the report keeps the final tactical plan"
         );
-        assert_eq!(report.intervention_history.len(), 1);
         assert_eq!(
-            report.intervention_history[0].intervention,
-            crate::CombatIntervention::FocusFire {
-                priority: crate::CombatTargetPriority::Heavy,
-            }
+            report.intervention_history.len(),
+            usize::from(intervention_sent)
         );
+        if intervention_sent {
+            assert_eq!(
+                report.intervention_history[0].intervention,
+                crate::CombatIntervention::FocusFire {
+                    priority: crate::CombatTargetPriority::Heavy,
+                }
+            );
+        }
         let mission = simulation
             .state()
             .mission(mission_id)

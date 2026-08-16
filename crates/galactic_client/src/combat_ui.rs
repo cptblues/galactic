@@ -1215,6 +1215,9 @@ fn combat_command_error_text(error: CombatCommandError) -> String {
         CombatCommandError::StaleRound { expected, found } => {
             format!("Ce round ({found}) a déjà été résolu — round attendu : {expected}.")
         }
+        CombatCommandError::PlanLocked { round } => {
+            format!("Le plan est verrouillé depuis le round {round}.")
+        }
         CombatCommandError::InvalidPlan(error) => match error {
             CombatPlanValidationError::EmptyPlan => "Le plan de bataille est vide.".to_string(),
             CombatPlanValidationError::TooManyGroups { maximum, .. } => {
@@ -1243,6 +1246,10 @@ fn combat_command_error_text(error: CombatCommandError) -> String {
             "Points de commandement insuffisants : {required} requis, {available} disponible(s)."
         ),
         CombatCommandError::InvalidIntervention(error) => match error {
+            CombatInterventionError::CombatNotStarted => {
+                "Les ordres de commandement seront disponibles après le premier engagement."
+                    .to_string()
+            }
             CombatInterventionError::InvalidFocusPriority => {
                 "Cette priorité de tir ne peut pas être concentrée.".to_string()
             }
@@ -1254,6 +1261,9 @@ fn combat_command_error_text(error: CombatCommandError) -> String {
             }
             CombatInterventionError::ReserveGroupEmpty(_) => {
                 "Ce groupe de réserve ne contient aucune unité.".to_string()
+            }
+            CombatInterventionError::ReserveGroupInoperable(_) => {
+                "Cette réserve n'a plus d'unité opérationnelle.".to_string()
             }
             CombatInterventionError::GroupIsNotReserve(_) => {
                 "Ce groupe est déjà engagé.".to_string()
@@ -1374,7 +1384,7 @@ fn doctrine_change_cost(pending: &PendingCombat, doctrine: Option<CombatDoctrine
     let Some(doctrine) = doctrine else {
         return 0;
     };
-    if persistent_doctrine(pending) == doctrine {
+    if pending.round() == 0 || persistent_doctrine(pending) == doctrine {
         0
     } else {
         combat_rules().command().change_doctrine_cost()
@@ -1404,15 +1414,27 @@ fn reserve_group_is_available(pending: &PendingCombat, group_id: CombatGroupPlan
     pending
         .plan()
         .and_then(|plan| plan.groups.iter().find(|group| group.id == group_id))
-        .is_some_and(|group| group.role == CombatGroupRole::Reserve && !group.stacks.is_empty())
+        .is_some_and(|group| {
+            group.role == CombatGroupRole::Reserve
+                && group.stacks.iter().any(|stack_id| {
+                    allied_stacks(pending)
+                        .iter()
+                        .any(|stack| stack.stack_id == *stack_id && stack.surviving_quantity > 0)
+                })
+        })
 }
 
 fn focus_fire_is_available(pending: &PendingCombat, priority: CombatTargetPriority) -> bool {
     priority != CombatTargetPriority::Any
         && pending.plan().is_some_and(|plan| {
-            plan.groups
-                .iter()
-                .any(|group| group.role != CombatGroupRole::Reserve && !group.stacks.is_empty())
+            plan.groups.iter().any(|group| {
+                group.role != CombatGroupRole::Reserve
+                    && group.stacks.iter().any(|stack_id| {
+                        allied_stacks(pending).iter().any(|stack| {
+                            stack.stack_id == *stack_id && stack.surviving_quantity > 0
+                        })
+                    })
+            })
         })
 }
 
@@ -1421,6 +1443,9 @@ fn intervention_is_available(
     selected_doctrine: Option<CombatDoctrineId>,
     intervention: CombatIntervention,
 ) -> bool {
+    if pending.round() == 0 {
+        return false;
+    }
     let intervention_is_valid = match intervention {
         CombatIntervention::FocusFire { priority } => focus_fire_is_available(pending, priority),
         CombatIntervention::CommitReserve { group_id } => {
@@ -1448,6 +1473,7 @@ fn apply_combat_action(
     action: CombatUiAction,
     simulation: &mut SimulationResource,
     ui: &mut CombatUiState,
+    draft: &CombatPlanDraftState,
     now: Duration,
 ) {
     if action == CombatUiAction::ReturnToGalaxy {
@@ -1522,6 +1548,10 @@ fn apply_combat_action(
             let Some(pending) = simulation.simulation().state().pending_combat(mission_id) else {
                 return;
             };
+            if pending.round() == 0 && draft.is_dirty() {
+                ui.feedback = "Confirmez le plan avant l'assaut.".to_string();
+                return;
+            }
             if ui.selected_intervention.is_some_and(|intervention| {
                 !intervention_is_available(pending, ui.chosen_doctrine, intervention)
             }) || round_command_cost(pending, ui.chosen_doctrine, ui.selected_intervention)
@@ -1614,11 +1644,12 @@ fn handle_combat_buttons(
     mut interactions: CombatActionButtonQuery,
     mut simulation: ResMut<SimulationResource>,
     mut ui: ResMut<CombatUiState>,
+    draft: Res<CombatPlanDraftState>,
     time: Res<Time>,
 ) {
     for (interaction, button) in &mut interactions {
         if matches!(interaction, Interaction::Pressed) {
-            apply_combat_action(button.0, &mut simulation, &mut ui, time.elapsed());
+            apply_combat_action(button.0, &mut simulation, &mut ui, &draft, time.elapsed());
         }
     }
 }
@@ -1670,13 +1701,14 @@ fn handle_combat_shortcuts(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut simulation: ResMut<SimulationResource>,
     mut ui: ResMut<CombatUiState>,
+    draft: Res<CombatPlanDraftState>,
     time: Res<Time>,
 ) {
     if ui.current.is_none() {
         return;
     }
     if let Some(action) = combat_shortcut(&keyboard, ui.phase) {
-        apply_combat_action(action, &mut simulation, &mut ui, time.elapsed());
+        apply_combat_action(action, &mut simulation, &mut ui, &draft, time.elapsed());
     }
 }
 
@@ -1860,6 +1892,7 @@ fn prepared_order_label(
 fn update_command_panel(
     ui: Res<CombatUiState>,
     simulation: Res<SimulationResource>,
+    draft: Res<CombatPlanDraftState>,
     mut command_texts: CombatCommandTextQuery,
     mut validate_labels: CombatValidateButtonLabelQuery,
 ) {
@@ -1874,23 +1907,33 @@ fn update_command_panel(
     };
 
     let cost = round_command_cost(pending, ui.chosen_doctrine, ui.selected_intervention);
+    let initial_plan_dirty = pending.round() == 0 && draft.is_dirty();
     if let Ok(mut text) = command_texts.single_mut() {
         let maximum = pending.command_points_maximum();
         let available = pending.command_points_remaining();
         let meter = command_points_meter(available, maximum);
-        let prepared = prepared_order_label(pending, ui.chosen_doctrine, ui.selected_intervention);
-        let cost_label = if cost == 0 {
-            "gratuit".to_string()
+        if pending.round() == 0 {
+            text.0 = format!(
+                "COMMANDEMENT : {meter}  {available}/{maximum} PC\nDisponible après le premier engagement."
+            );
         } else {
-            format!("-{cost} PC")
-        };
-        text.0 = format!(
-            "COMMANDEMENT : {meter}  {available}/{maximum} PC\nOrdre : {prepared} ({cost_label})"
-        );
+            let prepared =
+                prepared_order_label(pending, ui.chosen_doctrine, ui.selected_intervention);
+            let cost_label = if cost == 0 {
+                "gratuit".to_string()
+            } else {
+                format!("-{cost} PC")
+            };
+            text.0 = format!(
+                "COMMANDEMENT : {meter}  {available}/{maximum} PC\nOrdre : {prepared} ({cost_label})"
+            );
+        }
     }
 
     if let Ok(mut text) = validate_labels.single_mut() {
-        text.0 = if cost > 0 {
+        text.0 = if initial_plan_dirty {
+            "Confirmez le plan avant l'assaut".to_string()
+        } else if cost > 0 {
             "Exécuter l'ordre [Entrée]".to_string()
         } else if pending.round() == 0 {
             "Lancer l'assaut [Entrée]".to_string()
@@ -1932,6 +1975,7 @@ type RetreatButtonLabelQuery<'w, 's> = Query<
 fn update_action_buttons(
     ui: Res<CombatUiState>,
     simulation: Res<SimulationResource>,
+    draft: Res<CombatPlanDraftState>,
     time: Res<Time>,
     mut buttons: CombatActionButtonStyleQuery,
     mut retreat_label: RetreatButtonLabelQuery,
@@ -1950,6 +1994,7 @@ fn update_action_buttons(
             }
         };
         intervention_available
+            && !(pending.round() == 0 && draft.is_dirty())
             && round_command_cost(pending, ui.chosen_doctrine, ui.selected_intervention)
                 <= pending.command_points_remaining()
     });
@@ -2260,6 +2305,10 @@ mod tests {
             "Ce round (1) a déjà été résolu — round attendu : 2."
         );
         assert_eq!(
+            combat_command_error_text(CombatCommandError::PlanLocked { round: 1 }),
+            "Le plan est verrouillé depuis le round 1."
+        );
+        assert_eq!(
             combat_command_error_text(CombatCommandError::InvalidPlan(
                 CombatPlanValidationError::EmptyPlan
             )),
@@ -2271,6 +2320,18 @@ mod tests {
                 available: 1,
             }),
             "Points de commandement insuffisants : 2 requis, 1 disponible(s)."
+        );
+        assert_eq!(
+            combat_command_error_text(CombatCommandError::InvalidIntervention(
+                CombatInterventionError::CombatNotStarted
+            )),
+            "Les ordres de commandement seront disponibles après le premier engagement."
+        );
+        assert_eq!(
+            combat_command_error_text(CombatCommandError::InvalidIntervention(
+                CombatInterventionError::ReserveGroupInoperable(CombatGroupPlanId::Gamma)
+            )),
+            "Cette réserve n'a plus d'unité opérationnelle."
         );
         assert_eq!(
             combat_command_error_text(CombatCommandError::InvalidIntervention(
@@ -2288,7 +2349,7 @@ mod tests {
         assert_eq!(round_command_cost(pending, None, None), 0);
         assert_eq!(
             round_command_cost(pending, Some(CombatDoctrineId::ConcentratedAssault), None),
-            combat_rules().command().change_doctrine_cost()
+            0
         );
         assert_eq!(
             round_command_cost(
@@ -2300,7 +2361,7 @@ mod tests {
             ),
             combat_rules().command().focus_fire_cost()
         );
-        assert!(intervention_is_available(
+        assert!(!intervention_is_available(
             pending,
             None,
             CombatIntervention::FocusFire {
@@ -2515,9 +2576,89 @@ mod tests {
             .pending_combat(mission_id)
             .expect("confirming a plan does not resolve the combat");
         assert_eq!(pending.plan(), Some(&expected));
+        assert!(!draft_state.is_dirty());
         assert!(simulation.pending_events.iter().any(|event| matches!(
             event.kind,
             GameEventKind::CombatPlanConfirmed(CombatPlanConfirmed { mission_id: id })
+                if id == mission_id
+        )));
+    }
+
+    #[test]
+    fn dirty_initial_plan_blocks_launch() {
+        let simulation = simulation_with_pending_combat();
+        let mission_id = simulation.state().pending_combats[0].mission_id;
+        let mut simulation = SimulationResource {
+            simulation,
+            pending_events: Vec::new(),
+        };
+        let mut ui = CombatUiState {
+            current: Some(mission_id),
+            phase: CombatUiPhase::AwaitingDoctrine,
+            ..Default::default()
+        };
+        let mut draft_state = group_panel::CombatPlanDraftState::default();
+        let pending = simulation
+            .simulation()
+            .state()
+            .pending_combat(mission_id)
+            .expect("the combat fixture is still pending");
+        draft_state.rebuild(mission_id, pending);
+        draft_state.mark_dirty_for_tests();
+
+        apply_combat_action(
+            CombatUiAction::Validate,
+            &mut simulation,
+            &mut ui,
+            &draft_state,
+            Duration::ZERO,
+        );
+
+        assert_eq!(ui.feedback, "Confirmez le plan avant l'assaut.");
+        assert!(simulation.pending_events.is_empty());
+        assert_eq!(
+            simulation
+                .simulation()
+                .state()
+                .pending_combat(mission_id)
+                .expect("combat stays pending")
+                .round(),
+            0
+        );
+    }
+
+    #[test]
+    fn confirmed_initial_plan_allows_launch() {
+        let simulation = simulation_with_pending_combat();
+        let mission_id = simulation.state().pending_combats[0].mission_id;
+        let mut simulation = SimulationResource {
+            simulation,
+            pending_events: Vec::new(),
+        };
+        let mut ui = CombatUiState {
+            current: Some(mission_id),
+            phase: CombatUiPhase::AwaitingDoctrine,
+            ..Default::default()
+        };
+        let mut draft_state = group_panel::CombatPlanDraftState::default();
+        let pending = simulation
+            .simulation()
+            .state()
+            .pending_combat(mission_id)
+            .expect("the combat fixture is still pending");
+        draft_state.rebuild(mission_id, pending);
+
+        apply_combat_action(
+            CombatUiAction::Validate,
+            &mut simulation,
+            &mut ui,
+            &draft_state,
+            Duration::ZERO,
+        );
+
+        assert!(simulation.pending_events.iter().any(|event| matches!(
+            event.kind,
+            GameEventKind::CombatRoundResolved(CombatRoundResolved { mission_id: id, round: 1 })
                 if id == mission_id
         )));
     }
@@ -2567,6 +2708,122 @@ mod tests {
     }
 
     #[test]
+    fn plan_buttons_are_disabled_after_round_zero() {
+        let mut simulation = simulation_with_pending_combat_using(2);
+        let mission_id = simulation.state().pending_combats[0].mission_id;
+        simulation.apply_player_action(GameAction::ChooseCombatDoctrine {
+            mission_id,
+            round: 1,
+            doctrine: None,
+            intervention: None,
+        });
+        assert!(
+            simulation.state().pending_combat(mission_id).is_some(),
+            "the 2-frigate fixture should still be pending after one round"
+        );
+
+        let mut app = bevy::app::App::new();
+        app.init_resource::<Assets<Image>>()
+            .init_resource::<crate::presentation::icons::IconAssets>()
+            .init_resource::<group_panel::CombatPlanDraftState>()
+            .insert_resource(SimulationResource {
+                simulation,
+                pending_events: Vec::new(),
+            })
+            .insert_resource(CombatUiState {
+                current: Some(mission_id),
+                phase: CombatUiPhase::AwaitingDoctrine,
+                ..Default::default()
+            })
+            .add_systems(bevy::app::Startup, spawn_combat_screen)
+            .add_systems(
+                bevy::app::Update,
+                (
+                    group_panel::sync_combat_plan_draft,
+                    group_panel::update_combat_plan_panel,
+                )
+                    .chain(),
+            );
+
+        app.update();
+
+        let world = app.world_mut();
+        let mut texts = world.query::<&Text>();
+        let rendered_text = texts
+            .iter(world)
+            .map(|text| text.0.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered_text.contains("PLAN ACTIF"));
+
+        let mut buttons = world.query::<(&group_panel::DraftActionButton, &BackgroundColor)>();
+        let disabled = action_button_color(false, false, &Interaction::None);
+        assert!(buttons.iter(world).any(|(button, background)| {
+            button.0 == group_panel::DraftAction::Confirm && background.0 == disabled
+        }));
+        assert!(buttons.iter(world).any(|(button, background)| {
+            matches!(button.0, group_panel::DraftAction::CycleRole(_)) && background.0 == disabled
+        }));
+    }
+
+    #[test]
+    fn draft_rebuilds_when_round_changes() {
+        let simulation = simulation_with_pending_combat_using(2);
+        let mission_id = simulation.state().pending_combats[0].mission_id;
+
+        let mut app = bevy::app::App::new();
+        app.init_resource::<Assets<Image>>()
+            .init_resource::<crate::presentation::icons::IconAssets>()
+            .init_resource::<group_panel::CombatPlanDraftState>()
+            .insert_resource(SimulationResource {
+                simulation,
+                pending_events: Vec::new(),
+            })
+            .insert_resource(CombatUiState {
+                current: Some(mission_id),
+                phase: CombatUiPhase::AwaitingDoctrine,
+                ..Default::default()
+            })
+            .add_systems(bevy::app::Startup, spawn_combat_screen)
+            .add_systems(
+                bevy::app::Update,
+                (
+                    group_panel::sync_combat_plan_draft,
+                    group_panel::update_combat_plan_panel,
+                )
+                    .chain(),
+            );
+
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<group_panel::CombatPlanDraftState>()
+                .synced_round_for_tests(),
+            Some(0)
+        );
+        {
+            let mut simulation = app.world_mut().resource_mut::<SimulationResource>();
+            simulation.pending_events =
+                simulation
+                    .simulation
+                    .apply_player_action(GameAction::ChooseCombatDoctrine {
+                        mission_id,
+                        round: 1,
+                        doctrine: None,
+                        intervention: None,
+                    });
+        }
+        app.update();
+
+        assert_eq!(
+            app.world()
+                .resource::<group_panel::CombatPlanDraftState>()
+                .synced_round_for_tests(),
+            Some(1)
+        );
+    }
+
+    #[test]
     fn command_panel_updates_without_a_query_conflict() {
         let simulation = simulation_with_pending_combat();
         let mission_id = simulation.state().pending_combats[0].mission_id;
@@ -2574,6 +2831,7 @@ mod tests {
         let mut app = bevy::app::App::new();
         app.init_resource::<Assets<Image>>()
             .init_resource::<crate::presentation::icons::IconAssets>()
+            .init_resource::<group_panel::CombatPlanDraftState>()
             .insert_resource(SimulationResource {
                 simulation,
                 pending_events: Vec::new(),
@@ -2598,6 +2856,7 @@ mod tests {
         let starting_points = combat_rules().command().starting_points();
         assert!(rendered_text.contains("COMMANDEMENT"));
         assert!(rendered_text.contains(&format!("{starting_points}/{starting_points} PC")));
+        assert!(rendered_text.contains("Disponible après le premier engagement"));
         assert!(rendered_text.contains("Lancer l'assaut"));
     }
 
