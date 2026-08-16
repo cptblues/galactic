@@ -622,8 +622,11 @@ pub(crate) fn combat_report_text(report: &galactic_sim::CombatReport) -> String 
                 CombatControlChange::Unchanged => "contrôle territorial inchangé",
                 CombatControlChange::Secured { .. } => "orbite et surface sécurisées par le joueur",
             };
+            let tactical = combat_tactical_timeline_text(report)
+                .map(|timeline| format!("\n\n{timeline}"))
+                .unwrap_or_default();
             format!(
-                "RAPPORT DE COMBAT — {}\nMission {} • tick {} • {} round(s)\nAttaquants engagés : {}\nPertes attaquantes : {}\nAttaquants survivants : {}\nDéfense engagée : {}\nPertes défense : {}\nDéfense survivante : {}\nDommages subis/infligés : {} / {}\nRécupérable : {} métal, {} cristal, {} carburant\nRécupéré : {} métal, {} cristal, {} carburant\nContrôle : {}",
+                "RAPPORT DE COMBAT — {}\nMission {} • tick {} • {} round(s)\nAttaquants engagés : {}\nPertes attaquantes : {}\nAttaquants survivants : {}\nDéfense engagée : {}\nPertes défense : {}\nDéfense survivante : {}\nDommages subis/infligés : {} / {}\nRécupérable : {} métal, {} cristal, {} carburant\nRécupéré : {} métal, {} cristal, {} carburant\nContrôle : {}{}",
                 combat_outcome_label(resolution.outcome).to_uppercase(),
                 report.mission_id.raw(),
                 report.resolved_at.value(),
@@ -643,7 +646,252 @@ pub(crate) fn combat_report_text(report: &galactic_sim::CombatReport) -> String 
                 resolution.salvage_recovered.crystal,
                 resolution.salvage_recovered.fuel,
                 control,
+                tactical,
             )
+        }
+    }
+}
+
+fn combat_tactical_timeline_text(report: &galactic_sim::CombatReport) -> Option<String> {
+    if report.round_history.is_empty()
+        && report.initial_plan.is_none()
+        && report.final_plan.is_none()
+        && report.intervention_history.is_empty()
+    {
+        return None;
+    }
+
+    let mut lines = Vec::new();
+    if let Some(plan) = &report.initial_plan {
+        lines.push(format!("Plan initial : {}", combat_plan_summary(plan)));
+    }
+    if report.final_plan.as_ref() != report.initial_plan.as_ref()
+        && let Some(plan) = &report.final_plan
+    {
+        lines.push(format!("Plan final : {}", combat_plan_summary(plan)));
+    }
+    if !report.intervention_history.is_empty() {
+        lines.push("Interventions :".to_string());
+        lines.extend(
+            report
+                .intervention_history
+                .iter()
+                .map(combat_intervention_timeline_line),
+        );
+    }
+    if !report.round_history.is_empty() {
+        lines.push("Chronologie tactique :".to_string());
+        lines.extend(report.round_history.iter().map(combat_round_timeline_line));
+    }
+
+    Some(lines.join("\n"))
+}
+
+fn combat_intervention_timeline_line(record: &galactic_sim::CombatInterventionRecord) -> String {
+    format!(
+        "Round {} — {} — {} — coût {} PC — {}.",
+        record.round,
+        combat_doctrine_label(record.doctrine),
+        combat_intervention_label(record.intervention),
+        record.command_point_cost,
+        combat_intervention_effect_label(record.effect),
+    )
+}
+
+fn combat_round_timeline_line(record: &galactic_sim::CombatRoundRecord) -> String {
+    let attacker_losses = combat_stack_losses_quantity(&record.attacker_losses);
+    let defender_losses = combat_stack_losses_quantity(&record.defender_losses);
+    let mut details = Vec::new();
+    if attacker_losses > 0 {
+        details.push(format!("pertes attaquant {attacker_losses}"));
+    }
+    if defender_losses > 0 {
+        details.push(format!("pertes défense {defender_losses}"));
+    }
+    if let Some(impacts) = combat_group_impacts_text(&record.attacker_exchanges) {
+        details.push(impacts);
+    }
+    if let Some(events) = combat_round_events_text(&record.notable_events) {
+        details.push(events);
+    }
+    details.push(format!("intel {}%", record.intel_after));
+    format!(
+        "Round {} — {} / IA {} — infligés {}, subis {} — {}.",
+        record.round,
+        combat_doctrine_label(record.attacker_doctrine),
+        combat_doctrine_label(record.defender_doctrine),
+        record.attacker_damage,
+        record.defender_damage,
+        details.join(", "),
+    )
+}
+
+fn combat_stack_losses_quantity(losses: &[galactic_sim::CombatStackLoss]) -> u64 {
+    losses
+        .iter()
+        .fold(0_u64, |total, loss| total.saturating_add(loss.quantity))
+}
+
+fn combat_group_impacts_text(exchanges: &[galactic_sim::CombatStackExchange]) -> Option<String> {
+    let mut impacts = galactic_sim::CombatGroupPlanId::ALL
+        .into_iter()
+        .filter_map(|group_id| {
+            let damage = exchanges
+                .iter()
+                .filter(|exchange| exchange.source_group == group_id)
+                .fold(0_u128, |total, exchange| {
+                    total.saturating_add(exchange.allocated_damage)
+                });
+            (damage > 0).then(|| format!("{} {}", combat_group_label(group_id), damage))
+        })
+        .collect::<Vec<_>>();
+    impacts.truncate(3);
+    (!impacts.is_empty()).then(|| format!("impacts {}", impacts.join(" / ")))
+}
+
+fn combat_round_events_text(events: &[galactic_sim::CombatRoundEvent]) -> Option<String> {
+    let destroyed_attacker = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event,
+                galactic_sim::CombatRoundEvent::StackDestroyed {
+                    side: galactic_sim::CombatSide::Attacker,
+                    ..
+                }
+            )
+        })
+        .count();
+    let destroyed_defender = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event,
+                galactic_sim::CombatRoundEvent::StackDestroyed {
+                    side: galactic_sim::CombatSide::Defender,
+                    ..
+                }
+            )
+        })
+        .count();
+    let counters = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event,
+                galactic_sim::CombatRoundEvent::CounterTriggered { .. }
+            )
+        })
+        .count();
+    let penalties = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event,
+                galactic_sim::CombatRoundEvent::RepetitionPenaltyApplied { .. }
+            )
+        })
+        .count();
+    let mut parts = Vec::new();
+    if destroyed_attacker > 0 {
+        parts.push(format!("{destroyed_attacker} stack attaquant détruit"));
+    }
+    if destroyed_defender > 0 {
+        parts.push(format!("{destroyed_defender} stack défense détruit"));
+    }
+    if counters > 0 {
+        parts.push(format!("{counters} contre tactique"));
+    }
+    if penalties > 0 {
+        parts.push(format!("{penalties} pénalité de répétition"));
+    }
+    (!parts.is_empty()).then(|| parts.join(", "))
+}
+
+fn combat_plan_summary(plan: &galactic_sim::CombatPlan) -> String {
+    let groups = plan
+        .groups
+        .iter()
+        .map(|group| {
+            format!(
+                "{} {} {}",
+                combat_group_label(group.id),
+                combat_group_role_label(group.role),
+                combat_target_priority_label(group.target_priority),
+            )
+        })
+        .collect::<Vec<_>>();
+    if groups.is_empty() {
+        combat_doctrine_label(plan.doctrine).to_string()
+    } else {
+        format!(
+            "{} ({})",
+            combat_doctrine_label(plan.doctrine),
+            groups.join(", ")
+        )
+    }
+}
+
+fn combat_doctrine_label(doctrine: galactic_sim::CombatDoctrineId) -> &'static str {
+    match doctrine {
+        galactic_sim::CombatDoctrineId::BalancedEngagement => "engagement équilibré",
+        galactic_sim::CombatDoctrineId::ConcentratedAssault => "assaut concentré",
+        galactic_sim::CombatDoctrineId::DefensiveScreen => "écran défensif",
+        galactic_sim::CombatDoctrineId::FlankingManeuver => "contournement",
+        galactic_sim::CombatDoctrineId::DispersedFormation => "formation dispersée",
+        galactic_sim::CombatDoctrineId::TacticalAnalysis => "analyse tactique",
+    }
+}
+
+fn combat_group_label(group_id: galactic_sim::CombatGroupPlanId) -> &'static str {
+    match group_id {
+        galactic_sim::CombatGroupPlanId::Alpha => "Alpha",
+        galactic_sim::CombatGroupPlanId::Beta => "Beta",
+        galactic_sim::CombatGroupPlanId::Gamma => "Gamma",
+    }
+}
+
+fn combat_group_role_label(role: galactic_sim::CombatGroupRole) -> &'static str {
+    match role {
+        galactic_sim::CombatGroupRole::Assault => "assaut",
+        galactic_sim::CombatGroupRole::Screen => "écran",
+        galactic_sim::CombatGroupRole::Bombardment => "bombardement",
+        galactic_sim::CombatGroupRole::Reserve => "réserve",
+    }
+}
+
+fn combat_target_priority_label(priority: galactic_sim::CombatTargetPriority) -> &'static str {
+    match priority {
+        galactic_sim::CombatTargetPriority::Any => "cible libre",
+        galactic_sim::CombatTargetPriority::Light => "priorité légère",
+        galactic_sim::CombatTargetPriority::Medium => "priorité moyenne",
+        galactic_sim::CombatTargetPriority::Heavy => "priorité lourde",
+        galactic_sim::CombatTargetPriority::Damaged => "priorité endommagée",
+        galactic_sim::CombatTargetPriority::Support => "priorité soutien",
+    }
+}
+
+fn combat_intervention_label(intervention: galactic_sim::CombatIntervention) -> String {
+    match intervention {
+        galactic_sim::CombatIntervention::FocusFire { priority } => {
+            format!("tir focalisé ({})", combat_target_priority_label(priority))
+        }
+        galactic_sim::CombatIntervention::CommitReserve { group_id } => {
+            format!("réserve engagée ({})", combat_group_label(group_id))
+        }
+    }
+}
+
+fn combat_intervention_effect_label(effect: galactic_sim::CombatInterventionEffect) -> String {
+    match effect {
+        galactic_sim::CombatInterventionEffect::FocusFireApplied { priority } => {
+            format!(
+                "priorité appliquée aux groupes actifs : {}",
+                combat_target_priority_label(priority)
+            )
+        }
+        galactic_sim::CombatInterventionEffect::ReserveCommitted { group_id } => {
+            format!("{} passe en assaut", combat_group_label(group_id))
         }
     }
 }
@@ -1572,6 +1820,10 @@ mod tests {
                 }],
                 revision: 1,
             },
+            round_history: Vec::new(),
+            initial_plan: None,
+            final_plan: None,
+            intervention_history: Vec::new(),
             status: CombatReportStatus::Resolved(galactic_sim::CombatResolution {
                 outcome: CombatOutcome::AttackerVictory,
                 rounds: 3,
@@ -1609,6 +1861,87 @@ mod tests {
         assert!(rendered.contains("Pertes attaquantes"));
         assert!(rendered.contains("Pertes défense"));
         assert!(rendered.contains("Récupéré"));
+    }
+
+    #[test]
+    fn combat_report_text_renders_tactical_round_timeline_when_available() {
+        let report = galactic_sim::CombatReport {
+            mission_id: galactic_domain::MissionId::new(8),
+            planet_id: galactic_domain::PlanetId::new(4),
+            resolved_at: galactic_sim::StrategicTick::new(50),
+            rules_version: 2,
+            seed: 12,
+            attacker: galactic_sim::CombatFleetSnapshot {
+                fleet_id: galactic_domain::FleetId::new(3),
+                owner: galactic_domain::Owner::Faction(galactic_domain::FactionId::new(0)),
+                ships: Vec::new(),
+                cargo: galactic_domain::ResourceStock::ZERO,
+                cargo_capacity: 0,
+            },
+            defender: galactic_sim::PlanetDefenseSnapshot {
+                planet_id: galactic_domain::PlanetId::new(4),
+                occupant: galactic_domain::Owner::Faction(galactic_domain::FactionId::new(1)),
+                population: 120,
+                forces: Vec::new(),
+                revision: 1,
+            },
+            round_history: vec![galactic_sim::CombatRoundRecord {
+                round: 1,
+                attacker_doctrine: galactic_sim::CombatDoctrineId::TacticalAnalysis,
+                defender_doctrine: galactic_sim::CombatDoctrineId::DefensiveScreen,
+                attacker_damage: 42,
+                defender_damage: 13,
+                attacker_exchanges: Vec::new(),
+                defender_exchanges: Vec::new(),
+                attacker_losses: Vec::new(),
+                defender_losses: Vec::new(),
+                notable_events: Vec::new(),
+                intel_after: 65,
+            }],
+            initial_plan: Some(galactic_sim::CombatPlan {
+                doctrine: galactic_sim::CombatDoctrineId::BalancedEngagement,
+                groups: Vec::new(),
+            }),
+            final_plan: Some(galactic_sim::CombatPlan {
+                doctrine: galactic_sim::CombatDoctrineId::TacticalAnalysis,
+                groups: Vec::new(),
+            }),
+            intervention_history: vec![galactic_sim::CombatInterventionRecord {
+                round: 1,
+                doctrine: galactic_sim::CombatDoctrineId::TacticalAnalysis,
+                intervention: galactic_sim::CombatIntervention::FocusFire {
+                    priority: galactic_sim::CombatTargetPriority::Heavy,
+                },
+                command_point_cost: 1,
+                effect: galactic_sim::CombatInterventionEffect::FocusFireApplied {
+                    priority: galactic_sim::CombatTargetPriority::Heavy,
+                },
+            }],
+            status: CombatReportStatus::Resolved(galactic_sim::CombatResolution {
+                outcome: CombatOutcome::Stalemate,
+                rounds: 1,
+                attacker_losses: Vec::new(),
+                attacker_survivors: Vec::new(),
+                defender_losses: Vec::new(),
+                defender_survivors: Vec::new(),
+                attacker_damage: 13,
+                defender_damage: 42,
+                salvage_recoverable: galactic_domain::ResourceStock::ZERO,
+                salvage_recovered: galactic_domain::ResourceStock::ZERO,
+                control: CombatControlChange::Unchanged,
+            }),
+        };
+
+        let rendered = combat_report_text(&report);
+
+        assert!(rendered.contains("Plan initial"));
+        assert!(rendered.contains("Plan final"));
+        assert!(rendered.contains("Interventions"));
+        assert!(rendered.contains("tir focalisé"));
+        assert!(rendered.contains("Chronologie tactique"));
+        assert!(rendered.contains("Round 1"));
+        assert!(rendered.contains("analyse tactique"));
+        assert!(rendered.contains("intel 65%"));
     }
 
     #[test]

@@ -3,8 +3,9 @@ use galactic_domain::{
 };
 
 use crate::{
-    AuthorizationError, BuildingKind, CombatDoctrineId, CraftableId, FleetComposition,
-    MissionOrder, MissionTarget, StrategicTick, TechnologyId, TimeSpeed,
+    AuthorizationError, BuildingKind, CombatDoctrineId, CombatIntervention, CombatPlan,
+    CraftableId, FleetComposition, MissionOrder, MissionTarget, StrategicTick, TechnologyId,
+    TimeSpeed,
 };
 
 /// An action requested from the deterministic simulation.
@@ -84,11 +85,17 @@ pub enum GameAction {
     },
     /// Resolves exactly one tactical round for a pending combat's attacker
     /// side. `round` must match the combat's next round (doc §10: rejects a
-    /// stale or double-submitted command).
+    /// stale or double-submitted command); `doctrine` and `intervention` are
+    /// optional overrides on top of the persisted combat plan.
+    ConfirmCombatPlan {
+        mission_id: MissionId,
+        plan: CombatPlan,
+    },
     ChooseCombatDoctrine {
         mission_id: MissionId,
         round: u16,
-        doctrine: CombatDoctrineId,
+        doctrine: Option<CombatDoctrineId>,
+        intervention: Option<CombatIntervention>,
     },
     RetreatFromCombat {
         mission_id: MissionId,

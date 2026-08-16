@@ -787,8 +787,9 @@ mod tests {
         assert_eq!(ruleset.planetary_analysis().version(), 4,);
         assert_eq!(ruleset.planetary_presence().version(), 3);
         assert_eq!(ruleset.planetary_presence().definitions().count(), 13);
-        assert_eq!(ruleset.combat().version(), 5);
+        assert_eq!(ruleset.combat().version(), 6);
         assert_eq!(ruleset.combat().ships().count(), 3);
+        assert_eq!(ruleset.combat().command().starting_points(), 3);
         assert_eq!(ruleset.victory().version(), 1);
     }
 

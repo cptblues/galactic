@@ -390,14 +390,10 @@ pub struct CombatStackView {
 }
 
 /// Deliberately does not add the `Exact` tier's (95-100 %, doc §6.3)
-/// "doctrine probable"/"priorité de cible probable" predictions: those
-/// require a *differentiated* per-faction AI profile to predict *from*, and
-/// B builds only a single generic rule-based profile (see `ai.rs`'s module
-/// doc — differentiation is COMBAT-001-E territory). Inventing a prediction
-/// against today's one-profile AI would be a hollow gadget, not a real
-/// forecast, so B stops at the structured stack/quantity/integrity reveals
-/// this function returns and leaves the prediction fields for whichever
-/// ticket actually has faction profiles to predict from.
+/// "doctrine probable"/"priorité de cible probable" predictions here. The
+/// AI profiles now exist in `ai.rs`, but this view type remains the
+/// stack-level reveal boundary; exposing prediction fields needs a separate
+/// public view contract rather than leaking AI internals through every stack.
 #[allow(dead_code)] // wired into the combat UI in COMBAT-001-D
 pub(crate) fn reveal_stack(
     stack: &CombatStackState,

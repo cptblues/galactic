@@ -163,7 +163,7 @@ automatiquement le dernier renseignement connu.
 
 ## Combat
 
-`combat.ron` (`version: 5`) configure le moteur de combat tactique par round
+`combat.ron` (`version: 6`) configure le moteur de combat tactique par round
 (épopée COMBAT-001). Il fixe le nombre maximal de rounds
 (`maximum_rounds: 12` — un plafond, pas une durée garantie : un combat se
 termine dès qu'un camp est totalement hors d'état de combattre), l'échelle des
@@ -182,7 +182,7 @@ par-dessus cette valeur (COMBAT-001-E : cette double application pénalisait
 injustement les piles groupées par rapport à une pile à une seule unité, qui
 ne perdait alors sa puissance qu'une fois au lieu de deux).
 
-`combat.ron` regroupe quatre sous-blocs :
+`combat.ron` regroupe cinq sous-blocs :
 
 - `tactics` : les six doctrines tactiques fixes (`BalancedEngagement`,
   `ConcentratedAssault`, `DefensiveScreen`, `FlankingManeuver`,
@@ -203,7 +203,10 @@ ne perdait alors sa puissance qu'une fois au lieu de deux).
   défenseur, toujours ;
 - `retreat` : la pénalité de dégâts unique appliquée au camp qui se replie
   (`GameAction::RetreatFromCombat`), sur le même barème de calcul que les
-  dégâts d'un round, mais réduite et sans récupération de butin.
+  dégâts d'un round, mais réduite et sans récupération de butin ;
+- `command` : les points de commandement disponibles pour un combat interactif
+  et le coût d'un changement de doctrine, d'un tir concentré ou de l'engagement
+  d'un groupe de réserve.
 
 `planetary_presence.ron` (`version: 3`) fournit les statistiques d'attaque, de
 défense et de durabilité des garnisons — voir la section « Présences

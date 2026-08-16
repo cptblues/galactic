@@ -156,8 +156,8 @@ pub struct RepetitionPenaltyPreview {
     /// The consecutive-use count that will drive this round's penalty if
     /// `doctrine` is chosen again.
     pub consecutive_uses_if_chosen: u8,
-    /// 1000 = neutral, lower = more damage taken this round.
-    pub damage_taken_multiplier_per_mille: u32,
+    /// 1000 = neutral, lower = less outgoing damage dealt this round.
+    pub outgoing_damage_multiplier_per_mille: u32,
 }
 
 pub fn repetition_penalty_preview(
@@ -175,14 +175,14 @@ pub fn repetition_penalty_preview(
     }
     let consecutive_uses_if_chosen = side.consecutive_doctrine_uses;
     let capped = consecutive_uses_if_chosen.min(tactics.repetition_penalty_maximum_stacks());
-    let damage_taken_multiplier_per_mille = 1_000_u32.saturating_sub(
+    let outgoing_damage_multiplier_per_mille = 1_000_u32.saturating_sub(
         tactics
             .repetition_penalty_per_mille()
             .saturating_mul(u32::from(capped)),
     );
     Some(RepetitionPenaltyPreview {
         consecutive_uses_if_chosen,
-        damage_taken_multiplier_per_mille,
+        outgoing_damage_multiplier_per_mille,
     })
 }
 
@@ -397,6 +397,23 @@ mod tests {
     }
 
     #[test]
+    fn repetition_penalty_preview_reports_outgoing_damage_penalty() {
+        let mut pending = fixture_pending_combat();
+        pending.state.attacker.last_doctrine = Some(CombatDoctrineId::ConcentratedAssault);
+        pending.state.attacker.consecutive_doctrine_uses = 2;
+
+        let preview = repetition_penalty_preview(
+            &pending,
+            CombatDoctrineId::ConcentratedAssault,
+            combat_rules(),
+        )
+        .expect("repeating a non-exempt doctrine has a preview");
+
+        assert_eq!(preview.consecutive_uses_if_chosen, 2);
+        assert_eq!(preview.outgoing_damage_multiplier_per_mille, 700);
+    }
+
+    #[test]
     fn qualitative_prediction_is_deterministic() {
         let pending = fixture_pending_combat();
         let allied = allied_stacks(&pending);
@@ -445,10 +462,8 @@ mod tests {
                 .counter_damage_dealt_multiplier_per_mille
                 .is_some()
         );
-        // The exact regression this struct exists to prevent: ConcentratedAssault
-        // reduces damage taken (lower than neutral 1000), it does not increase it —
-        // the old static UI text claimed the opposite ("défense réduite").
-        assert!(concentrated.damage_taken_multiplier_per_mille < 1_000);
+        assert!(concentrated.offense_multiplier_per_mille > 1_000);
+        assert!(concentrated.damage_taken_multiplier_per_mille > 1_000);
     }
 
     #[test]

@@ -116,15 +116,9 @@ pub(crate) struct DebugOverlayState {
     pub(crate) visible: bool,
 }
 
-#[derive(Resource)]
+#[derive(Resource, Default)]
 pub(crate) struct HelpUiState {
     pub(crate) visible: bool,
-}
-
-impl Default for HelpUiState {
-    fn default() -> Self {
-        Self { visible: false }
-    }
 }
 
 #[derive(Resource)]
@@ -381,6 +375,14 @@ pub(crate) struct ManagementBuildingButton {
 pub(crate) struct ManagementBuildingButtonText {
     pub(crate) kind: galactic_sim::BuildingKind,
 }
+
+#[derive(Component)]
+pub(crate) struct ManagementBuildingButtonIcon {
+    pub(crate) kind: galactic_sim::BuildingKind,
+}
+
+#[derive(Component)]
+pub(crate) struct ManagementBuildingDetailIcon;
 
 #[derive(Component)]
 pub(crate) struct ManagementUpgradeButton;

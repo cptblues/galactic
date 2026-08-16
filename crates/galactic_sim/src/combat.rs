@@ -28,6 +28,7 @@ use crate::{
 mod ai;
 mod doctrine;
 mod intel;
+mod plan;
 mod retreat;
 mod rounds;
 mod session;
@@ -42,17 +43,24 @@ pub use intel::{
     CombatIntelTier, CombatStackView, IntegrityBand, IntegrityReveal, QuantityBand, QuantityReveal,
     ThreatLevel, intel_tier,
 };
+pub use plan::{
+    CombatGroupPlan, CombatGroupPlanId, CombatGroupRole, CombatIntervention,
+    CombatInterventionEffect, CombatInterventionRecord, CombatPlan, CombatPlanValidationError,
+    CombatTargetPriority, MAX_COMBAT_GROUPS,
+};
 use retreat::{CombatRetreatRules, CombatRetreatRulesConfig};
 pub use session::{
     CombatAutoResolveRejected, CombatCommandError, CombatCompleted, CombatDecisionRequired,
-    CombatDoctrineRejected, CombatIntelUpdated, CombatRetreatRejected, CombatRoundResolved,
-    PendingCombat,
+    CombatDoctrineRejected, CombatIntelUpdated, CombatInterventionError, CombatPlanConfirmed,
+    CombatPlanRejected, CombatRetreatRejected, CombatRoundResolved, PendingCombat,
 };
-pub(crate) use session::{auto_resolve_combat, choose_combat_doctrine, retreat_from_combat};
+pub(crate) use session::{
+    auto_resolve_combat, choose_combat_doctrine, confirm_combat_plan, retreat_from_combat,
+};
 use state::effective_hull;
 pub use state::{
-    CombatRoundEvent, CombatRoundRecord, CombatSide, CombatStackId, CombatStackLoss,
-    CombatTacticalRole, CombatUnitRef,
+    CombatRoundEvent, CombatRoundRecord, CombatSide, CombatStackExchange, CombatStackId,
+    CombatStackLoss, CombatTacticalRole, CombatUnitRef,
 };
 pub use view::{
     AlliedSideSummary, AlliedStackView, DoctrineOverview, EnemyIntelView, QualitativePrediction,
@@ -85,6 +93,7 @@ pub struct CombatRules {
     intel: CombatIntelRules,
     ai: CombatAiRules,
     retreat: CombatRetreatRules,
+    command: CombatCommandRules,
 }
 
 impl CombatRules {
@@ -93,7 +102,7 @@ impl CombatRules {
         craftables: &CraftableCatalog,
         planetary_presence: &PlanetaryPresenceRules,
     ) -> Result<Self, CombatRulesError> {
-        if config.version != 5 {
+        if config.version != 6 {
             return Err(CombatRulesError::UnsupportedVersion(config.version));
         }
         if config.maximum_rounds == 0 {
@@ -148,6 +157,7 @@ impl CombatRules {
         let intel = CombatIntelRules::from_config(config.intel)?;
         let ai = CombatAiRules::from_config(config.ai)?;
         let retreat = CombatRetreatRules::from_config(config.retreat)?;
+        let command = CombatCommandRules::from_config(config.command)?;
 
         Ok(Self {
             version: config.version,
@@ -161,6 +171,7 @@ impl CombatRules {
             intel,
             ai,
             retreat,
+            command,
         })
     }
 
@@ -189,6 +200,10 @@ impl CombatRules {
     #[allow(dead_code)]
     pub(crate) const fn retreat(&self) -> &CombatRetreatRules {
         &self.retreat
+    }
+
+    pub const fn command(&self) -> &CombatCommandRules {
+        &self.command
     }
 
     pub fn ship(&self, craftable: CraftableId) -> Option<&CombatShipDefinition> {
@@ -227,7 +242,7 @@ impl CombatRules {
         output.push_str(&doctrine::ALL_COMBAT_DOCTRINES.len().to_string());
         output.push_str(";counters:");
         output.push_str(&self.tactics.counters_len().to_string());
-        output.push_str(";intel:1;ai:1;retreat:1;");
+        output.push_str(";intel:1;ai:1;retreat:1;command:1;");
     }
 
     fn snapshot_fleet(
@@ -330,6 +345,53 @@ pub enum CombatRulesError {
     InvalidAiScore,
     InvalidRetreatVersion(u32),
     InvalidRetreatPenalty,
+    InvalidCommandVersion(u32),
+    InvalidCommandPoints,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CombatCommandRules {
+    starting_points: u8,
+    change_doctrine_cost: u8,
+    focus_fire_cost: u8,
+    commit_reserve_cost: u8,
+}
+
+impl CombatCommandRules {
+    fn from_config(config: CombatCommandRulesConfig) -> Result<Self, CombatRulesError> {
+        if config.version != 1 {
+            return Err(CombatRulesError::InvalidCommandVersion(config.version));
+        }
+        if config.starting_points == 0
+            || config.change_doctrine_cost == 0
+            || config.focus_fire_cost == 0
+            || config.commit_reserve_cost == 0
+        {
+            return Err(CombatRulesError::InvalidCommandPoints);
+        }
+        Ok(Self {
+            starting_points: config.starting_points,
+            change_doctrine_cost: config.change_doctrine_cost,
+            focus_fire_cost: config.focus_fire_cost,
+            commit_reserve_cost: config.commit_reserve_cost,
+        })
+    }
+
+    pub const fn starting_points(&self) -> u8 {
+        self.starting_points
+    }
+
+    pub const fn change_doctrine_cost(&self) -> u8 {
+        self.change_doctrine_cost
+    }
+
+    pub const fn focus_fire_cost(&self) -> u8 {
+        self.focus_fire_cost
+    }
+
+    pub const fn commit_reserve_cost(&self) -> u8 {
+        self.commit_reserve_cost
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -482,6 +544,14 @@ pub struct CombatReport {
     pub seed: u64,
     pub attacker: CombatFleetSnapshot,
     pub defender: PlanetDefenseSnapshot,
+    #[serde(default)]
+    pub round_history: Vec<CombatRoundRecord>,
+    #[serde(default)]
+    pub initial_plan: Option<CombatPlan>,
+    #[serde(default)]
+    pub final_plan: Option<CombatPlan>,
+    #[serde(default)]
+    pub intervention_history: Vec<CombatInterventionRecord>,
     pub status: CombatReportStatus,
 }
 
@@ -559,13 +629,13 @@ pub(crate) fn resolve_combat(
 fn run_combat_to_completion(combat_state: &mut state::FleetCombatState, rules: &CombatRules) {
     while combat_state.phase != state::FleetCombatPhase::Completed {
         let round = combat_state.round.saturating_add(1);
-        let attacker_doctrine = ai::choose_ai_doctrine(
+        let attacker_plan = ai::choose_ai_plan(
             &combat_state.attacker,
             &combat_state.defender,
             round,
             rules.ai(),
         );
-        let defender_doctrine = ai::choose_ai_doctrine(
+        let defender_plan = ai::choose_ai_plan(
             &combat_state.defender,
             &combat_state.attacker,
             round,
@@ -573,8 +643,10 @@ fn run_combat_to_completion(combat_state: &mut state::FleetCombatState, rules: &
         );
         let resolution = rounds::resolve_combat_round(
             combat_state,
-            attacker_doctrine,
-            defender_doctrine,
+            attacker_plan.doctrine,
+            defender_plan.doctrine,
+            Some(&attacker_plan),
+            Some(&defender_plan),
             rules,
             rules.tactics(),
         )
@@ -667,6 +739,10 @@ pub(crate) fn begin_attack(
             seed: commitment.seed,
             attacker: commitment.attacker.clone(),
             defender: commitment.defender.clone(),
+            round_history: Vec::new(),
+            initial_plan: None,
+            final_plan: None,
+            intervention_history: Vec::new(),
             status: CombatReportStatus::TargetInvalid(reason),
         };
         insert_combat_report(state, report);
@@ -706,6 +782,10 @@ pub(crate) fn apply_combat_resolution(
     defender: &PlanetDefenseSnapshot,
     seed: u64,
     resolution: CombatResolution,
+    round_history: Vec<CombatRoundRecord>,
+    initial_plan: Option<CombatPlan>,
+    final_plan: Option<CombatPlan>,
+    intervention_history: Vec<CombatInterventionRecord>,
 ) -> Result<(CombatReport, AttackMissionResult), CombatApplicationError> {
     let mut candidate = state.clone();
     let next_revision = candidate
@@ -760,6 +840,10 @@ pub(crate) fn apply_combat_resolution(
         seed,
         attacker: attacker.clone(),
         defender: defender.clone(),
+        round_history,
+        initial_plan,
+        final_plan,
+        intervention_history,
         status: CombatReportStatus::Resolved(resolution.clone()),
     };
     insert_combat_report(&mut candidate, report.clone());
@@ -903,6 +987,7 @@ pub(crate) struct CombatRulesConfig {
     intel: CombatIntelRulesConfig,
     ai: CombatAiRulesConfig,
     retreat: CombatRetreatRulesConfig,
+    command: CombatCommandRulesConfig,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -916,6 +1001,15 @@ impl CombatResourceConfig {
     const fn into_stock(self) -> ResourceStock {
         ResourceStock::new(self.metal, self.crystal, self.fuel)
     }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+struct CombatCommandRulesConfig {
+    version: u32,
+    starting_points: u8,
+    change_doctrine_cost: u8,
+    focus_fire_cost: u8,
+    commit_reserve_cost: u8,
 }
 
 #[cfg(test)]
@@ -1029,6 +1123,51 @@ mod tests {
     }
 
     #[test]
+    fn combat_report_deserializes_without_tactical_trace_fields() {
+        let report = CombatReport {
+            mission_id: MissionId::new(7),
+            planet_id: PlanetId::new(3),
+            resolved_at: StrategicTick::new(42),
+            rules_version: combat_rules().version(),
+            seed: 99,
+            attacker: snapshot(2, FactionId::new(0), 1, 70, 45, 60),
+            defender: defense(
+                PlanetId::new(3),
+                FactionId::new(1),
+                PlanetaryForceId::from_static("confins_militia"),
+                2,
+            ),
+            round_history: Vec::new(),
+            initial_plan: None,
+            final_plan: None,
+            intervention_history: Vec::new(),
+            status: CombatReportStatus::TargetInvalid(AttackInvalidReason::AttackerFleetChanged),
+        };
+        let source = ron::ser::to_string_pretty(&report, ron::ser::PrettyConfig::default())
+            .expect("combat report serializes");
+        let legacy_source = source
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim_start();
+                !trimmed.starts_with("round_history:")
+                    && !trimmed.starts_with("initial_plan:")
+                    && !trimmed.starts_with("final_plan:")
+                    && !trimmed.starts_with("intervention_history:")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let decoded: CombatReport =
+            ron::de::from_str(&legacy_source).expect("legacy combat report deserializes");
+
+        assert!(decoded.round_history.is_empty());
+        assert_eq!(decoded.initial_plan, None);
+        assert_eq!(decoded.final_plan, None);
+        assert!(decoded.intervention_history.is_empty());
+        assert_eq!(decoded.status, report.status);
+    }
+
+    #[test]
     fn offensive_bonus_depends_on_defender_target_class() {
         // Successor of the legacy aggregate `attacker_totals`'s target-class
         // blending, now `rounds::offense_pool` (per-round, per-stack) — same
@@ -1040,10 +1179,14 @@ mod tests {
         let heavy_force = planetary
             .id_by_key("local_bastion")
             .expect("default heavy force exists");
-        let mut light_bonuses = CombatTargetBonuses::default();
-        light_bonuses.light_per_mille = 1_400;
-        let mut heavy_bonuses = CombatTargetBonuses::default();
-        heavy_bonuses.heavy_per_mille = 1_400;
+        let light_bonuses = CombatTargetBonuses {
+            light_per_mille: 1_400,
+            ..Default::default()
+        };
+        let heavy_bonuses = CombatTargetBonuses {
+            heavy_per_mille: 1_400,
+            ..Default::default()
+        };
         let light_specialist = vec![specialist_stack(
             100,
             CombatTargetClass::Light,

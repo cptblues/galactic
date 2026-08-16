@@ -1,19 +1,24 @@
-use bevy::asset::RenderAssetUsages;
 use bevy::prelude::*;
-use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use galactic_domain::{PlanetKind, StarClass};
 use galactic_sim::{
     ColonizationBlocker, GameEvent, GameEventKind, KnowledgeTarget, PlanetAnalysisError,
     SelectionTarget, TechnologyUnlock,
 };
 
-use crate::presentation::graphics_settings::GraphicsPreset;
 use crate::presentation::inspector_panel::*;
+
+#[cfg(test)]
+use crate::presentation::graphics_settings::GraphicsPreset;
+#[cfg(test)]
+use bevy::asset::RenderAssetUsages;
+#[cfg(test)]
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
 /// `Low` quarters the pixel count of the pre-preset default; `High`
 /// quadruples it. Threaded as parameters (not consts) rather than a global
 /// resource read deep in pixel-generation code, so `procedural_planet_pixel`
 /// stays a pure function.
+#[cfg(test)]
 pub(crate) const fn planet_texture_dimensions(preset: GraphicsPreset) -> (u32, u32) {
     match preset {
         GraphicsPreset::Low => (64, 32),
@@ -99,6 +104,7 @@ pub(crate) fn atmosphere_material(kind: PlanetKind) -> StandardMaterial {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn procedural_planet_texture(kind: PlanetKind, preset: GraphicsPreset) -> Image {
     let (width, height) = planet_texture_dimensions(preset);
     let mut texture = Vec::with_capacity((width * height * 4) as usize);
@@ -121,6 +127,7 @@ pub(crate) fn procedural_planet_texture(kind: PlanetKind, preset: GraphicsPreset
     )
 }
 
+#[cfg(test)]
 pub(crate) fn procedural_planet_pixel(
     kind: PlanetKind,
     x: u32,
@@ -217,6 +224,7 @@ pub(crate) fn procedural_planet_pixel(
 /// noise with spatial continuity, instead of a single-frequency hash that
 /// produces uncorrelated per-pixel static. Stays fully deterministic: same
 /// `(x, y, seed)` always yields the same result, no external noise crate.
+#[cfg(test)]
 pub(crate) fn layered_noise(x: u32, y: u32, seed: u32) -> u8 {
     let coarse = visual_hash(x / 6, y / 6, seed) as u32;
     let mid = visual_hash(x / 2, y / 2, seed.wrapping_add(11)) as u32;
@@ -228,6 +236,7 @@ pub(crate) fn layered_noise(x: u32, y: u32, seed: u32) -> u8 {
 /// hemisphere and a shadowed one rather than flat, uniformly-lit color bands.
 /// Cheap approximation (linear ramp within a fixed-width terminator band), not
 /// a physical lighting model.
+#[cfg(test)]
 pub(crate) fn day_night_shading(x: u32, width: u32) -> u8 {
     const NIGHT_FLOOR: u32 = 70;
     let width = width.max(1);
@@ -246,6 +255,7 @@ pub(crate) fn day_night_shading(x: u32, width: u32) -> u8 {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn visual_hash(x: u32, y: u32, seed: u32) -> u8 {
     let mut value = x
         .wrapping_mul(0x9E37_79B1)
@@ -257,6 +267,7 @@ pub(crate) fn visual_hash(x: u32, y: u32, seed: u32) -> u8 {
     (value >> 24) as u8
 }
 
+#[cfg(test)]
 pub(crate) const fn planet_kind_seed(kind: PlanetKind) -> u32 {
     match kind {
         PlanetKind::Rocky => 1,
@@ -451,6 +462,16 @@ pub(crate) fn event_label(event: GameEvent) -> String {
         GameEventKind::CombatDecisionRequired(pending) => format!(
             "combat en attente de décision : mission {:?}, round {}",
             pending.mission_id, pending.round,
+        ),
+        GameEventKind::CombatPlanConfirmed(confirmed) => {
+            format!(
+                "plan de combat confirmé : mission {:?}",
+                confirmed.mission_id
+            )
+        }
+        GameEventKind::CombatPlanRejected(rejected) => format!(
+            "plan de combat refusé : mission {:?} : {:?}",
+            rejected.mission_id, rejected.error,
         ),
         GameEventKind::CombatRoundResolved(resolved) => format!(
             "round {} résolu : mission {:?}",

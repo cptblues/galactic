@@ -147,17 +147,9 @@ impl Default for ObjectiveProgressState {
     }
 }
 
-#[derive(Resource)]
+#[derive(Resource, Default)]
 pub(crate) struct ObjectiveUiState {
     hints_visible: bool,
-}
-
-impl Default for ObjectiveUiState {
-    fn default() -> Self {
-        Self {
-            hints_visible: false,
-        }
-    }
 }
 
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]

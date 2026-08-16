@@ -19,10 +19,14 @@ use super::intel::apply_round_intel_gain;
 use super::retreat::CombatRetreatRules;
 use super::state::{
     CombatEngineError, CombatRoundEvent, CombatRoundRecord, CombatSide, CombatSideState,
-    CombatStackId, CombatStackLoss, CombatStackState, CombatTacticalRole, FleetCombatPhase,
-    FleetCombatState, PER_MILLE, proportional_survivors, scaled_power, varied_damage,
+    CombatStackExchange, CombatStackId, CombatStackLoss, CombatStackState, CombatTacticalRole,
+    FleetCombatPhase, FleetCombatState, PER_MILLE, proportional_survivors, scaled_power,
+    varied_damage,
 };
-use super::{CombatDoctrineId, CombatRules, CombatTargetClass};
+use super::{
+    CombatDoctrineId, CombatGroupPlan, CombatGroupPlanId, CombatGroupRole, CombatPlan, CombatRules,
+    CombatTargetClass, CombatTargetPriority,
+};
 
 const ATTACKER_SEED_TAG: u64 = 0x4154_5441_434b_4552;
 const DEFENDER_SEED_TAG: u64 = 0x4445_4645_4e44_4552;
@@ -32,6 +36,12 @@ struct StackHullUpdate {
     stack_id: CombatStackId,
     current_hull: u128,
     surviving_quantity: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StackDamageAllocation {
+    stack_id: CombatStackId,
+    allocated_damage: u128,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -163,6 +173,7 @@ pub(crate) fn offense_pool(
 fn side_damage(
     own_stacks: &[CombatStackState],
     opposing_stacks: &[CombatStackState],
+    own_role: CombatGroupRole,
     own_doctrine: CombatDoctrineId,
     own_penalty_stacks: u8,
     opponent_doctrine: CombatDoctrineId,
@@ -174,7 +185,8 @@ fn side_damage(
     seed_tag: u64,
 ) -> u128 {
     let base_power = offense_pool(own_stacks, opposing_stacks);
-    let scaled = base_power.saturating_mul(u128::from(rules.damage_scale));
+    let role_power = apply_per_mille(base_power, role_offense_multiplier_per_mille(own_role));
+    let scaled = role_power.saturating_mul(u128::from(rules.damage_scale));
     let varied = varied_damage(
         scaled,
         seed ^ u64::from(round) ^ seed_tag,
@@ -191,6 +203,15 @@ fn side_damage(
     let after_repetition = apply_per_mille(after_offense, repetition);
     let after_counter = apply_per_mille(after_repetition, counter);
     apply_per_mille(after_counter, opponent_damage_taken_multiplier_per_mille)
+}
+
+fn role_offense_multiplier_per_mille(role: CombatGroupRole) -> u32 {
+    match role {
+        CombatGroupRole::Assault => 1_000,
+        CombatGroupRole::Screen => 700,
+        CombatGroupRole::Bombardment => 900,
+        CombatGroupRole::Reserve => 100,
+    }
 }
 
 /// Base per-target weight before any doctrine adjustment: a live stack's
@@ -278,11 +299,32 @@ fn cap_concentration(weights: &mut [u128], cap_per_mille: u32) {
 /// modifiers from `defending_doctrine` (how the target side redistributes
 /// incoming weight) — both operate on the same weight vector before
 /// normalization in `allocate_damage`.
+#[cfg(test)]
 fn target_weights(
     targets: &[CombatStackState],
     attacking_doctrine: CombatDoctrineId,
     defending_doctrine: CombatDoctrineId,
     tactics: &CombatTacticsRules,
+) -> Vec<u128> {
+    target_weights_for_group(
+        targets,
+        attacking_doctrine,
+        defending_doctrine,
+        tactics,
+        CombatTargetPriority::Any,
+        None,
+        None,
+    )
+}
+
+fn target_weights_for_group(
+    targets: &[CombatStackState],
+    attacking_doctrine: CombatDoctrineId,
+    defending_doctrine: CombatDoctrineId,
+    tactics: &CombatTacticsRules,
+    priority: CombatTargetPriority,
+    attacking_role: Option<CombatGroupRole>,
+    defending_plan: Option<&CombatPlan>,
 ) -> Vec<u128> {
     let mut weights: Vec<u128> = targets.iter().map(base_weight).collect();
 
@@ -308,6 +350,8 @@ fn target_weights(
         _ => {}
     }
 
+    apply_group_target_priority(&mut weights, targets, priority, attacking_role);
+
     match defending_doctrine {
         CombatDoctrineId::DefensiveScreen => {
             redirect_from_support(
@@ -325,7 +369,70 @@ fn target_weights(
         _ => {}
     }
 
+    if let Some(plan) = defending_plan {
+        apply_defensive_group_roles(&mut weights, targets, plan);
+    }
+
     weights
+}
+
+fn apply_group_target_priority(
+    weights: &mut [u128],
+    targets: &[CombatStackState],
+    priority: CombatTargetPriority,
+    attacking_role: Option<CombatGroupRole>,
+) {
+    for (weight, target) in weights.iter_mut().zip(targets.iter()) {
+        let mut multiplier = match priority {
+            CombatTargetPriority::Any => 1_000,
+            CombatTargetPriority::Light if target.target_class == CombatTargetClass::Light => 1_650,
+            CombatTargetPriority::Medium if target.target_class == CombatTargetClass::Medium => {
+                1_650
+            }
+            CombatTargetPriority::Heavy if target.target_class == CombatTargetClass::Heavy => 1_650,
+            CombatTargetPriority::Damaged if target.current_hull < target.maximum_hull => 1_800,
+            CombatTargetPriority::Support
+                if target.tactical_role == CombatTacticalRole::Support =>
+            {
+                1_800
+            }
+            _ => 1_000,
+        };
+        if attacking_role == Some(CombatGroupRole::Bombardment) {
+            multiplier = match target.target_class {
+                CombatTargetClass::Heavy => multiplier * 1_350 / 1_000,
+                CombatTargetClass::Light => multiplier * 750 / 1_000,
+                CombatTargetClass::Medium => multiplier,
+            };
+        }
+        *weight = weight.saturating_mul(multiplier) / 1_000;
+    }
+}
+
+fn apply_defensive_group_roles(
+    weights: &mut [u128],
+    targets: &[CombatStackState],
+    defending_plan: &CombatPlan,
+) {
+    let has_screen = targets.iter().any(|target| {
+        target.surviving_quantity > 0
+            && defending_plan
+                .group_for_stack(target.stack_id)
+                .is_some_and(|group| group.role == CombatGroupRole::Screen)
+    });
+
+    for (weight, target) in weights.iter_mut().zip(targets.iter()) {
+        let Some(group) = defending_plan.group_for_stack(target.stack_id) else {
+            continue;
+        };
+        let multiplier = match group.role {
+            CombatGroupRole::Reserve => 350,
+            CombatGroupRole::Screen => 1_250,
+            CombatGroupRole::Assault | CombatGroupRole::Bombardment if has_screen => 850,
+            CombatGroupRole::Assault | CombatGroupRole::Bombardment => 1_000,
+        };
+        *weight = weight.saturating_mul(multiplier) / 1_000;
+    }
 }
 
 /// Step 5 ("répartition") + step 6 ("destruction"): distributes
@@ -339,6 +446,15 @@ fn allocate_damage(
     weights: &[u128],
     total_damage: u128,
 ) -> Vec<StackHullUpdate> {
+    let allocations = allocate_damage_amounts(stacks, weights, total_damage);
+    updates_from_allocations(stacks, &allocations)
+}
+
+fn allocate_damage_amounts(
+    stacks: &[CombatStackState],
+    weights: &[u128],
+    total_damage: u128,
+) -> Vec<StackDamageAllocation> {
     let total_weight: u128 = weights.iter().sum();
     stacks
         .iter()
@@ -348,6 +464,44 @@ fn allocate_damage(
                 .saturating_mul(weight)
                 .checked_div(total_weight)
                 .unwrap_or(0);
+            StackDamageAllocation {
+                stack_id: stack.stack_id,
+                allocated_damage: allocated,
+            }
+        })
+        .collect()
+}
+
+fn updates_from_allocations(
+    stacks: &[CombatStackState],
+    allocations: &[StackDamageAllocation],
+) -> Vec<StackHullUpdate> {
+    stacks
+        .iter()
+        .zip(allocations.iter())
+        .map(|(stack, allocation)| {
+            let current_hull = stack
+                .current_hull
+                .saturating_sub(allocation.allocated_damage);
+            let surviving_quantity =
+                proportional_survivors(stack.initial_quantity, current_hull, stack.maximum_hull);
+            StackHullUpdate {
+                stack_id: stack.stack_id,
+                current_hull,
+                surviving_quantity,
+            }
+        })
+        .collect()
+}
+
+fn updates_from_damage_amounts(
+    stacks: &[CombatStackState],
+    damage_by_stack: &[u128],
+) -> Vec<StackHullUpdate> {
+    stacks
+        .iter()
+        .zip(damage_by_stack.iter())
+        .map(|(stack, &allocated)| {
             let current_hull = stack.current_hull.saturating_sub(allocated);
             let surviving_quantity =
                 proportional_survivors(stack.initial_quantity, current_hull, stack.maximum_hull);
@@ -356,6 +510,38 @@ fn allocate_damage(
                 current_hull,
                 surviving_quantity,
             }
+        })
+        .collect()
+}
+
+fn add_allocations_to_damage(
+    damage_by_stack: &mut [u128],
+    targets: &[CombatStackState],
+    allocations: &[StackDamageAllocation],
+) {
+    for allocation in allocations {
+        if let Some(index) = targets
+            .iter()
+            .position(|stack| stack.stack_id == allocation.stack_id)
+        {
+            damage_by_stack[index] =
+                damage_by_stack[index].saturating_add(allocation.allocated_damage);
+        }
+    }
+}
+
+fn exchanges_from_allocations(
+    source_group: CombatGroupPlanId,
+    allocations: &[StackDamageAllocation],
+) -> Vec<CombatStackExchange> {
+    allocations
+        .iter()
+        .filter_map(|allocation| {
+            (allocation.allocated_damage > 0).then_some(CombatStackExchange {
+                source_group,
+                target: allocation.stack_id,
+                allocated_damage: allocation.allocated_damage,
+            })
         })
         .collect()
 }
@@ -379,10 +565,82 @@ fn losses_from_updates(
         .collect()
 }
 
+fn live_group_stacks(side: &CombatSideState, group: &CombatGroupPlan) -> Vec<CombatStackState> {
+    group
+        .stacks
+        .iter()
+        .filter_map(|stack_id| {
+            side.stacks
+                .iter()
+                .find(|stack| stack.stack_id == *stack_id && stack.surviving_quantity > 0)
+                .cloned()
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resolve_side_groups(
+    own_side: &CombatSideState,
+    opposing_side: &CombatSideState,
+    own_plan: &CombatPlan,
+    opposing_plan: &CombatPlan,
+    own_penalty_stacks: u8,
+    opponent_damage_taken_multiplier_per_mille: u32,
+    opponent_doctrine: CombatDoctrineId,
+    rules: &CombatRules,
+    tactics: &CombatTacticsRules,
+    seed: u64,
+    round: u16,
+    seed_tag: u64,
+) -> (u128, Vec<u128>, Vec<CombatStackExchange>) {
+    let mut total_damage = 0_u128;
+    let mut damage_by_stack = vec![0_u128; opposing_side.stacks.len()];
+    let mut exchanges = Vec::new();
+
+    for group in &own_plan.groups {
+        let own_stacks = live_group_stacks(own_side, group);
+        if own_stacks.is_empty() {
+            continue;
+        }
+        let damage = side_damage(
+            &own_stacks,
+            &opposing_side.stacks,
+            group.role,
+            own_plan.doctrine,
+            own_penalty_stacks,
+            opponent_doctrine,
+            opponent_damage_taken_multiplier_per_mille,
+            rules,
+            tactics,
+            seed,
+            round,
+            seed_tag ^ group.id.index(),
+        );
+        total_damage = total_damage.saturating_add(damage);
+
+        let weights = target_weights_for_group(
+            &opposing_side.stacks,
+            own_plan.doctrine,
+            opponent_doctrine,
+            tactics,
+            group.target_priority,
+            Some(group.role),
+            Some(opposing_plan),
+        );
+        let allocations = allocate_damage_amounts(&opposing_side.stacks, &weights, damage);
+        add_allocations_to_damage(&mut damage_by_stack, &opposing_side.stacks, &allocations);
+        exchanges.extend(exchanges_from_allocations(group.id, &allocations));
+    }
+
+    (total_damage, damage_by_stack, exchanges)
+}
+
 pub(crate) fn resolve_combat_round(
     state: &FleetCombatState,
     attacker_doctrine: CombatDoctrineId,
     defender_doctrine: CombatDoctrineId,
+    attacker_plan: Option<&CombatPlan>,
+    defender_plan: Option<&CombatPlan>,
     rules: &CombatRules,
     tactics: &CombatTacticsRules,
 ) -> Result<CombatRoundResolution, CombatEngineError> {
@@ -390,6 +648,14 @@ pub(crate) fn resolve_combat_round(
         return Err(CombatEngineError::RoundAlreadyCompleted);
     }
     let round = state.round.saturating_add(1);
+    let attacker_plan = attacker_plan
+        .cloned()
+        .unwrap_or_else(|| CombatPlan::default_for_side(&state.attacker, attacker_doctrine));
+    let defender_plan = defender_plan
+        .cloned()
+        .unwrap_or_else(|| CombatPlan::default_for_side(&state.defender, defender_doctrine));
+    let attacker_doctrine = attacker_plan.doctrine;
+    let defender_doctrine = defender_plan.doctrine;
 
     let attacker_penalty = penalty_stacks_if_chosen(&state.attacker, attacker_doctrine);
     let defender_penalty = penalty_stacks_if_chosen(&state.defender, defender_doctrine);
@@ -400,26 +666,28 @@ pub(crate) fn resolve_combat_round(
         .doctrine(attacker_doctrine)
         .damage_taken_multiplier_per_mille;
 
-    let attacker_damage = side_damage(
-        &state.attacker.stacks,
-        &state.defender.stacks,
-        attacker_doctrine,
+    let (attacker_damage, defender_damage_by_stack, attacker_exchanges) = resolve_side_groups(
+        &state.attacker,
+        &state.defender,
+        &attacker_plan,
+        &defender_plan,
         attacker_penalty,
-        defender_doctrine,
         defender_damage_taken,
+        defender_doctrine,
         rules,
         tactics,
         state.seed,
         round,
         ATTACKER_SEED_TAG,
     );
-    let defender_damage = side_damage(
-        &state.defender.stacks,
-        &state.attacker.stacks,
-        defender_doctrine,
+    let (defender_damage, attacker_damage_by_stack, defender_exchanges) = resolve_side_groups(
+        &state.defender,
+        &state.attacker,
+        &defender_plan,
+        &attacker_plan,
         defender_penalty,
-        attacker_doctrine,
         attacker_damage_taken,
+        attacker_doctrine,
         rules,
         tactics,
         state.seed,
@@ -427,23 +695,10 @@ pub(crate) fn resolve_combat_round(
         DEFENDER_SEED_TAG,
     );
 
-    let defender_weights = target_weights(
-        &state.defender.stacks,
-        attacker_doctrine,
-        defender_doctrine,
-        tactics,
-    );
-    let attacker_weights = target_weights(
-        &state.attacker.stacks,
-        defender_doctrine,
-        attacker_doctrine,
-        tactics,
-    );
-
     let defender_updates =
-        allocate_damage(&state.defender.stacks, &defender_weights, attacker_damage);
+        updates_from_damage_amounts(&state.defender.stacks, &defender_damage_by_stack);
     let attacker_updates =
-        allocate_damage(&state.attacker.stacks, &attacker_weights, defender_damage);
+        updates_from_damage_amounts(&state.attacker.stacks, &attacker_damage_by_stack);
 
     let attacker_losses = losses_from_updates(&state.attacker.stacks, &attacker_updates);
     let defender_losses = losses_from_updates(&state.defender.stacks, &defender_updates);
@@ -510,6 +765,8 @@ pub(crate) fn resolve_combat_round(
             defender_doctrine,
             attacker_damage,
             defender_damage,
+            attacker_exchanges,
+            defender_exchanges,
             attacker_losses,
             defender_losses,
             notable_events,
@@ -699,10 +956,20 @@ mod tests {
             state,
             attacker,
             defender,
+            None,
+            None,
             combat_rules(),
             combat_rules().tactics(),
         )
         .expect("a fresh round resolves")
+    }
+
+    fn exchange_damage_to(exchanges: &[CombatStackExchange], target: CombatStackId) -> u128 {
+        exchanges
+            .iter()
+            .filter(|exchange| exchange.target == target)
+            .map(|exchange| exchange.allocated_damage)
+            .sum()
     }
 
     // --- Déterminisme -------------------------------------------------
@@ -900,6 +1167,160 @@ mod tests {
         assert_eq!(unprotected[0], unprotected[1]);
         assert!(protected[1] < unprotected[1]);
         assert!(protected[0] > unprotected[0]);
+    }
+
+    #[test]
+    fn plan_target_priority_heavy_changes_actual_damage_distribution() {
+        let mut state = fixture_state();
+        state.defender.stacks = vec![
+            make_stack(
+                1,
+                60,
+                40,
+                55,
+                3,
+                CombatTargetClass::Light,
+                CombatTacticalRole::Line,
+            ),
+            make_stack(
+                2,
+                60,
+                40,
+                55,
+                3,
+                CombatTargetClass::Heavy,
+                CombatTacticalRole::Line,
+            ),
+        ];
+        let attacker_plan = CombatPlan {
+            doctrine: CombatDoctrineId::BalancedEngagement,
+            groups: vec![CombatGroupPlan {
+                id: CombatGroupPlanId::Alpha,
+                stacks: vec![CombatStackId(0)],
+                role: CombatGroupRole::Assault,
+                target_priority: CombatTargetPriority::Heavy,
+            }],
+        };
+
+        let resolution = resolve_combat_round(
+            &state,
+            CombatDoctrineId::BalancedEngagement,
+            CombatDoctrineId::BalancedEngagement,
+            Some(&attacker_plan),
+            None,
+            combat_rules(),
+            combat_rules().tactics(),
+        )
+        .expect("priority plan resolves");
+
+        assert!(
+            exchange_damage_to(&resolution.record.attacker_exchanges, CombatStackId(2))
+                > exchange_damage_to(&resolution.record.attacker_exchanges, CombatStackId(1))
+        );
+    }
+
+    #[test]
+    fn reserve_group_contributes_far_less_outgoing_damage() {
+        let state = fixture_state();
+        let assault_plan = CombatPlan {
+            doctrine: CombatDoctrineId::BalancedEngagement,
+            groups: vec![CombatGroupPlan {
+                id: CombatGroupPlanId::Alpha,
+                stacks: vec![CombatStackId(0)],
+                role: CombatGroupRole::Assault,
+                target_priority: CombatTargetPriority::Any,
+            }],
+        };
+        let reserve_plan = CombatPlan {
+            doctrine: CombatDoctrineId::BalancedEngagement,
+            groups: vec![CombatGroupPlan {
+                id: CombatGroupPlanId::Alpha,
+                stacks: vec![CombatStackId(0)],
+                role: CombatGroupRole::Reserve,
+                target_priority: CombatTargetPriority::Any,
+            }],
+        };
+
+        let assault = resolve_combat_round(
+            &state,
+            CombatDoctrineId::BalancedEngagement,
+            CombatDoctrineId::BalancedEngagement,
+            Some(&assault_plan),
+            None,
+            combat_rules(),
+            combat_rules().tactics(),
+        )
+        .expect("assault plan resolves");
+        let reserve = resolve_combat_round(
+            &state,
+            CombatDoctrineId::BalancedEngagement,
+            CombatDoctrineId::BalancedEngagement,
+            Some(&reserve_plan),
+            None,
+            combat_rules(),
+            combat_rules().tactics(),
+        )
+        .expect("reserve plan resolves");
+
+        assert!(reserve.record.attacker_damage < assault.record.attacker_damage);
+    }
+
+    #[test]
+    fn screen_group_takes_pressure_for_other_groups() {
+        let mut state = fixture_state();
+        state.attacker.stacks = vec![
+            make_stack(
+                0,
+                60,
+                40,
+                55,
+                3,
+                CombatTargetClass::Medium,
+                CombatTacticalRole::Line,
+            ),
+            make_stack(
+                1,
+                60,
+                40,
+                55,
+                3,
+                CombatTargetClass::Medium,
+                CombatTacticalRole::Line,
+            ),
+        ];
+        let attacker_plan = CombatPlan {
+            doctrine: CombatDoctrineId::BalancedEngagement,
+            groups: vec![
+                CombatGroupPlan {
+                    id: CombatGroupPlanId::Alpha,
+                    stacks: vec![CombatStackId(0)],
+                    role: CombatGroupRole::Screen,
+                    target_priority: CombatTargetPriority::Any,
+                },
+                CombatGroupPlan {
+                    id: CombatGroupPlanId::Beta,
+                    stacks: vec![CombatStackId(1)],
+                    role: CombatGroupRole::Assault,
+                    target_priority: CombatTargetPriority::Any,
+                },
+            ],
+        };
+
+        let resolution = resolve_combat_round(
+            &state,
+            CombatDoctrineId::BalancedEngagement,
+            CombatDoctrineId::BalancedEngagement,
+            Some(&attacker_plan),
+            None,
+            combat_rules(),
+            combat_rules().tactics(),
+        )
+        .expect("screen plan resolves");
+
+        assert!(
+            exchange_damage_to(&resolution.record.defender_exchanges, CombatStackId(0))
+                > exchange_damage_to(&resolution.record.defender_exchanges, CombatStackId(1))
+        );
     }
 
     #[test]
@@ -1134,6 +1555,8 @@ mod tests {
                 &state,
                 CombatDoctrineId::BalancedEngagement,
                 CombatDoctrineId::BalancedEngagement,
+                None,
+                None,
                 combat_rules(),
                 combat_rules().tactics(),
             ),

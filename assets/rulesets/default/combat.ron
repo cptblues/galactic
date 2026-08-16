@@ -1,6 +1,6 @@
 (
-    version: 5,
-    maximum_rounds: 12,
+    version: 6,
+    maximum_rounds: 6,
     damage_scale: 1000,
     defense_weight_per_mille: 500,
     damage_variance_per_mille: 80,
@@ -18,7 +18,7 @@
         concentration_bonus_per_mille: 500,
         doctrines: [
             (id: BalancedEngagement, offense_multiplier_per_mille: 1000, damage_taken_multiplier_per_mille: 1000, repetition_exempt: true),
-            (id: ConcentratedAssault, offense_multiplier_per_mille: 1250, damage_taken_multiplier_per_mille: 850, repetition_exempt: false),
+            (id: ConcentratedAssault, offense_multiplier_per_mille: 1250, damage_taken_multiplier_per_mille: 1150, repetition_exempt: false),
             (id: DefensiveScreen, offense_multiplier_per_mille: 800, damage_taken_multiplier_per_mille: 750, repetition_exempt: false),
             (id: FlankingManeuver, offense_multiplier_per_mille: 1000, damage_taken_multiplier_per_mille: 1150, repetition_exempt: false),
             (id: DispersedFormation, offense_multiplier_per_mille: 950, damage_taken_multiplier_per_mille: 1000, repetition_exempt: false),
@@ -67,5 +67,14 @@
     retreat: (
         version: 1,
         penalty_per_mille: 300,
+    ),
+    // COMBAT-002-E: command points spent by optional per-round tactical
+    // interventions. Continuing the existing plan costs nothing.
+    command: (
+        version: 1,
+        starting_points: 3,
+        change_doctrine_cost: 1,
+        focus_fire_cost: 1,
+        commit_reserve_cost: 1,
     ),
 )

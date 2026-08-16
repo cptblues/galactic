@@ -1,18 +1,20 @@
-// COMBAT-001-B: a single rule-based AI profile, replacing COMBAT-001-A's
-// seed-derived random `doctrine_pick` placeholder. Deterministic and
-// side-agnostic (no fog-of-war for its own decisions, doc §13's documented
-// "anti-triche" allowance) — used for both the attacker and the defender by
-// the auto-resolve façade, since no interactive player choice exists yet
-// (COMBAT-001-C/D). Per-faction differentiation is out of scope here (the
-// user explicitly chose "one profile now, faction variants later if needed"
-// when resolving a doc/comment discrepancy over which sub-ticket owns this).
+// COMBAT-001-B/COMBAT-002: deterministic rule-based AI. The first pass used a
+// single side-agnostic profile; COMBAT-002 keeps the same pure scoring shape
+// but differentiates the default factions and feeds tactical plans into the
+// existing round engine instead of adding a second resolver.
 
+use galactic_domain::{FactionId, Owner};
 use serde::Deserialize;
 
 use super::CombatRulesError;
 use super::CombatTargetClass;
 use super::doctrine::{ALL_COMBAT_DOCTRINES, CombatDoctrineId};
-use super::state::{CombatSideState, CombatTacticalRole};
+use super::plan::{CombatGroupRole, CombatPlan, CombatTargetPriority};
+use super::state::{CombatSideState, CombatTacticalRole, CombatUnitRef};
+
+const CONSORTIUM_FACTION_ID: FactionId = FactionId::new(0);
+const CONFINS_FACTION_ID: FactionId = FactionId::new(1);
+const SYLVE_FACTION_ID: FactionId = FactionId::new(2);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CombatAiRules {
@@ -93,6 +95,13 @@ pub(crate) struct CombatAiRulesConfig {
     repetition_avoidance_threshold: u8,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CombatAiProfile {
+    Consortium,
+    Confins,
+    Sylve,
+}
+
 /// Deterministic rule-based doctrine choice — a pure scoring function, no
 /// randomness at all (unlike COMBAT-001-A's seed-derived `doctrine_pick`
 /// placeholder it replaces). Ties are broken by `ALL_COMBAT_DOCTRINES`'s
@@ -104,16 +113,168 @@ pub(crate) fn choose_ai_doctrine(
     round: u16,
     rules: &CombatAiRules,
 ) -> CombatDoctrineId {
+    choose_ai_doctrine_for_profile(own, opponent, round, rules, profile_for_side(own))
+}
+
+pub(crate) fn choose_ai_plan(
+    own: &CombatSideState,
+    opponent: &CombatSideState,
+    round: u16,
+    rules: &CombatAiRules,
+) -> CombatPlan {
+    let profile = profile_for_side(own);
+    let doctrine = choose_ai_doctrine(own, opponent, round, rules);
+    let mut plan = CombatPlan::default_for_side(own, doctrine);
+    apply_profile_plan(&mut plan, profile, own, opponent, round);
+    plan
+}
+
+pub(crate) fn choose_ai_doctrine_for_profile(
+    own: &CombatSideState,
+    opponent: &CombatSideState,
+    round: u16,
+    rules: &CombatAiRules,
+    profile: CombatAiProfile,
+) -> CombatDoctrineId {
     let mut best = CombatDoctrineId::BalancedEngagement;
     let mut best_score = 0_u32;
     for &doctrine in &ALL_COMBAT_DOCTRINES {
-        let score = score_for(doctrine, own, opponent, round, rules);
+        let score = score_for(doctrine, own, opponent, round, rules).saturating_add(
+            profile_doctrine_bonus(profile, doctrine, own, opponent, round),
+        );
         if score > best_score {
             best_score = score;
             best = doctrine;
         }
     }
     best
+}
+
+fn profile_for_side(side: &CombatSideState) -> CombatAiProfile {
+    match side.owner {
+        Owner::Faction(id) if id == CONSORTIUM_FACTION_ID => CombatAiProfile::Consortium,
+        Owner::Faction(id) if id == CONFINS_FACTION_ID => CombatAiProfile::Confins,
+        Owner::Faction(id) if id == SYLVE_FACTION_ID => CombatAiProfile::Sylve,
+        _ => profile_from_force_keys(side).unwrap_or(CombatAiProfile::Confins),
+    }
+}
+
+fn profile_from_force_keys(side: &CombatSideState) -> Option<CombatAiProfile> {
+    side.stacks.iter().find_map(|stack| {
+        let CombatUnitRef::PlanetaryForce(force_id) = stack.source else {
+            return None;
+        };
+        let key = force_id.key();
+        if key.starts_with("sylve_") {
+            Some(CombatAiProfile::Sylve)
+        } else if key.starts_with("consortium_") {
+            Some(CombatAiProfile::Consortium)
+        } else if key.starts_with("confins_") || key.starts_with("local_") {
+            Some(CombatAiProfile::Confins)
+        } else {
+            None
+        }
+    })
+}
+
+fn profile_doctrine_bonus(
+    profile: CombatAiProfile,
+    doctrine: CombatDoctrineId,
+    own: &CombatSideState,
+    opponent: &CombatSideState,
+    round: u16,
+) -> u32 {
+    match profile {
+        CombatAiProfile::Consortium => match doctrine {
+            CombatDoctrineId::BalancedEngagement => 4,
+            CombatDoctrineId::DefensiveScreen if has_damaged_stack(own) => 24,
+            CombatDoctrineId::TacticalAnalysis if round <= 1 => 4,
+            _ => 0,
+        },
+        CombatAiProfile::Confins => match doctrine {
+            CombatDoctrineId::ConcentratedAssault if has_heavy_or_damaged_stack(opponent) => 22,
+            CombatDoctrineId::DispersedFormation
+                if opponent.last_doctrine == Some(CombatDoctrineId::ConcentratedAssault) =>
+            {
+                12
+            }
+            CombatDoctrineId::BalancedEngagement => 1,
+            _ => 0,
+        },
+        CombatAiProfile::Sylve => match doctrine {
+            CombatDoctrineId::FlankingManeuver => 28,
+            CombatDoctrineId::ConcentratedAssault if has_heavy_or_damaged_stack(opponent) => 8,
+            _ => 0,
+        },
+    }
+}
+
+fn apply_profile_plan(
+    plan: &mut CombatPlan,
+    profile: CombatAiProfile,
+    own: &CombatSideState,
+    opponent: &CombatSideState,
+    round: u16,
+) {
+    match profile {
+        CombatAiProfile::Consortium => apply_consortium_plan(plan, opponent, round),
+        CombatAiProfile::Confins => apply_confins_plan(plan, opponent),
+        CombatAiProfile::Sylve => apply_sylve_plan(plan, opponent),
+    }
+    debug_assert!(plan.validate_for_side(own).is_ok());
+}
+
+fn apply_consortium_plan(plan: &mut CombatPlan, opponent: &CombatSideState, round: u16) {
+    let priority = if has_damaged_stack(opponent) {
+        CombatTargetPriority::Damaged
+    } else if has_heavy_stack(opponent) {
+        CombatTargetPriority::Heavy
+    } else {
+        CombatTargetPriority::Medium
+    };
+    for group in &mut plan.groups {
+        group.target_priority = if group.role == CombatGroupRole::Screen {
+            CombatTargetPriority::Support
+        } else {
+            priority
+        };
+    }
+    if round == 1
+        && plan.groups.len() > 1
+        && let Some(group) = plan.groups.last_mut()
+    {
+        group.role = CombatGroupRole::Reserve;
+    }
+}
+
+fn apply_confins_plan(plan: &mut CombatPlan, opponent: &CombatSideState) {
+    let priority = if has_damaged_stack(opponent) {
+        CombatTargetPriority::Damaged
+    } else if has_heavy_stack(opponent) {
+        CombatTargetPriority::Heavy
+    } else {
+        CombatTargetPriority::Light
+    };
+    for group in &mut plan.groups {
+        group.role = CombatGroupRole::Assault;
+        group.target_priority = priority;
+    }
+}
+
+fn apply_sylve_plan(plan: &mut CombatPlan, opponent: &CombatSideState) {
+    let priority = if has_support_stack(opponent) {
+        CombatTargetPriority::Support
+    } else if has_damaged_stack(opponent) {
+        CombatTargetPriority::Damaged
+    } else {
+        CombatTargetPriority::Light
+    };
+    for group in &mut plan.groups {
+        if group.role == CombatGroupRole::Screen {
+            group.role = CombatGroupRole::Bombardment;
+        }
+        group.target_priority = priority;
+    }
 }
 
 fn score_for(
@@ -181,6 +342,12 @@ fn has_heavy_or_damaged_stack(side: &CombatSideState) -> bool {
             && (stack.target_class == CombatTargetClass::Heavy
                 || stack.current_hull < stack.maximum_hull)
     })
+}
+
+fn has_heavy_stack(side: &CombatSideState) -> bool {
+    side.stacks
+        .iter()
+        .any(|stack| stack.surviving_quantity > 0 && stack.target_class == CombatTargetClass::Heavy)
 }
 
 fn has_damaged_stack(side: &CombatSideState) -> bool {
@@ -270,14 +437,18 @@ mod tests {
         }
     }
 
-    fn side(stacks: Vec<CombatStackState>) -> CombatSideState {
+    fn side_for_owner(owner: FactionId, stacks: Vec<CombatStackState>) -> CombatSideState {
         CombatSideState {
-            owner: Owner::Faction(FactionId::new(0)),
+            owner: Owner::Faction(owner),
             stacks,
             last_doctrine: None,
             consecutive_doctrine_uses: 0,
             retreated: false,
         }
+    }
+
+    fn side(stacks: Vec<CombatStackState>) -> CombatSideState {
+        side_for_owner(FactionId::new(0), stacks)
     }
 
     fn healthy_medium_stack(id: u32) -> CombatStackState {
@@ -386,6 +557,115 @@ mod tests {
         assert_eq!(
             choose_ai_doctrine(&own, &opponent, 4, &rules()),
             CombatDoctrineId::BalancedEngagement
+        );
+    }
+
+    #[test]
+    fn faction_profiles_choose_differentiated_doctrines_for_the_same_state() {
+        let own_stack = stack(
+            0,
+            CombatTargetClass::Medium,
+            CombatTacticalRole::Line,
+            500,
+            1_000,
+        );
+        let opponent = side(vec![stack(
+            1,
+            CombatTargetClass::Heavy,
+            CombatTacticalRole::Support,
+            1_000,
+            1_000,
+        )]);
+
+        assert_eq!(
+            choose_ai_doctrine(
+                &side_for_owner(FactionId::new(0), vec![own_stack.clone()]),
+                &opponent,
+                3,
+                &rules(),
+            ),
+            CombatDoctrineId::DefensiveScreen
+        );
+        assert_eq!(
+            choose_ai_doctrine(
+                &side_for_owner(FactionId::new(1), vec![own_stack.clone()]),
+                &opponent,
+                3,
+                &rules(),
+            ),
+            CombatDoctrineId::ConcentratedAssault
+        );
+        assert_eq!(
+            choose_ai_doctrine(
+                &side_for_owner(FactionId::new(2), vec![own_stack]),
+                &opponent,
+                3,
+                &rules(),
+            ),
+            CombatDoctrineId::FlankingManeuver
+        );
+    }
+
+    #[test]
+    fn faction_profiles_emit_distinct_tactical_plans() {
+        let opponent = side(vec![stack(
+            9,
+            CombatTargetClass::Heavy,
+            CombatTacticalRole::Support,
+            1_000,
+            1_000,
+        )]);
+        let stacks = vec![
+            healthy_medium_stack(0),
+            stack(
+                1,
+                CombatTargetClass::Medium,
+                CombatTacticalRole::Support,
+                1_000,
+                1_000,
+            ),
+        ];
+
+        let consortium = choose_ai_plan(
+            &side_for_owner(FactionId::new(0), stacks.clone()),
+            &opponent,
+            1,
+            &rules(),
+        );
+        let confins = choose_ai_plan(
+            &side_for_owner(FactionId::new(1), stacks.clone()),
+            &opponent,
+            1,
+            &rules(),
+        );
+        let sylve = choose_ai_plan(
+            &side_for_owner(FactionId::new(2), stacks),
+            &opponent,
+            1,
+            &rules(),
+        );
+
+        assert_eq!(
+            consortium.groups.last().map(|group| group.role),
+            Some(CombatGroupRole::Reserve)
+        );
+        assert!(
+            confins
+                .groups
+                .iter()
+                .all(|group| group.role == CombatGroupRole::Assault)
+        );
+        assert!(
+            sylve
+                .groups
+                .iter()
+                .any(|group| group.role == CombatGroupRole::Bombardment)
+        );
+        assert!(
+            sylve
+                .groups
+                .iter()
+                .all(|group| group.target_priority == CombatTargetPriority::Support)
         );
     }
 

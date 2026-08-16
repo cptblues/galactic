@@ -36,6 +36,7 @@ use presentation::components::{
     IntroPitchUiState, OpenPanel, PointerSelectionState, SelectedMission, StrategicViewEntity,
     TopBarText, UiPointerBlocker, VictoryUiState,
 };
+use presentation::entity_visuals::EntityVisualCatalog;
 use presentation::icons::IconAssets;
 use presentation::input::{
     handle_action_buttons, handle_pointer_selection, handle_simulation_input, handle_view_input,
@@ -55,18 +56,17 @@ use presentation::overlays::{
     update_sector_labels, update_system_labels, update_system_visuals,
 };
 use presentation::procedural_materials::{
-    atmosphere_material, planet_material, procedural_planet_texture, star_halo_material,
-    star_material, territory_tint_material,
+    atmosphere_material, star_halo_material, star_material, territory_tint_material,
 };
 use presentation::scene::{
-    accent_craft_amber, accent_fleet_blue, accent_research_violet, action_button_color,
-    action_button_outline, handle_help_toggle_button, handle_intro_pitch_buttons,
-    handle_scroll_areas, handle_tab_bar_galaxy_button, handle_victory_modal_buttons,
-    panel_background, panel_outline, rebuild_strategic_view_if_requested, spawn_scene,
-    spawn_strategic_view, spawn_ui, ui_text_font, update_camera_graphics_preset,
-    update_help_visibility, update_intro_pitch_visibility, update_resource_bar,
-    update_scroll_indicators, update_sun_light_preset, update_victory_modal, update_victory_state,
-    update_window_resolution_preset,
+    PlanetVisualMaterialCache, accent_craft_amber, accent_fleet_blue, accent_research_violet,
+    action_button_color, action_button_outline, handle_help_toggle_button,
+    handle_intro_pitch_buttons, handle_scroll_areas, handle_tab_bar_galaxy_button,
+    handle_victory_modal_buttons, panel_background, panel_outline,
+    rebuild_strategic_view_if_requested, spawn_scene, spawn_strategic_view, spawn_ui, ui_text_font,
+    update_camera_graphics_preset, update_help_visibility, update_intro_pitch_visibility,
+    update_resource_bar, update_scroll_indicators, update_sun_light_preset, update_victory_modal,
+    update_victory_state, update_window_resolution_preset,
 };
 use presentation::shortcuts::{apply_simulation_command, apply_ui_action, replace_simulation};
 use presentation::strategic_camera::{tick_simulation, update_strategic_camera};
@@ -78,7 +78,12 @@ use presentation::universe_labels::LabelBudgetState;
 use research_ui::ResearchUiPlugin;
 use save_load_ui::SaveLoadUiPlugin;
 use std::collections::HashMap;
+use std::path::PathBuf;
 
+#[cfg(test)]
+use presentation::procedural_materials::procedural_planet_texture;
+
+use bevy::asset::AssetPlugin;
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy::render::{
@@ -89,6 +94,21 @@ use bevy::text::{FontAtlasSet, FontCx, FontSource};
 use bevy::window::PresentMode;
 use galactic_domain::{PlanetKind, StarClass, SystemId, UniverseConfig, UniverseScalePreset};
 use galactic_sim::{GameEvent, GameEventKind, Simulation, SystemVisibility};
+
+fn default_asset_folder() -> String {
+    let cwd = PathBuf::from(".");
+    if cwd.join("assets/visuals/manifest.ron").is_file()
+        && let Ok(root) = cwd.canonicalize()
+    {
+        return root.join("assets").to_string_lossy().into_owned();
+    }
+    let asset_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+    asset_root
+        .canonicalize()
+        .unwrap_or(asset_root)
+        .to_string_lossy()
+        .into_owned()
+}
 
 #[cfg(test)]
 use galactic_domain::{PlanetId, ResourceStock, WorldPosition};
@@ -205,6 +225,10 @@ impl Plugin for ClientPlugin {
                     }),
                     ..default()
                 })
+                .set(AssetPlugin {
+                    file_path: default_asset_folder(),
+                    ..default()
+                })
                 .set(low_memory_render_plugin()),
         )
         .insert_resource(ClearColor(Color::srgb(0.006, 0.008, 0.014)))
@@ -215,6 +239,8 @@ impl Plugin for ClientPlugin {
         .insert_resource(graphics_settings)
         .init_resource::<PresentationLog>()
         .init_resource::<VisualAssets>()
+        .init_resource::<EntityVisualCatalog>()
+        .init_resource::<PlanetVisualMaterialCache>()
         .init_resource::<IconAssets>()
         .insert_resource(navigation)
         .init_resource::<ViewRebuildRequest>()
@@ -383,7 +409,6 @@ impl Plugin for PresentationPlugin {
                     update_camera_graphics_preset,
                     update_sun_light_preset,
                     update_window_resolution_preset,
-                    update_planet_texture_quality,
                     spawn_fleet_trail_particles,
                     advance_fleet_trail_particles,
                     update_projection_transition,
@@ -540,8 +565,6 @@ pub(crate) struct VisualAssets {
     star_halo_materials: HashMap<StarClass, Handle<StandardMaterial>>,
     detected_material: Handle<StandardMaterial>,
     observed_material: Handle<StandardMaterial>,
-    planet_materials: HashMap<PlanetKind, Handle<StandardMaterial>>,
-    planet_textures: HashMap<PlanetKind, Handle<Image>>,
     atmosphere_materials: HashMap<PlanetKind, Handle<StandardMaterial>>,
     ring_material: Handle<StandardMaterial>,
     hover_material: Handle<StandardMaterial>,
@@ -564,17 +587,6 @@ impl FromWorld for VisualAssets {
                 meshes.add(Sphere::new(0.5).mesh().ico(0).unwrap()),
             )
         };
-        let preset = world
-            .resource::<presentation::graphics_settings::GraphicsSettings>()
-            .preset;
-        let planet_textures = {
-            let mut images = world.resource_mut::<Assets<Image>>();
-            PlanetKind::ALL
-                .into_iter()
-                .map(|kind| (kind, images.add(procedural_planet_texture(kind, preset))))
-                .collect::<HashMap<_, _>>()
-        };
-
         let mut materials = world.resource_mut::<Assets<StandardMaterial>>();
         let known_star_materials = StarClass::ALL
             .into_iter()
@@ -598,16 +610,6 @@ impl FromWorld for VisualAssets {
             alpha_mode: AlphaMode::Blend,
             ..default()
         });
-        let planet_materials = PlanetKind::ALL
-            .into_iter()
-            .map(|kind| {
-                let texture = planet_textures
-                    .get(&kind)
-                    .expect("planet texture exists")
-                    .clone();
-                (kind, materials.add(planet_material(kind, texture)))
-            })
-            .collect();
         let atmosphere_materials = [PlanetKind::Ocean, PlanetKind::Ice, PlanetKind::GasGiant]
             .into_iter()
             .map(|kind| (kind, materials.add(atmosphere_material(kind))))
@@ -653,32 +655,10 @@ impl FromWorld for VisualAssets {
             star_halo_materials,
             detected_material,
             observed_material,
-            planet_materials,
-            planet_textures,
             atmosphere_materials,
             ring_material,
             hover_material,
             territory_materials,
-        }
-    }
-}
-
-/// Regenerates the shared per-`PlanetKind` textures in place (via their
-/// existing `Handle<Image>`) on a preset change — every already-spawned
-/// planet mesh references these same handles through its material, so this
-/// alone is enough to update every visible planet's texture resolution with
-/// no despawn/respawn needed.
-fn update_planet_texture_quality(
-    graphics: Res<presentation::graphics_settings::GraphicsSettings>,
-    visual_assets: Res<VisualAssets>,
-    mut images: ResMut<Assets<Image>>,
-) {
-    if !graphics.is_changed() {
-        return;
-    }
-    for (kind, handle) in &visual_assets.planet_textures {
-        if let Some(mut image) = images.get_mut(handle) {
-            *image = procedural_planet_texture(*kind, graphics.preset);
         }
     }
 }
@@ -845,6 +825,9 @@ mod tests {
     use std::{any::TypeId, collections::HashSet};
 
     use super::*;
+    use crate::presentation::components::{
+        ManagementBuildingButtonIcon, ManagementBuildingDetailIcon,
+    };
     use bevy::camera::{ComputedCameraValues, RenderTargetInfo, visibility::VisibleEntities};
     use bevy::sprite::update_text2d_layout;
     use bevy::text::{
@@ -858,6 +841,16 @@ mod tests {
         };
 
         assert!(matches!(settings.memory_hints, MemoryHints::MemoryUsage));
+    }
+
+    #[test]
+    fn default_asset_folder_points_to_the_workspace_asset_root() {
+        let root = PathBuf::from(default_asset_folder());
+
+        assert!(
+            root.join("visuals/manifest.ron").is_file(),
+            "visual manifest must be loadable from {root:?}"
+        );
     }
 
     #[test]
@@ -1210,6 +1203,60 @@ VmSwap:\t      2048 kB
     }
 
     #[test]
+    fn colony_management_building_visuals_update_without_a_query_conflict() {
+        fn spawn_management_for_test(mut commands: Commands) {
+            spawn_colony_management_screen(&mut commands);
+        }
+
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<Assets<Image>>()
+            .insert_resource(SimulationResource {
+                simulation: Simulation::new(UniverseConfig::mvp()),
+                pending_events: Vec::new(),
+            })
+            .insert_resource(OpenPanel::Colony)
+            .init_resource::<ColonyManagementState>()
+            .add_systems(Startup, spawn_management_for_test)
+            .add_systems(
+                Update,
+                (
+                    update_colony_management_buildings,
+                    update_colony_management_detail,
+                ),
+            );
+        let entity_visuals = {
+            let mut images = app.world_mut().resource_mut::<Assets<Image>>();
+            EntityVisualCatalog::for_tests(&mut images)
+        };
+        app.insert_resource(entity_visuals);
+
+        app.update();
+
+        let world = app.world_mut();
+        let mut button_icons = world.query::<(&ManagementBuildingButtonIcon, &ImageNode)>();
+        let rendered_button_icons = button_icons.iter(world).count();
+        assert_eq!(
+            rendered_button_icons,
+            galactic_sim::default_building_catalog()
+                .definitions()
+                .count()
+        );
+        assert!(
+            button_icons
+                .iter(world)
+                .all(|(_, icon)| icon.image != Handle::<Image>::default())
+        );
+
+        let mut detail_icons =
+            world.query_filtered::<&ImageNode, With<ManagementBuildingDetailIcon>>();
+        let detail_icon = detail_icons
+            .single(world)
+            .expect("management detail has one selected-building image");
+        assert_ne!(detail_icon.image, Handle::<Image>::default());
+    }
+
+    #[test]
     fn colony_ring_is_thinner_than_wide_visual_ring() {
         let wide_width = WIDE_RING_OUTER_RADIUS - WIDE_RING_INNER_RADIUS;
         let colony_width = COLONY_RING_OUTER_RADIUS - COLONY_RING_INNER_RADIUS;
@@ -1390,6 +1437,29 @@ VmSwap:\t      2048 kB
             assert_eq!(first_data, second_data);
             assert!(colors.len() >= 3, "{kind:?} texture is not varied");
         }
+    }
+
+    #[test]
+    fn revealed_planet_material_cache_reuses_the_same_variant_material() {
+        let mut images = Assets::<Image>::default();
+        let catalog = EntityVisualCatalog::for_tests(&mut images);
+        let mut materials = Assets::<StandardMaterial>::default();
+        let mut cache = PlanetVisualMaterialCache::default();
+        let planet_id = PlanetId::from_system_index(SystemId::new(12), 3);
+
+        let first = cache.revealed_material(planet_id, PlanetKind::Ocean, &catalog, &mut materials);
+        let second =
+            cache.revealed_material(planet_id, PlanetKind::Ocean, &catalog, &mut materials);
+        let other_planet = cache.revealed_material(
+            PlanetId::from_system_index(SystemId::new(12), 4),
+            PlanetKind::Ocean,
+            &catalog,
+            &mut materials,
+        );
+
+        assert_eq!(first, second);
+        assert_ne!(first, other_planet);
+        assert_eq!(cache.cached_count(), 2);
     }
 
     #[test]

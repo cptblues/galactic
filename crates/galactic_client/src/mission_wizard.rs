@@ -1590,7 +1590,7 @@ fn wizard_selected_destination_summary(
                 )),
             );
             if let Some(estimate) = wizard_attack_estimate(state, ui, target) {
-                summary.push_str("\n");
+                summary.push('\n');
                 summary.push_str(&estimate);
             }
             summary

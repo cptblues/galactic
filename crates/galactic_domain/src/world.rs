@@ -203,7 +203,7 @@ pub struct Planet {
     pub habitability: u8,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum PlanetKind {
     Rocky,
     Ocean,

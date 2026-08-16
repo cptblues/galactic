@@ -500,6 +500,10 @@ mod tests {
                 forces: Vec::new(),
                 revision: 0,
             },
+            round_history: Vec::new(),
+            initial_plan: None,
+            final_plan: None,
+            intervention_history: Vec::new(),
             status: CombatReportStatus::Resolved(CombatResolution {
                 outcome: CombatOutcome::AttackerVictory,
                 rounds: 1,

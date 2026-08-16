@@ -5,15 +5,15 @@ use galactic_domain::{UniverseConfig, UniverseDefinition};
 
 use crate::{
     ColonySelectionRejected, CombatAutoResolveRejected, CombatCompleted, CombatDecisionRequired,
-    CombatDoctrineRejected, CombatIntelUpdated, CombatRetreatRejected, CombatRoundResolved,
-    CommandRejection, GameAction, GameCommand, GameEvent, GameEventKind, GameState,
-    MissionEngineEvent, SelectionTarget, StartingScenario, StrategicDuration, UniverseRepository,
-    advance_colony_construction, advance_colony_craft, advance_missions, advance_research,
-    auto_resolve_combat, cancel_construction, cancel_craft, cancel_mission, cancel_research,
-    choose_combat_doctrine, disband_fleet, enqueue_building_upgrade, enqueue_craft,
-    enqueue_research, form_fleet, launch_attack_mission, launch_colonization_mission,
-    launch_harvest_mission, launch_mission, launch_probe_mission, launch_transport_mission,
-    queue_colony_production, rename_fleet, retreat_from_combat,
+    CombatDoctrineRejected, CombatIntelUpdated, CombatPlanConfirmed, CombatPlanRejected,
+    CombatRetreatRejected, CombatRoundResolved, CommandRejection, GameAction, GameCommand,
+    GameEvent, GameEventKind, GameState, MissionEngineEvent, SelectionTarget, StartingScenario,
+    StrategicDuration, UniverseRepository, advance_colony_construction, advance_colony_craft,
+    advance_missions, advance_research, auto_resolve_combat, cancel_construction, cancel_craft,
+    cancel_mission, cancel_research, choose_combat_doctrine, confirm_combat_plan, disband_fleet,
+    enqueue_building_upgrade, enqueue_craft, enqueue_research, form_fleet, launch_attack_mission,
+    launch_colonization_mission, launch_harvest_mission, launch_mission, launch_probe_mission,
+    launch_transport_mission, queue_colony_production, rename_fleet, retreat_from_combat,
 };
 
 mod build_error;
@@ -336,12 +336,30 @@ impl Simulation {
                     )],
                 }
             }
+            GameAction::ConfirmCombatPlan { mission_id, plan } => {
+                match confirm_combat_plan(&mut self.state, issuer, mission_id, plan) {
+                    Ok(()) => vec![GameEventKind::CombatPlanConfirmed(CombatPlanConfirmed {
+                        mission_id,
+                    })],
+                    Err(error) => vec![GameEventKind::CombatPlanRejected(CombatPlanRejected {
+                        mission_id,
+                        error,
+                    })],
+                }
+            }
             GameAction::ChooseCombatDoctrine {
                 mission_id,
                 round,
                 doctrine,
-            } => match choose_combat_doctrine(&mut self.state, issuer, mission_id, round, doctrine)
-            {
+                intervention,
+            } => match choose_combat_doctrine(
+                &mut self.state,
+                issuer,
+                mission_id,
+                round,
+                doctrine,
+                intervention,
+            ) {
                 Ok(outcome) => {
                     let mut kinds = vec![GameEventKind::CombatRoundResolved(CombatRoundResolved {
                         mission_id,
@@ -366,6 +384,7 @@ impl Simulation {
                         mission_id,
                         round,
                         doctrine,
+                        intervention,
                         error,
                     },
                 )],
@@ -1247,6 +1266,10 @@ mod tests {
             seed: pending.seed,
             attacker: pending.attacker.clone(),
             defender: pending.defender.clone(),
+            round_history: Vec::new(),
+            initial_plan: None,
+            final_plan: None,
+            intervention_history: Vec::new(),
             status: crate::CombatReportStatus::Resolved(crate::CombatResolution {
                 outcome: stalemate,
                 rounds: 1,
@@ -1293,6 +1316,20 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn reconstruction_rejects_pending_combat_command_points_above_the_configured_maximum() {
+        let (simulation, _mission_id) = simulation_with_pending_combat();
+        let universe = simulation.universe().clone();
+        let mut state = simulation.state().clone();
+        state.pending_combats[0].command_points_remaining =
+            crate::combat_rules().command().starting_points() + 1;
+
+        assert!(matches!(
+            Simulation::from_parts(universe, state),
+            Err(SimulationBuildError::PendingCombatCommandPointsExceedMaximum(_))
+        ));
+    }
+
     /// COMBAT-001-E "smoke test complet": drives a pending combat to
     /// completion through real `GameAction::ChooseCombatDoctrine` commands
     /// (the player's own path, not the auto-resolve façade), round by round,
@@ -1315,7 +1352,10 @@ mod tests {
             let events = simulation.apply_player_action(GameAction::ChooseCombatDoctrine {
                 mission_id,
                 round,
-                doctrine: crate::CombatDoctrineId::BalancedEngagement,
+                doctrine: Some(crate::CombatDoctrineId::BalancedEngagement),
+                intervention: (round == 1).then_some(crate::CombatIntervention::FocusFire {
+                    priority: crate::CombatTargetPriority::Heavy,
+                }),
             });
             rounds_played += 1;
             assert!(
@@ -1344,6 +1384,30 @@ mod tests {
         assert!(
             simulation.state().combat_report(mission_id).is_some(),
             "a persistent combat report must exist once finalized"
+        );
+        let report = simulation
+            .state()
+            .combat_report(mission_id)
+            .expect("checked above");
+        assert_eq!(
+            report.round_history.len(),
+            rounds_played,
+            "the persistent report keeps one tactical record per resolved round"
+        );
+        assert!(
+            report.initial_plan.is_some(),
+            "the report keeps the initial tactical plan"
+        );
+        assert!(
+            report.final_plan.is_some(),
+            "the report keeps the final tactical plan"
+        );
+        assert_eq!(report.intervention_history.len(), 1);
+        assert_eq!(
+            report.intervention_history[0].intervention,
+            crate::CombatIntervention::FocusFire {
+                priority: crate::CombatTargetPriority::Heavy,
+            }
         );
         let mission = simulation
             .state()

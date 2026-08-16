@@ -28,10 +28,11 @@ pub(crate) mod tests {
         ColonyId, ExtractionSiteId, MissionId, Owner, PlanetId, ResourceStock, UniverseConfig,
     };
     use galactic_sim::{
-        BuildingKind, CombatDoctrineId, CraftableId, FleetComposition, GAME_STATE_VERSION,
-        GameAction, KnowledgeLevel, MissionKind, MissionOrder, MissionPhase, MissionResult,
-        MissionTarget, PlanetaryIntelPrecision, ResearchState, ShipStack, SimulationBuildError,
-        StrategicTick, TechnologyId, default_building_catalog,
+        BuildingKind, CombatDoctrineId, CombatIntervention, CombatTargetPriority, CraftableId,
+        FleetComposition, GAME_STATE_VERSION, GameAction, KnowledgeLevel, MissionKind,
+        MissionOrder, MissionPhase, MissionResult, MissionTarget, PlanetaryIntelPrecision,
+        ResearchState, ShipStack, SimulationBuildError, StrategicTick, TechnologyId,
+        default_building_catalog,
     };
 
     use super::*;
@@ -621,7 +622,10 @@ pub(crate) mod tests {
         simulation.apply_player_action(GameAction::ChooseCombatDoctrine {
             mission_id,
             round: 1,
-            doctrine: CombatDoctrineId::BalancedEngagement,
+            doctrine: None,
+            intervention: Some(CombatIntervention::FocusFire {
+                priority: CombatTargetPriority::Heavy,
+            }),
         });
         assert_eq!(
             simulation
@@ -630,6 +634,14 @@ pub(crate) mod tests {
                 .expect("this fixture's target survives at least one round")
                 .planet_id,
             target
+        );
+        assert_eq!(
+            simulation
+                .state()
+                .pending_combat(mission_id)
+                .expect("this fixture's target survives at least one round")
+                .command_points_remaining(),
+            galactic_sim::combat_rules().command().starting_points() - 1
         );
 
         let mid_combat = snapshot_from_simulation(&simulation);
@@ -641,12 +653,14 @@ pub(crate) mod tests {
             simulation.apply_player_action(GameAction::ChooseCombatDoctrine {
                 mission_id,
                 round: 2,
-                doctrine: CombatDoctrineId::DefensiveScreen,
+                doctrine: Some(CombatDoctrineId::DefensiveScreen),
+                intervention: None,
             });
         let reloaded_events = reloaded.apply_player_action(GameAction::ChooseCombatDoctrine {
             mission_id,
             round: 2,
-            doctrine: CombatDoctrineId::DefensiveScreen,
+            doctrine: Some(CombatDoctrineId::DefensiveScreen),
+            intervention: None,
         });
 
         assert_eq!(reloaded.state(), simulation.state());

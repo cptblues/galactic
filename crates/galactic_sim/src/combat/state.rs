@@ -182,6 +182,13 @@ pub enum CombatRoundEvent {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CombatStackExchange {
+    pub source_group: super::plan::CombatGroupPlanId,
+    pub target: CombatStackId,
+    pub allocated_damage: u128,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CombatRoundRecord {
     pub round: u16,
@@ -189,6 +196,10 @@ pub struct CombatRoundRecord {
     pub defender_doctrine: CombatDoctrineId,
     pub attacker_damage: u128,
     pub defender_damage: u128,
+    #[serde(default)]
+    pub attacker_exchanges: Vec<CombatStackExchange>,
+    #[serde(default)]
+    pub defender_exchanges: Vec<CombatStackExchange>,
     pub attacker_losses: Vec<CombatStackLoss>,
     pub defender_losses: Vec<CombatStackLoss>,
     pub notable_events: Vec<CombatRoundEvent>,
@@ -682,6 +693,8 @@ mod tests {
                 &state,
                 attacker_doctrine,
                 defender_doctrine,
+                None,
+                None,
                 combat_rules(),
                 combat_rules().tactics(),
             )

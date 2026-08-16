@@ -1,5 +1,6 @@
 pub(crate) mod colony_management_ui;
 pub(crate) mod components;
+pub(crate) mod entity_visuals;
 pub(crate) mod graphics_settings;
 pub(crate) mod icons;
 pub(crate) mod input;

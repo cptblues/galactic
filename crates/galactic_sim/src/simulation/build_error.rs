@@ -194,6 +194,7 @@ pub enum SimulationBuildError {
     PendingCombatRoundExceedsMaximum(MissionId),
     PendingCombatStackIdCollision(MissionId),
     PendingCombatHullExceedsMaximum(MissionId),
+    PendingCombatCommandPointsExceedMaximum(MissionId),
     DuplicateSystemKnowledge(SystemId),
     DuplicatePlanetKnowledge(PlanetId),
     ExplicitUnknownSystemKnowledge(SystemId),

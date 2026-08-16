@@ -3,6 +3,7 @@ use galactic_domain::ResourceStock;
 use galactic_sim::{GameAction, GameEventKind, SelectionTarget, Simulation};
 
 use crate::presentation::components::*;
+use crate::presentation::entity_visuals::EntityVisualCatalog;
 use crate::presentation::resource_hud::*;
 use crate::presentation::shortcuts::{action_active, action_available};
 use crate::presentation::strategic_navigation::*;
@@ -119,6 +120,7 @@ pub(crate) fn capture_colony_management_feedback(
     }
 }
 
+#[allow(clippy::type_complexity)]
 pub(crate) fn update_colony_management_visibility(
     simulation: Res<SimulationResource>,
     management: Res<ColonyManagementState>,
@@ -245,6 +247,7 @@ pub(crate) fn update_colony_management_buildings(
     simulation: Res<SimulationResource>,
     management: Res<ColonyManagementState>,
     open_panel: Res<OpenPanel>,
+    entity_visuals: Res<EntityVisualCatalog>,
     mut buttons: Query<(
         &ManagementBuildingButton,
         &Interaction,
@@ -252,6 +255,7 @@ pub(crate) fn update_colony_management_buildings(
         &mut Outline,
     )>,
     mut labels: Query<(&ManagementBuildingButtonText, &mut Text, &mut TextColor)>,
+    mut icons: Query<(&ManagementBuildingButtonIcon, &mut ImageNode)>,
 ) {
     if *open_panel != OpenPanel::Colony {
         return;
@@ -288,13 +292,25 @@ Niveau {}{}",
             Color::srgb(0.78, 0.84, 0.88)
         };
     }
+
+    for (marker, mut icon) in &mut icons {
+        let selected = marker.kind == management.selected_building;
+        icon.image = entity_visuals.building(marker.kind);
+        icon.color = if selected {
+            Color::WHITE
+        } else {
+            Color::srgba(0.82, 0.90, 0.92, 0.86)
+        };
+    }
 }
 
 pub(crate) fn update_colony_management_detail(
     simulation: Res<SimulationResource>,
     management: Res<ColonyManagementState>,
     open_panel: Res<OpenPanel>,
+    entity_visuals: Res<EntityVisualCatalog>,
     mut texts: Query<(&ManagementTextRole, &mut Text, &mut TextColor)>,
+    mut icons: Query<&mut ImageNode, With<ManagementBuildingDetailIcon>>,
     mut buttons: Query<
         (&Interaction, &mut BackgroundColor, &mut Outline),
         With<ManagementUpgradeButton>,
@@ -333,6 +349,11 @@ pub(crate) fn update_colony_management_detail(
             }
             _ => {}
         }
+    }
+
+    for mut icon in &mut icons {
+        icon.image = entity_visuals.building(kind);
+        icon.color = Color::WHITE;
     }
 
     for (interaction, mut background, mut outline) in &mut buttons {

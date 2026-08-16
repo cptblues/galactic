@@ -678,6 +678,11 @@ pub(crate) fn validate_state(
                 pending.mission_id,
             ));
         }
+        if !pending.command_points_are_valid() {
+            return Err(
+                SimulationBuildError::PendingCombatCommandPointsExceedMaximum(pending.mission_id),
+            );
+        }
     }
 
     validate_colony_foundations(state, universe)

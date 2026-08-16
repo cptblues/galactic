@@ -12,13 +12,18 @@ use galactic_domain::MissionId;
 use galactic_sim::{
     ALL_COMBAT_DOCTRINES, AuthorizationError, CombatAutoResolveRejected, CombatCommandError,
     CombatCompleted, CombatDecisionRequired, CombatDoctrineId, CombatDoctrineRejected,
-    CombatRetreatRejected, CombatRoundEvent, CombatRoundRecord, CombatRoundResolved,
-    CombatStackView, CombatTacticalRole, CombatTargetClass, CombatUnitRef, DoctrineOverview,
-    EnemyIntelView, GameAction, GameEventKind, IntegrityBand, IntegrityReveal, MissionTarget,
+    CombatGroupPlanId, CombatGroupRole, CombatIntervention, CombatInterventionError,
+    CombatPlanConfirmed, CombatPlanRejected, CombatPlanValidationError, CombatRetreatRejected,
+    CombatRoundEvent, CombatRoundRecord, CombatRoundResolved, CombatStackView, CombatTacticalRole,
+    CombatTargetClass, CombatTargetPriority, CombatUnitRef, DoctrineOverview, EnemyIntelView,
+    GameAction, GameEventKind, IntegrityBand, IntegrityReveal, MissionTarget, PendingCombat,
     QualitativePrediction, QuantityBand, QuantityReveal, allied_stacks, combat_rules,
     craftable_definition, default_ruleset, doctrine_overview, enemy_intel, qualitative_prediction,
     repetition_penalty_preview, round_history,
 };
+
+mod battlefield;
+mod group_panel;
 
 use super::{
     PresentationUpdateSet, SimulationResource, UiPointerBlocker, action_button_color,
@@ -27,8 +32,14 @@ use super::{
 };
 use crate::presentation::{
     components::{ScrollIndicatorArea, ScrollIndicatorId},
+    entity_visuals::EntityVisualCatalog,
     icons::{IconAssets, IconKind},
     scene::spawn_scroll_indicator,
+};
+use battlefield::{spawn_battlefield_panel, update_battlefield_panel};
+use group_panel::{
+    CombatPlanDraftState, handle_combat_plan_buttons, spawn_group_panel, sync_combat_plan_draft,
+    update_combat_plan_panel,
 };
 
 const MAX_ALLIED_ROWS: usize = 8;
@@ -38,16 +49,34 @@ const MAX_ENEMY_ROWS: usize = 8;
 /// above any open gameplay panel, but stay below the two true end-to-end
 /// modals (intro-pitch, victory).
 const COMBAT_UI_Z_INDEX: i32 = 200;
+const COMBAT_ROOT_PADDING_PX: f32 = 12.0;
+const COMBAT_ROOT_ROW_GAP_PX: f32 = 8.0;
+const COMBAT_BODY_COLUMN_GAP_PX: f32 = 10.0;
+const COMBAT_SIDE_COLUMN_WIDTH_PERCENT: f32 = 22.0;
+const COMBAT_DOCTRINE_CARD_MIN_WIDTH_PX: f32 = 176.0;
+const COMBAT_DOCTRINE_CARD_GAP_PX: f32 = 8.0;
+const FOCUS_FIRE_PRIORITIES: [CombatTargetPriority; 5] = [
+    CombatTargetPriority::Light,
+    CombatTargetPriority::Medium,
+    CombatTargetPriority::Heavy,
+    CombatTargetPriority::Damaged,
+    CombatTargetPriority::Support,
+];
 
 pub(crate) struct CombatUiPlugin;
 
 impl Plugin for CombatUiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CombatUiState>()
+            .init_resource::<CombatPlanDraftState>()
             .add_systems(Startup, spawn_combat_screen)
             .add_systems(
                 Update,
-                (resume_combat_queue_after_reload, capture_combat_events)
+                (
+                    resume_combat_queue_after_reload,
+                    capture_combat_events,
+                    sync_combat_plan_draft,
+                )
                     .chain()
                     .before(collect_presentation_events)
                     .in_set(PresentationUpdateSet::View),
@@ -56,6 +85,7 @@ impl Plugin for CombatUiPlugin {
                 Update,
                 (
                     tick_round_pause,
+                    handle_combat_plan_buttons,
                     handle_combat_shortcuts,
                     handle_combat_buttons,
                 )
@@ -67,7 +97,10 @@ impl Plugin for CombatUiPlugin {
                 (
                     update_combat_visibility,
                     update_combat_columns,
+                    update_combat_plan_panel,
+                    update_battlefield_panel,
                     update_doctrine_cards,
+                    update_command_panel,
                     update_action_buttons,
                     update_combat_feedback,
                     update_final_report,
@@ -103,6 +136,7 @@ pub(crate) struct CombatUiState {
     /// it to completion rather than taking a separate skip code path.
     pub(crate) round_pause_timer: Timer,
     pub(crate) chosen_doctrine: Option<CombatDoctrineId>,
+    pub(crate) selected_intervention: Option<CombatIntervention>,
     /// Two-press retreat confirmation (doc §15, "retraite avec
     /// confirmation") — `Some(deadline)` while armed; expires back to `None`.
     pub(crate) retreat_armed_until: Option<Duration>,
@@ -118,6 +152,7 @@ impl Default for CombatUiState {
             phase: CombatUiPhase::AwaitingDoctrine,
             round_pause_timer: Timer::from_seconds(1.5, TimerMode::Once),
             chosen_doctrine: None,
+            selected_intervention: None,
             retreat_armed_until: None,
             feedback: String::new(),
             last_round_summary: None,
@@ -157,6 +192,9 @@ struct CombatRoundLogText;
 
 #[derive(Component)]
 struct CombatFeedbackText;
+
+#[derive(Component)]
+struct CombatCommandText;
 
 /// The doctrine bar, feedback line, and Retreat/AutoResolve/Validate row —
 /// hidden during `CombatUiPhase::FinalReport`, replaced by
@@ -229,9 +267,9 @@ fn spawn_combat_screen(mut commands: Commands, icon_assets: Res<IconAssets>) {
                 right: Val::Px(0.0),
                 top: Val::Px(0.0),
                 bottom: Val::Px(0.0),
-                padding: UiRect::all(Val::Px(14.0)),
+                padding: UiRect::all(Val::Px(COMBAT_ROOT_PADDING_PX)),
                 flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(10.0),
+                row_gap: Val::Px(COMBAT_ROOT_ROW_GAP_PX),
                 ..default()
             },
             BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.72)),
@@ -279,13 +317,13 @@ fn spawn_combat_screen(mut commands: Commands, icon_assets: Res<IconAssets>) {
                 flex_grow: 1.0,
                 min_height: Val::Px(0.0),
                 flex_direction: FlexDirection::Row,
-                column_gap: Val::Px(10.0),
+                column_gap: Val::Px(COMBAT_BODY_COLUMN_GAP_PX),
                 ..default()
             })
             .with_children(|body| {
                 spawn_column_frame(
                     body,
-                    25.0,
+                    COMBAT_SIDE_COLUMN_WIDTH_PERCENT,
                     ScrollIndicatorId::CombatAlliedColumn,
                     MAX_ALLIED_ROWS,
                     |list, slot| {
@@ -329,35 +367,11 @@ fn spawn_combat_screen(mut commands: Commands, icon_assets: Res<IconAssets>) {
                     },
                 );
 
-                // Central zone — schematic only per doc §14.4 ("aucun
-                // déplacement libre n'est requis"); a real round log is
-                // built out in step 5.
-                body.spawn((
-                    Node {
-                        width: Val::Percent(50.0),
-                        height: Val::Percent(100.0),
-                        min_height: Val::Px(0.0),
-                        justify_content: JustifyContent::Center,
-                        align_items: AlignItems::Center,
-                        border: UiRect::all(Val::Px(1.0)),
-                        border_radius: BorderRadius::all(Val::Px(6.0)),
-                        ..default()
-                    },
-                    BackgroundColor(panel_background()),
-                    Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
-                ))
-                .with_children(|center| {
-                    center.spawn((
-                        Text::new("Zone orbitale"),
-                        ui_text_font(12.0),
-                        TextColor(Color::srgba(0.70, 0.78, 0.86, 0.70)),
-                        CombatRoundLogText,
-                    ));
-                });
+                spawn_battlefield_panel(body, &icon_assets);
 
                 spawn_column_frame(
                     body,
-                    25.0,
+                    COMBAT_SIDE_COLUMN_WIDTH_PERCENT,
                     ScrollIndicatorId::CombatEnemyColumn,
                     MAX_ENEMY_ROWS,
                     |list, slot| {
@@ -402,6 +416,8 @@ fn spawn_combat_screen(mut commands: Commands, icon_assets: Res<IconAssets>) {
                 );
             });
 
+            spawn_group_panel(root);
+
             root.spawn((
                 Text::new(""),
                 ui_text_font(12.0),
@@ -420,7 +436,7 @@ fn spawn_combat_screen(mut commands: Commands, icon_assets: Res<IconAssets>) {
                 Node {
                     width: Val::Percent(100.0),
                     flex_wrap: FlexWrap::Wrap,
-                    column_gap: Val::Px(8.0),
+                    column_gap: Val::Px(COMBAT_DOCTRINE_CARD_GAP_PX),
                     row_gap: Val::Px(8.0),
                     ..default()
                 },
@@ -429,6 +445,41 @@ fn spawn_combat_screen(mut commands: Commands, icon_assets: Res<IconAssets>) {
             .with_children(|cards| {
                 for doctrine in ALL_COMBAT_DOCTRINES {
                     spawn_doctrine_card(cards, doctrine);
+                }
+            });
+
+            root.spawn((
+                Text::new(""),
+                ui_text_font(12.0),
+                TextColor(Color::srgb(0.78, 0.86, 1.0)),
+                CombatCommandText,
+                CombatPreReportControls,
+            ));
+
+            root.spawn((
+                Node {
+                    width: Val::Percent(100.0),
+                    flex_wrap: FlexWrap::Wrap,
+                    column_gap: Val::Px(8.0),
+                    row_gap: Val::Px(8.0),
+                    ..default()
+                },
+                CombatPreReportControls,
+            ))
+            .with_children(|interventions| {
+                for priority in FOCUS_FIRE_PRIORITIES {
+                    spawn_action_button(
+                        interventions,
+                        CombatUiAction::SelectFocusPriority(priority),
+                        focus_fire_button_label(priority),
+                    );
+                }
+                for group_id in CombatGroupPlanId::ALL {
+                    spawn_action_button(
+                        interventions,
+                        CombatUiAction::CommitReserve(group_id),
+                        reserve_button_label(group_id),
+                    );
                 }
             });
 
@@ -467,7 +518,7 @@ fn spawn_combat_screen(mut commands: Commands, icon_assets: Res<IconAssets>) {
                         spawn_action_button(
                             right,
                             CombatUiAction::Validate,
-                            "Valider le round [Entrée]",
+                            "Continuer / valider [Entrée]",
                         );
                     });
             });
@@ -494,6 +545,8 @@ fn spawn_combat_screen(mut commands: Commands, icon_assets: Res<IconAssets>) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CombatUiAction {
     SelectDoctrine(CombatDoctrineId),
+    SelectFocusPriority(CombatTargetPriority),
+    CommitReserve(CombatGroupPlanId),
     Validate,
     Retreat,
     AutoResolve,
@@ -510,6 +563,9 @@ struct DoctrineExtraText(CombatDoctrineId);
 
 #[derive(Component)]
 struct RetreatButtonLabel;
+
+#[derive(Component)]
+struct CombatValidateButtonLabel;
 
 fn doctrine_name(doctrine: CombatDoctrineId) -> &'static str {
     match doctrine {
@@ -528,6 +584,25 @@ fn doctrine_shortcut_digit(doctrine: CombatDoctrineId) -> usize {
         .position(|candidate| *candidate == doctrine)
         .expect("every doctrine appears in ALL_COMBAT_DOCTRINES")
         + 1
+}
+
+fn focus_fire_button_label(priority: CombatTargetPriority) -> &'static str {
+    match priority {
+        CombatTargetPriority::Any => "Focus libre",
+        CombatTargetPriority::Light => "Focus léger",
+        CombatTargetPriority::Medium => "Focus moyen",
+        CombatTargetPriority::Heavy => "Focus lourd",
+        CombatTargetPriority::Damaged => "Focus endommagé",
+        CombatTargetPriority::Support => "Focus soutien",
+    }
+}
+
+fn reserve_button_label(group_id: CombatGroupPlanId) -> &'static str {
+    match group_id {
+        CombatGroupPlanId::Alpha => "Réserve Alpha",
+        CombatGroupPlanId::Beta => "Réserve Beta",
+        CombatGroupPlanId::Gamma => "Réserve Gamma",
+    }
 }
 
 /// The one doctrine-specific mechanical effect `DoctrineOverview`'s
@@ -604,14 +679,14 @@ fn spawn_doctrine_card(parent: &mut ChildSpawnerCommands, doctrine: CombatDoctri
         .spawn((
             Button,
             Node {
-                flex_basis: Val::Percent(32.0),
-                min_width: Val::Px(220.0),
+                flex_basis: Val::Percent(15.0),
+                min_width: Val::Px(COMBAT_DOCTRINE_CARD_MIN_WIDTH_PX),
                 flex_grow: 1.0,
-                padding: UiRect::all(Val::Px(8.0)),
+                padding: UiRect::all(Val::Px(6.0)),
                 border: UiRect::all(Val::Px(1.0)),
                 border_radius: BorderRadius::all(Val::Px(6.0)),
                 flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(4.0),
+                row_gap: Val::Px(3.0),
                 ..default()
             },
             BackgroundColor(action_button_color(true, false, &Interaction::None)),
@@ -630,17 +705,17 @@ fn spawn_doctrine_card(parent: &mut ChildSpawnerCommands, doctrine: CombatDoctri
                     doctrine_name(doctrine),
                     doctrine_shortcut_digit(doctrine)
                 )),
-                ui_text_font(12.0),
+                ui_text_font(11.0),
                 TextColor(Color::srgb(0.92, 0.96, 1.0)),
             ));
             card.spawn((
                 Text::new(doctrine_card_text(doctrine)),
-                ui_text_font(10.0),
+                ui_text_font(9.0),
                 TextColor(Color::srgba(0.80, 0.86, 0.90, 0.90)),
             ));
             card.spawn((
                 Text::new(""),
-                ui_text_font(10.0),
+                ui_text_font(9.0),
                 TextColor(Color::srgb(0.94, 0.72, 0.42)),
                 DoctrineExtraText(doctrine),
             ));
@@ -673,6 +748,9 @@ fn spawn_action_button(parent: &mut ChildSpawnerCommands, action: CombatUiAction
         ));
         if action == CombatUiAction::Retreat {
             text.insert(RetreatButtonLabel);
+        }
+        if action == CombatUiAction::Validate {
+            text.insert(CombatValidateButtonLabel);
         }
     });
 }
@@ -779,8 +857,10 @@ type CombatHeaderTextQuery<'w, 's> = Query<
         Without<CombatIntelBarText>,
         Without<CombatRoundLogText>,
         Without<CombatFeedbackText>,
+        Without<CombatCommandText>,
         Without<AlliedStackText>,
         Without<EnemyStackText>,
+        Without<CombatValidateButtonLabel>,
     ),
 >;
 
@@ -793,8 +873,10 @@ type CombatIntelBarTextQuery<'w, 's> = Query<
         Without<CombatHeaderText>,
         Without<CombatRoundLogText>,
         Without<CombatFeedbackText>,
+        Without<CombatCommandText>,
         Without<AlliedStackText>,
         Without<EnemyStackText>,
+        Without<CombatValidateButtonLabel>,
     ),
 >;
 
@@ -818,6 +900,8 @@ type AlliedStackTextQuery<'w, 's> = Query<
         Without<CombatIntelBarText>,
         Without<CombatRoundLogText>,
         Without<CombatFeedbackText>,
+        Without<CombatCommandText>,
+        Without<CombatValidateButtonLabel>,
     ),
 >;
 
@@ -831,6 +915,8 @@ type EnemyStackTextQuery<'w, 's> = Query<
         Without<CombatIntelBarText>,
         Without<CombatRoundLogText>,
         Without<CombatFeedbackText>,
+        Without<CombatCommandText>,
+        Without<CombatValidateButtonLabel>,
     ),
 >;
 
@@ -844,6 +930,7 @@ type EnemyStackIconQuery<'w, 's> =
 fn update_combat_columns(
     ui: Res<CombatUiState>,
     simulation: Res<SimulationResource>,
+    entity_visuals: Res<EntityVisualCatalog>,
     mut header_texts: CombatHeaderTextQuery,
     mut intel_texts: CombatIntelBarTextQuery,
     mut allied_rows: AlliedStackRowQuery,
@@ -919,7 +1006,11 @@ fn update_combat_columns(
     }
     for (marker, mut icon) in &mut allied_icons {
         if let Some(stack) = allied.get(marker.0) {
-            icon.color = allied_stack_icon_color(stack.tactical_role);
+            icon.image = match stack.identity {
+                CombatUnitRef::Ship(craftable) => entity_visuals.ship(craftable),
+                CombatUnitRef::PlanetaryForce(id) => entity_visuals.force(id),
+            };
+            icon.color = Color::WHITE;
         }
     }
 
@@ -940,11 +1031,13 @@ fn update_combat_columns(
     }
     for (marker, mut icon) in &mut enemy_icons {
         if let Some(stack) = enemy.stacks.get(marker.0) {
-            icon.color = enemy_stack_icon_color(stack.target_class);
+            icon.image = entity_visuals.enemy_contact(stack);
+            icon.color = Color::WHITE;
         }
     }
 }
 
+#[allow(dead_code)]
 fn allied_stack_icon_color(role: CombatTacticalRole) -> Color {
     match role {
         CombatTacticalRole::Line => Color::srgb(0.45, 0.92, 0.78),
@@ -952,6 +1045,7 @@ fn allied_stack_icon_color(role: CombatTacticalRole) -> Color {
     }
 }
 
+#[allow(dead_code)]
 fn enemy_stack_icon_color(target_class: Option<CombatTargetClass>) -> Color {
     match target_class {
         None => Color::srgba(0.60, 0.60, 0.64, 0.70),
@@ -1007,6 +1101,8 @@ fn resume_combat_queue_after_reload(
     if ui.current.is_none() {
         ui.current = ui.queue.first().copied();
         ui.phase = CombatUiPhase::AwaitingDoctrine;
+        ui.chosen_doctrine = None;
+        ui.selected_intervention = None;
     }
 }
 
@@ -1029,6 +1125,8 @@ fn capture_combat_events(mut ui: ResMut<CombatUiState>, simulation: Res<Simulati
                 if ui.current.is_none() {
                     ui.current = Some(mission_id);
                     ui.phase = CombatUiPhase::AwaitingDoctrine;
+                    ui.chosen_doctrine = None;
+                    ui.selected_intervention = None;
                 }
             }
             GameEventKind::CombatRoundResolved(CombatRoundResolved { mission_id, .. }) => {
@@ -1039,11 +1137,27 @@ fn capture_combat_events(mut ui: ResMut<CombatUiState>, simulation: Res<Simulati
                     .simulation()
                     .state()
                     .pending_combat(mission_id)
-                    .and_then(|pending| round_history(pending).last())
-                    .map(combat_round_summary);
+                    .and_then(|pending| {
+                        round_history(pending)
+                            .last()
+                            .map(|record| combat_round_summary(record, pending))
+                    });
                 ui.phase = CombatUiPhase::RoundPause;
                 ui.round_pause_timer = Timer::from_seconds(1.5, TimerMode::Once);
+                ui.chosen_doctrine = None;
+                ui.selected_intervention = None;
+                ui.retreat_armed_until = None;
                 ui.feedback.clear();
+            }
+            GameEventKind::CombatPlanConfirmed(CombatPlanConfirmed { mission_id })
+                if ui.current == Some(mission_id) =>
+            {
+                ui.feedback = "Plan de bataille confirmé.".to_string();
+            }
+            GameEventKind::CombatPlanRejected(CombatPlanRejected { mission_id, error })
+                if ui.current == Some(mission_id) =>
+            {
+                ui.feedback = combat_command_error_text(error);
             }
             GameEventKind::CombatCompleted(CombatCompleted { mission_id, .. }) => {
                 ui.queue.retain(|id| *id != mission_id);
@@ -1051,6 +1165,9 @@ fn capture_combat_events(mut ui: ResMut<CombatUiState>, simulation: Res<Simulati
                     continue;
                 }
                 ui.phase = CombatUiPhase::FinalReport;
+                ui.chosen_doctrine = None;
+                ui.selected_intervention = None;
+                ui.retreat_armed_until = None;
             }
             GameEventKind::CombatDoctrineRejected(CombatDoctrineRejected {
                 mission_id,
@@ -1098,12 +1215,112 @@ fn combat_command_error_text(error: CombatCommandError) -> String {
         CombatCommandError::StaleRound { expected, found } => {
             format!("Ce round ({found}) a déjà été résolu — round attendu : {expected}.")
         }
+        CombatCommandError::InvalidPlan(error) => match error {
+            CombatPlanValidationError::EmptyPlan => "Le plan de bataille est vide.".to_string(),
+            CombatPlanValidationError::TooManyGroups { maximum, .. } => {
+                format!("Le plan dépasse la limite de {maximum} groupes.")
+            }
+            CombatPlanValidationError::DuplicateGroup(_) => {
+                "Un groupe tactique est défini plusieurs fois.".to_string()
+            }
+            CombatPlanValidationError::EmptyGroup(_) => {
+                "Un groupe tactique ne contient aucune unité.".to_string()
+            }
+            CombatPlanValidationError::UnknownStack(_) => {
+                "Le plan référence une unité inconnue.".to_string()
+            }
+            CombatPlanValidationError::DuplicateStack(_) => {
+                "Une unité est assignée à plusieurs groupes.".to_string()
+            }
+            CombatPlanValidationError::MissingStack(_) => {
+                "Toutes les unités opérationnelles doivent être assignées.".to_string()
+            }
+        },
+        CombatCommandError::InsufficientCommandPoints {
+            required,
+            available,
+        } => format!(
+            "Points de commandement insuffisants : {required} requis, {available} disponible(s)."
+        ),
+        CombatCommandError::InvalidIntervention(error) => match error {
+            CombatInterventionError::InvalidFocusPriority => {
+                "Cette priorité de tir ne peut pas être concentrée.".to_string()
+            }
+            CombatInterventionError::NoActiveGroup => {
+                "Aucun groupe actif ne peut recevoir cet ordre.".to_string()
+            }
+            CombatInterventionError::ReserveGroupMissing(_) => {
+                "Ce groupe de réserve n'existe pas dans le plan.".to_string()
+            }
+            CombatInterventionError::ReserveGroupEmpty(_) => {
+                "Ce groupe de réserve ne contient aucune unité.".to_string()
+            }
+            CombatInterventionError::GroupIsNotReserve(_) => {
+                "Ce groupe est déjà engagé.".to_string()
+            }
+        },
     }
+}
+
+fn primary_target_from_exchanges(
+    record: &CombatRoundRecord,
+    group_id: CombatGroupPlanId,
+) -> Option<galactic_sim::CombatStackId> {
+    record
+        .attacker_exchanges
+        .iter()
+        .filter(|exchange| exchange.source_group == group_id)
+        .max_by_key(|exchange| exchange.allocated_damage)
+        .map(|exchange| exchange.target)
+}
+
+fn group_damage_from_exchanges(record: &CombatRoundRecord, group_id: CombatGroupPlanId) -> u128 {
+    record
+        .attacker_exchanges
+        .iter()
+        .filter(|exchange| exchange.source_group == group_id)
+        .fold(0, |total, exchange| {
+            total.saturating_add(exchange.allocated_damage)
+        })
+}
+
+fn combat_round_exchange_summary(
+    record: &CombatRoundRecord,
+    pending: &PendingCombat,
+) -> Vec<String> {
+    let enemy = enemy_intel(pending);
+    let mut lines = Vec::new();
+    for group_id in CombatGroupPlanId::ALL {
+        let damage = group_damage_from_exchanges(record, group_id);
+        if damage > 0 {
+            let target = primary_target_from_exchanges(record, group_id)
+                .and_then(|stack_id| enemy.stacks.iter().find(|stack| stack.stack_id == stack_id))
+                .map(battlefield::enemy_contact_short_label)
+                .unwrap_or_else(|| "contact".to_string());
+            lines.push(format!(
+                "{} a engagé {target} ({})",
+                group_panel::group_label(group_id),
+                battlefield::compact_damage(damage)
+            ));
+            continue;
+        }
+        if pending
+            .plan()
+            .and_then(|plan| plan.groups.iter().find(|group| group.id == group_id))
+            .is_some_and(|group| group.role == CombatGroupRole::Reserve && !group.stacks.is_empty())
+        {
+            lines.push(format!(
+                "{} est resté en réserve.",
+                group_panel::group_label(group_id)
+            ));
+        }
+    }
+    lines
 }
 
 /// Doc §15: "un journal textuel doit reprendre les événements essentiels" —
 /// summarizes the round just played from its `CombatRoundRecord`.
-fn combat_round_summary(record: &CombatRoundRecord) -> String {
+fn combat_round_summary(record: &CombatRoundRecord, pending: &PendingCombat) -> String {
     let mut lines = vec![format!(
         "Round {} — {} : dégâts infligés {}, dégâts subis {}.",
         record.round,
@@ -1111,6 +1328,7 @@ fn combat_round_summary(record: &CombatRoundRecord) -> String {
         record.attacker_damage,
         record.defender_damage,
     )];
+    lines.extend(combat_round_exchange_summary(record, pending));
     if !record.attacker_losses.is_empty() || !record.defender_losses.is_empty() {
         lines.push(format!(
             "Pertes : {} groupe(s) allié(s) touché(s), {} groupe(s) ennemi(s) touché(s).",
@@ -1145,6 +1363,87 @@ fn tick_round_pause(
     }
 }
 
+fn persistent_doctrine(pending: &PendingCombat) -> CombatDoctrineId {
+    pending
+        .plan()
+        .map(|plan| plan.doctrine)
+        .unwrap_or(CombatDoctrineId::BalancedEngagement)
+}
+
+fn doctrine_change_cost(pending: &PendingCombat, doctrine: Option<CombatDoctrineId>) -> u8 {
+    let Some(doctrine) = doctrine else {
+        return 0;
+    };
+    if persistent_doctrine(pending) == doctrine {
+        0
+    } else {
+        combat_rules().command().change_doctrine_cost()
+    }
+}
+
+fn intervention_command_cost(intervention: CombatIntervention) -> u8 {
+    match intervention {
+        CombatIntervention::FocusFire { .. } => combat_rules().command().focus_fire_cost(),
+        CombatIntervention::CommitReserve { .. } => combat_rules().command().commit_reserve_cost(),
+    }
+}
+
+fn round_command_cost(
+    pending: &PendingCombat,
+    doctrine: Option<CombatDoctrineId>,
+    intervention: Option<CombatIntervention>,
+) -> u8 {
+    let mut cost = doctrine_change_cost(pending, doctrine);
+    if let Some(intervention) = intervention {
+        cost = cost.saturating_add(intervention_command_cost(intervention));
+    }
+    cost
+}
+
+fn reserve_group_is_available(pending: &PendingCombat, group_id: CombatGroupPlanId) -> bool {
+    pending
+        .plan()
+        .and_then(|plan| plan.groups.iter().find(|group| group.id == group_id))
+        .is_some_and(|group| group.role == CombatGroupRole::Reserve && !group.stacks.is_empty())
+}
+
+fn focus_fire_is_available(pending: &PendingCombat, priority: CombatTargetPriority) -> bool {
+    priority != CombatTargetPriority::Any
+        && pending.plan().is_some_and(|plan| {
+            plan.groups
+                .iter()
+                .any(|group| group.role != CombatGroupRole::Reserve && !group.stacks.is_empty())
+        })
+}
+
+fn intervention_is_available(
+    pending: &PendingCombat,
+    selected_doctrine: Option<CombatDoctrineId>,
+    intervention: CombatIntervention,
+) -> bool {
+    let intervention_is_valid = match intervention {
+        CombatIntervention::FocusFire { priority } => focus_fire_is_available(pending, priority),
+        CombatIntervention::CommitReserve { group_id } => {
+            reserve_group_is_available(pending, group_id)
+        }
+    };
+    intervention_is_valid
+        && round_command_cost(pending, selected_doctrine, Some(intervention))
+            <= pending.command_points_remaining()
+}
+
+fn action_intervention(action: CombatUiAction) -> Option<CombatIntervention> {
+    match action {
+        CombatUiAction::SelectFocusPriority(priority) => {
+            Some(CombatIntervention::FocusFire { priority })
+        }
+        CombatUiAction::CommitReserve(group_id) => {
+            Some(CombatIntervention::CommitReserve { group_id })
+        }
+        _ => None,
+    }
+}
+
 fn apply_combat_action(
     action: CombatUiAction,
     simulation: &mut SimulationResource,
@@ -1161,30 +1460,85 @@ fn apply_combat_action(
 
     match action {
         CombatUiAction::SelectDoctrine(doctrine) => {
+            let Some(mission_id) = ui.current else {
+                return;
+            };
+            let Some(pending) = simulation.simulation().state().pending_combat(mission_id) else {
+                return;
+            };
+            if round_command_cost(pending, Some(doctrine), ui.selected_intervention)
+                > pending.command_points_remaining()
+            {
+                return;
+            }
             ui.chosen_doctrine = Some(doctrine);
+            if let Some(intervention) = ui.selected_intervention
+                && !intervention_is_available(pending, ui.chosen_doctrine, intervention)
+            {
+                ui.selected_intervention = None;
+            }
+            ui.retreat_armed_until = None;
+        }
+        CombatUiAction::SelectFocusPriority(priority) => {
+            let Some(mission_id) = ui.current else {
+                return;
+            };
+            let Some(pending) = simulation.simulation().state().pending_combat(mission_id) else {
+                return;
+            };
+            let intervention = CombatIntervention::FocusFire { priority };
+            if !intervention_is_available(pending, ui.chosen_doctrine, intervention) {
+                return;
+            }
+            ui.selected_intervention = if ui.selected_intervention == Some(intervention) {
+                None
+            } else {
+                Some(intervention)
+            };
+            ui.retreat_armed_until = None;
+        }
+        CombatUiAction::CommitReserve(group_id) => {
+            let Some(mission_id) = ui.current else {
+                return;
+            };
+            let Some(pending) = simulation.simulation().state().pending_combat(mission_id) else {
+                return;
+            };
+            let intervention = CombatIntervention::CommitReserve { group_id };
+            if !intervention_is_available(pending, ui.chosen_doctrine, intervention) {
+                return;
+            }
+            ui.selected_intervention = if ui.selected_intervention == Some(intervention) {
+                None
+            } else {
+                Some(intervention)
+            };
             ui.retreat_armed_until = None;
         }
         CombatUiAction::Validate => {
             let Some(mission_id) = ui.current else {
                 return;
             };
-            let Some(doctrine) = ui.chosen_doctrine else {
-                ui.feedback = "Choisissez une doctrine avant de valider.".to_string();
-                return;
-            };
             let Some(pending) = simulation.simulation().state().pending_combat(mission_id) else {
                 return;
             };
+            if ui.selected_intervention.is_some_and(|intervention| {
+                !intervention_is_available(pending, ui.chosen_doctrine, intervention)
+            }) || round_command_cost(pending, ui.chosen_doctrine, ui.selected_intervention)
+                > pending.command_points_remaining()
+            {
+                return;
+            }
             let round = pending.round() + 1;
             apply_simulation_command(
                 simulation,
                 GameAction::ChooseCombatDoctrine {
                     mission_id,
                     round,
-                    doctrine,
+                    doctrine: ui.chosen_doctrine,
+                    intervention: ui.selected_intervention,
                 },
             );
-            ui.chosen_doctrine = None;
         }
         CombatUiAction::Retreat => {
             let Some(mission_id) = ui.current else {
@@ -1217,6 +1571,7 @@ fn apply_combat_action(
                 ui.current = None;
             }
             ui.chosen_doctrine = None;
+            ui.selected_intervention = None;
             ui.retreat_armed_until = None;
             ui.feedback.clear();
             ui.last_round_summary = None;
@@ -1246,6 +1601,7 @@ fn cycle_combat_queue(ui: &mut CombatUiState, reverse: bool) {
     ui.current = Some(ui.queue[next_index]);
     ui.phase = CombatUiPhase::AwaitingDoctrine;
     ui.chosen_doctrine = None;
+    ui.selected_intervention = None;
     ui.retreat_armed_until = None;
     ui.feedback.clear();
     ui.last_round_summary = None;
@@ -1344,9 +1700,11 @@ type DoctrineExtraTextQuery<'w, 's> = Query<
         Without<CombatIntelBarText>,
         Without<CombatRoundLogText>,
         Without<CombatFeedbackText>,
+        Without<CombatCommandText>,
         Without<AlliedStackText>,
         Without<EnemyStackText>,
         Without<RetreatButtonLabel>,
+        Without<CombatValidateButtonLabel>,
     ),
 >;
 
@@ -1356,24 +1714,26 @@ fn update_doctrine_cards(
     mut cards: DoctrineCardStyleQuery,
     mut extra_texts: DoctrineExtraTextQuery,
 ) {
-    let available = ui.phase == CombatUiPhase::AwaitingDoctrine;
+    let mission_id = ui.current;
+    let pending = mission_id.and_then(|id| simulation.simulation().state().pending_combat(id));
     for (button, interaction, mut background, mut outline) in &mut cards {
         let CombatUiAction::SelectDoctrine(doctrine) = button.0 else {
             continue;
         };
-        let selected = ui.chosen_doctrine == Some(doctrine);
+        let available = ui.phase == CombatUiPhase::AwaitingDoctrine
+            && pending.is_some_and(|pending| {
+                round_command_cost(pending, Some(doctrine), ui.selected_intervention)
+                    <= pending.command_points_remaining()
+            });
+        let selected = ui
+            .chosen_doctrine
+            .or_else(|| pending.map(persistent_doctrine))
+            == Some(doctrine);
         background.0 = action_button_color(available, selected, interaction);
         outline.color = action_button_outline(available, selected, interaction);
     }
 
-    let mission_id = ui.current;
-    let enemy_view = mission_id.and_then(|id| {
-        simulation
-            .simulation()
-            .state()
-            .pending_combat(id)
-            .map(enemy_intel)
-    });
+    let enemy_view = pending.map(enemy_intel);
 
     for (marker, mut text) in &mut extra_texts {
         let Some(id) = mission_id else {
@@ -1387,8 +1747,8 @@ fn update_doctrine_cards(
         let mut lines = Vec::new();
         if let Some(preview) = repetition_penalty_preview(pending, marker.0, combat_rules()) {
             lines.push(format!(
-                "Doctrine répétée : dégâts subis ×{:.2} ce round.",
-                preview.damage_taken_multiplier_per_mille as f32 / 1000.0
+                "Doctrine répétée : dégâts sortants ×{:.2} ce round.",
+                preview.outgoing_damage_multiplier_per_mille as f32 / 1000.0
             ));
         }
         if let Some(hint) = enemy_view
@@ -1398,6 +1758,145 @@ fn update_doctrine_cards(
             lines.push(hint.to_string());
         }
         text.0 = lines.join("\n");
+    }
+}
+
+type CombatCommandTextQuery<'w, 's> = Query<
+    'w,
+    's,
+    &'static mut Text,
+    (
+        With<CombatCommandText>,
+        Without<CombatHeaderText>,
+        Without<CombatIntelBarText>,
+        Without<CombatRoundLogText>,
+        Without<CombatFeedbackText>,
+        Without<AlliedStackText>,
+        Without<EnemyStackText>,
+        Without<DoctrineExtraText>,
+        Without<RetreatButtonLabel>,
+        Without<CombatValidateButtonLabel>,
+    ),
+>;
+
+type CombatValidateButtonLabelQuery<'w, 's> = Query<
+    'w,
+    's,
+    &'static mut Text,
+    (
+        With<CombatValidateButtonLabel>,
+        Without<CombatHeaderText>,
+        Without<CombatIntelBarText>,
+        Without<CombatRoundLogText>,
+        Without<CombatFeedbackText>,
+        Without<CombatCommandText>,
+        Without<AlliedStackText>,
+        Without<EnemyStackText>,
+        Without<DoctrineExtraText>,
+        Without<RetreatButtonLabel>,
+    ),
+>;
+
+fn command_points_meter(available: u8, maximum: u8) -> String {
+    let mut meter = String::new();
+    for index in 0..maximum {
+        if index > 0 {
+            meter.push(' ');
+        }
+        meter.push(if index < available { '●' } else { '○' });
+    }
+    meter
+}
+
+fn target_priority_order_label(priority: CombatTargetPriority) -> &'static str {
+    match priority {
+        CombatTargetPriority::Any => "cible libre",
+        CombatTargetPriority::Light => "unités légères",
+        CombatTargetPriority::Medium => "unités moyennes",
+        CombatTargetPriority::Heavy => "unités lourdes",
+        CombatTargetPriority::Damaged => "unités endommagées",
+        CombatTargetPriority::Support => "unités de soutien",
+    }
+}
+
+fn intervention_order_label(intervention: CombatIntervention) -> String {
+    match intervention {
+        CombatIntervention::FocusFire { priority } => {
+            format!(
+                "tir concentré sur {}",
+                target_priority_order_label(priority)
+            )
+        }
+        CombatIntervention::CommitReserve { group_id } => {
+            format!("engager {}", reserve_button_label(group_id).to_lowercase())
+        }
+    }
+}
+
+fn prepared_order_label(
+    pending: &PendingCombat,
+    doctrine: Option<CombatDoctrineId>,
+    intervention: Option<CombatIntervention>,
+) -> String {
+    let mut lines = Vec::new();
+    if let Some(doctrine) = doctrine
+        && doctrine != persistent_doctrine(pending)
+    {
+        lines.push(format!(
+            "doctrine {}",
+            doctrine_name(doctrine).to_lowercase()
+        ));
+    }
+    if let Some(intervention) = intervention {
+        lines.push(intervention_order_label(intervention));
+    }
+    if lines.is_empty() {
+        "continuer le plan actuel".to_string()
+    } else {
+        lines.join(" + ")
+    }
+}
+
+fn update_command_panel(
+    ui: Res<CombatUiState>,
+    simulation: Res<SimulationResource>,
+    mut command_texts: CombatCommandTextQuery,
+    mut validate_labels: CombatValidateButtonLabelQuery,
+) {
+    let pending = ui
+        .current
+        .and_then(|mission_id| simulation.simulation().state().pending_combat(mission_id));
+    let Some(pending) = pending else {
+        if let Ok(mut text) = command_texts.single_mut() {
+            text.0.clear();
+        }
+        return;
+    };
+
+    let cost = round_command_cost(pending, ui.chosen_doctrine, ui.selected_intervention);
+    if let Ok(mut text) = command_texts.single_mut() {
+        let maximum = pending.command_points_maximum();
+        let available = pending.command_points_remaining();
+        let meter = command_points_meter(available, maximum);
+        let prepared = prepared_order_label(pending, ui.chosen_doctrine, ui.selected_intervention);
+        let cost_label = if cost == 0 {
+            "gratuit".to_string()
+        } else {
+            format!("-{cost} PC")
+        };
+        text.0 = format!(
+            "COMMANDEMENT : {meter}  {available}/{maximum} PC\nOrdre : {prepared} ({cost_label})"
+        );
+    }
+
+    if let Ok(mut text) = validate_labels.single_mut() {
+        text.0 = if cost > 0 {
+            "Exécuter l'ordre [Entrée]".to_string()
+        } else if pending.round() == 0 {
+            "Lancer l'assaut [Entrée]".to_string()
+        } else {
+            "Continuer le plan [Entrée]".to_string()
+        };
     }
 }
 
@@ -1425,11 +1924,14 @@ type RetreatButtonLabelQuery<'w, 's> = Query<
         Without<AlliedStackText>,
         Without<EnemyStackText>,
         Without<DoctrineExtraText>,
+        Without<CombatCommandText>,
+        Without<CombatValidateButtonLabel>,
     ),
 >;
 
 fn update_action_buttons(
     ui: Res<CombatUiState>,
+    simulation: Res<SimulationResource>,
     time: Res<Time>,
     mut buttons: CombatActionButtonStyleQuery,
     mut retreat_label: RetreatButtonLabelQuery,
@@ -1437,13 +1939,38 @@ fn update_action_buttons(
     let retreat_armed = ui
         .retreat_armed_until
         .is_some_and(|deadline| time.elapsed() <= deadline);
+    let pending = ui
+        .current
+        .and_then(|mission_id| simulation.simulation().state().pending_combat(mission_id));
+    let round_command_available = pending.is_some_and(|pending| {
+        let intervention_available = match ui.selected_intervention {
+            None => true,
+            Some(intervention) => {
+                intervention_is_available(pending, ui.chosen_doctrine, intervention)
+            }
+        };
+        intervention_available
+            && round_command_cost(pending, ui.chosen_doctrine, ui.selected_intervention)
+                <= pending.command_points_remaining()
+    });
 
     for (button, interaction, mut background, mut outline) in &mut buttons {
         let (available, active) = match button.0 {
             CombatUiAction::SelectDoctrine(_) => continue,
+            CombatUiAction::SelectFocusPriority(_) | CombatUiAction::CommitReserve(_) => {
+                let intervention = action_intervention(button.0)
+                    .expect("intervention actions always map to an intervention");
+                (
+                    ui.phase == CombatUiPhase::AwaitingDoctrine
+                        && pending.is_some_and(|pending| {
+                            intervention_is_available(pending, ui.chosen_doctrine, intervention)
+                        }),
+                    ui.selected_intervention == Some(intervention),
+                )
+            }
             CombatUiAction::Validate => (
-                ui.phase == CombatUiPhase::AwaitingDoctrine,
-                ui.chosen_doctrine.is_some(),
+                ui.phase == CombatUiPhase::AwaitingDoctrine && round_command_available,
+                true,
             ),
             CombatUiAction::Retreat => (ui.phase == CombatUiPhase::AwaitingDoctrine, retreat_armed),
             CombatUiAction::AutoResolve => (ui.phase == CombatUiPhase::AwaitingDoctrine, false),
@@ -1475,8 +2002,12 @@ type CombatRoundLogTextQuery<'w, 's> = Query<
         Without<CombatFeedbackText>,
         Without<CombatHeaderText>,
         Without<CombatIntelBarText>,
+        Without<CombatCommandText>,
         Without<AlliedStackText>,
         Without<EnemyStackText>,
+        Without<DoctrineExtraText>,
+        Without<RetreatButtonLabel>,
+        Without<CombatValidateButtonLabel>,
     ),
 >;
 
@@ -1489,8 +2020,12 @@ type CombatFeedbackTextQuery<'w, 's> = Query<
         Without<CombatRoundLogText>,
         Without<CombatHeaderText>,
         Without<CombatIntelBarText>,
+        Without<CombatCommandText>,
         Without<AlliedStackText>,
         Without<EnemyStackText>,
+        Without<DoctrineExtraText>,
+        Without<RetreatButtonLabel>,
+        Without<CombatValidateButtonLabel>,
     ),
 >;
 
@@ -1592,7 +2127,13 @@ fn update_final_report_visibility(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
+    use bevy::ecs::system::RunSystemOnce;
     use galactic_domain::{FactionId, MissionId};
+    use galactic_sim::{
+        CombatGroupPlanId, CombatGroupRole, CombatSide, CombatStackExchange, CombatStackLoss,
+    };
 
     use super::*;
 
@@ -1635,6 +2176,9 @@ mod tests {
             queue: vec![first, second],
             current: Some(first),
             chosen_doctrine: Some(CombatDoctrineId::ConcentratedAssault),
+            selected_intervention: Some(CombatIntervention::FocusFire {
+                priority: CombatTargetPriority::Heavy,
+            }),
             retreat_armed_until: Some(Duration::from_secs(1)),
             feedback: "une erreur précédente".to_string(),
             phase: CombatUiPhase::RoundPause,
@@ -1646,6 +2190,7 @@ mod tests {
         assert_eq!(ui.current, Some(second));
         assert_eq!(ui.phase, CombatUiPhase::AwaitingDoctrine);
         assert_eq!(ui.chosen_doctrine, None);
+        assert_eq!(ui.selected_intervention, None);
         assert_eq!(ui.retreat_armed_until, None);
         assert!(ui.feedback.is_empty());
     }
@@ -1714,6 +2259,76 @@ mod tests {
             }),
             "Ce round (1) a déjà été résolu — round attendu : 2."
         );
+        assert_eq!(
+            combat_command_error_text(CombatCommandError::InvalidPlan(
+                CombatPlanValidationError::EmptyPlan
+            )),
+            "Le plan de bataille est vide."
+        );
+        assert_eq!(
+            combat_command_error_text(CombatCommandError::InsufficientCommandPoints {
+                required: 2,
+                available: 1,
+            }),
+            "Points de commandement insuffisants : 2 requis, 1 disponible(s)."
+        );
+        assert_eq!(
+            combat_command_error_text(CombatCommandError::InvalidIntervention(
+                CombatInterventionError::GroupIsNotReserve(CombatGroupPlanId::Alpha)
+            )),
+            "Ce groupe est déjà engagé."
+        );
+    }
+
+    #[test]
+    fn command_cost_helpers_match_the_current_pending_plan() {
+        let simulation = simulation_with_pending_combat();
+        let pending = &simulation.state().pending_combats[0];
+
+        assert_eq!(round_command_cost(pending, None, None), 0);
+        assert_eq!(
+            round_command_cost(pending, Some(CombatDoctrineId::ConcentratedAssault), None),
+            combat_rules().command().change_doctrine_cost()
+        );
+        assert_eq!(
+            round_command_cost(
+                pending,
+                None,
+                Some(CombatIntervention::FocusFire {
+                    priority: CombatTargetPriority::Heavy,
+                })
+            ),
+            combat_rules().command().focus_fire_cost()
+        );
+        assert!(intervention_is_available(
+            pending,
+            None,
+            CombatIntervention::FocusFire {
+                priority: CombatTargetPriority::Heavy,
+            }
+        ));
+    }
+
+    #[test]
+    fn space_skips_round_pause_animation() {
+        let mut world = World::new();
+        world.insert_resource(Time::<()>::default());
+        let mut keyboard = ButtonInput::<KeyCode>::default();
+        keyboard.press(KeyCode::Space);
+        world.insert_resource(keyboard);
+        world.insert_resource(CombatUiState {
+            phase: CombatUiPhase::RoundPause,
+            ..Default::default()
+        });
+
+        world
+            .run_system_once(tick_round_pause)
+            .expect("tick_round_pause runs");
+
+        assert_eq!(
+            world.resource::<CombatUiState>().phase,
+            CombatUiPhase::AwaitingDoctrine
+        );
     }
 
     /// Ported from the deleted `presentation::combat_autopilot`'s own test
@@ -1722,6 +2337,10 @@ mod tests {
     /// outpost) now exercises the real screen's reload-resume path instead
     /// of the temporary auto-pilot it used to prove.
     fn simulation_with_pending_combat() -> galactic_sim::Simulation {
+        simulation_with_pending_combat_using(3)
+    }
+
+    fn simulation_with_pending_combat_using(ship_count: u64) -> galactic_sim::Simulation {
         use galactic_domain::{Owner, UniverseConfig};
         use galactic_sim::{
             BuildingKind, CraftableId, KnowledgeLevel, ResearchState, Simulation, TechnologyId,
@@ -1791,7 +2410,7 @@ mod tests {
             TechnologyId::PROPULSION,
             TechnologyId::PLANETARY_ANALYSIS,
         ]);
-        for _ in 0..3 {
+        for _ in 0..ship_count {
             simulation.apply_player_action(GameAction::QueueCraft {
                 colony_id,
                 craftable: CraftableId::FRIGATE_BULWARK,
@@ -1809,6 +2428,468 @@ mod tests {
         simulation.advance(std::time::Duration::from_secs(120));
         assert_eq!(simulation.state().pending_combats.len(), 1);
         simulation
+    }
+
+    #[test]
+    fn combat_plan_draft_covers_each_live_allied_stack_once_and_can_reassign() {
+        let simulation = simulation_with_pending_combat();
+        let pending = &simulation.state().pending_combats[0];
+        let live_stack_ids = allied_stacks(pending)
+            .iter()
+            .filter(|stack| stack.surviving_quantity > 0)
+            .map(|stack| stack.stack_id)
+            .collect::<BTreeSet<_>>();
+
+        let mut draft = group_panel::CombatPlanDraft::from_pending(pending);
+        let plan = draft.to_plan();
+        let planned_stack_ids = plan
+            .groups
+            .iter()
+            .flat_map(|group| group.stacks.iter().copied())
+            .collect::<Vec<_>>();
+
+        assert_eq!(planned_stack_ids.len(), live_stack_ids.len());
+        assert_eq!(
+            planned_stack_ids.iter().copied().collect::<BTreeSet<_>>(),
+            live_stack_ids
+        );
+
+        let reassigned = *live_stack_ids
+            .iter()
+            .next()
+            .expect("the fixture launches at least one allied combat stack");
+        draft.assign_stack(reassigned, CombatGroupPlanId::Beta);
+
+        assert_eq!(
+            draft.selected_group(reassigned),
+            Some(CombatGroupPlanId::Beta)
+        );
+        let reassigned_plan = draft.to_plan();
+        assert!(
+            reassigned_plan
+                .groups
+                .iter()
+                .any(|group| group.id == CombatGroupPlanId::Beta
+                    && group.stacks.contains(&reassigned))
+        );
+        assert_eq!(
+            reassigned_plan
+                .groups
+                .iter()
+                .flat_map(|group| group.stacks.iter().copied())
+                .collect::<BTreeSet<_>>(),
+            live_stack_ids
+        );
+    }
+
+    #[test]
+    fn confirming_combat_plan_draft_updates_the_pending_combat_plan() {
+        let simulation = simulation_with_pending_combat();
+        let mission_id = simulation.state().pending_combats[0].mission_id;
+        let mut simulation = SimulationResource {
+            simulation,
+            pending_events: Vec::new(),
+        };
+        let mut ui = CombatUiState {
+            current: Some(mission_id),
+            phase: CombatUiPhase::AwaitingDoctrine,
+            ..Default::default()
+        };
+        let mut draft_state = group_panel::CombatPlanDraftState::default();
+        let pending = simulation
+            .simulation()
+            .state()
+            .pending_combat(mission_id)
+            .expect("the combat fixture is still pending");
+        draft_state.rebuild(mission_id, pending);
+        let expected = draft_state
+            .draft()
+            .expect("rebuilding from a pending combat creates a draft")
+            .to_plan();
+
+        group_panel::confirm_current_draft(&mut simulation, &mut ui, &mut draft_state);
+
+        let pending = simulation
+            .simulation()
+            .state()
+            .pending_combat(mission_id)
+            .expect("confirming a plan does not resolve the combat");
+        assert_eq!(pending.plan(), Some(&expected));
+        assert!(simulation.pending_events.iter().any(|event| matches!(
+            event.kind,
+            GameEventKind::CombatPlanConfirmed(CombatPlanConfirmed { mission_id: id })
+                if id == mission_id
+        )));
+    }
+
+    #[test]
+    fn combat_plan_panel_updates_without_a_query_conflict() {
+        let simulation = simulation_with_pending_combat();
+        let mission_id = simulation.state().pending_combats[0].mission_id;
+
+        let mut app = bevy::app::App::new();
+        app.init_resource::<Assets<Image>>()
+            .init_resource::<crate::presentation::icons::IconAssets>()
+            .init_resource::<group_panel::CombatPlanDraftState>()
+            .insert_resource(SimulationResource {
+                simulation,
+                pending_events: Vec::new(),
+            })
+            .insert_resource(CombatUiState {
+                current: Some(mission_id),
+                phase: CombatUiPhase::AwaitingDoctrine,
+                ..Default::default()
+            })
+            .add_systems(bevy::app::Startup, spawn_combat_screen)
+            .add_systems(
+                bevy::app::Update,
+                (
+                    group_panel::sync_combat_plan_draft,
+                    group_panel::update_combat_plan_panel,
+                )
+                    .chain(),
+            );
+
+        app.update();
+
+        let world = app.world_mut();
+        let draft = world.resource::<group_panel::CombatPlanDraftState>();
+        assert!(draft.draft().is_some());
+
+        let mut texts = world.query::<&Text>();
+        let rendered_text = texts
+            .iter(world)
+            .map(|text| text.0.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered_text.contains("Alpha"));
+        assert!(rendered_text.contains("PLAN DE BATAILLE"));
+    }
+
+    #[test]
+    fn command_panel_updates_without_a_query_conflict() {
+        let simulation = simulation_with_pending_combat();
+        let mission_id = simulation.state().pending_combats[0].mission_id;
+
+        let mut app = bevy::app::App::new();
+        app.init_resource::<Assets<Image>>()
+            .init_resource::<crate::presentation::icons::IconAssets>()
+            .insert_resource(SimulationResource {
+                simulation,
+                pending_events: Vec::new(),
+            })
+            .insert_resource(CombatUiState {
+                current: Some(mission_id),
+                phase: CombatUiPhase::AwaitingDoctrine,
+                ..Default::default()
+            })
+            .add_systems(bevy::app::Startup, spawn_combat_screen)
+            .add_systems(bevy::app::Update, update_command_panel);
+
+        app.update();
+
+        let world = app.world_mut();
+        let mut texts = world.query::<&Text>();
+        let rendered_text = texts
+            .iter(world)
+            .map(|text| text.0.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let starting_points = combat_rules().command().starting_points();
+        assert!(rendered_text.contains("COMMANDEMENT"));
+        assert!(rendered_text.contains(&format!("{starting_points}/{starting_points} PC")));
+        assert!(rendered_text.contains("Lancer l'assaut"));
+    }
+
+    fn width_after_root_padding(window_width: f32) -> f32 {
+        window_width - COMBAT_ROOT_PADDING_PX * 2.0
+    }
+
+    fn width_budget_from_percent(parent_width: f32, percents: &[f32], gap_px: f32) -> f32 {
+        parent_width * percents.iter().sum::<f32>() / 100.0
+            + gap_px * percents.len().saturating_sub(1) as f32
+    }
+
+    #[test]
+    fn combat_layout_width_budgets_fit_720p_and_1080p() {
+        for width in [1280.0, 1920.0] {
+            let content_width = width_after_root_padding(width);
+            let body_width = width_budget_from_percent(
+                content_width,
+                &[
+                    COMBAT_SIDE_COLUMN_WIDTH_PERCENT,
+                    battlefield::BATTLEFIELD_PANEL_WIDTH_PERCENT,
+                    COMBAT_SIDE_COLUMN_WIDTH_PERCENT,
+                ],
+                COMBAT_BODY_COLUMN_GAP_PX,
+            );
+            assert!(
+                body_width <= content_width,
+                "combat body columns must fit at {width}px"
+            );
+
+            let battlefield_width =
+                content_width * battlefield::BATTLEFIELD_PANEL_WIDTH_PERCENT / 100.0;
+            let tactical_map_width = width_budget_from_percent(
+                battlefield_width,
+                &[
+                    battlefield::BATTLEFIELD_GROUP_LANE_WIDTH_PERCENT,
+                    battlefield::BATTLEFIELD_ORBIT_LANE_WIDTH_PERCENT,
+                    battlefield::BATTLEFIELD_CONTACT_LANE_WIDTH_PERCENT,
+                ],
+                battlefield::BATTLEFIELD_INNER_COLUMN_GAP_PX,
+            );
+            assert!(
+                tactical_map_width <= battlefield_width,
+                "battlefield lanes must fit at {width}px"
+            );
+
+            let plan_content_width = width_budget_from_percent(
+                content_width,
+                &[
+                    group_panel::STACK_ASSIGNMENT_WIDTH_PERCENT,
+                    group_panel::GROUP_CARDS_WIDTH_PERCENT,
+                ],
+                group_panel::COMBAT_PLAN_CONTENT_COLUMN_GAP_PX,
+            );
+            assert!(
+                plan_content_width <= content_width,
+                "plan assignment and group cards must fit at {width}px"
+            );
+
+            let group_cards_width = content_width * group_panel::GROUP_CARDS_WIDTH_PERCENT / 100.0;
+            let group_card_budget = width_budget_from_percent(
+                group_cards_width,
+                &[
+                    group_panel::DRAFT_GROUP_CARD_WIDTH_PERCENT,
+                    group_panel::DRAFT_GROUP_CARD_WIDTH_PERCENT,
+                    group_panel::DRAFT_GROUP_CARD_WIDTH_PERCENT,
+                ],
+                group_panel::DRAFT_GROUP_CARD_GAP_PX,
+            );
+            assert!(
+                group_card_budget <= group_cards_width,
+                "three group cards must fit at {width}px"
+            );
+
+            let doctrine_budget = COMBAT_DOCTRINE_CARD_MIN_WIDTH_PX
+                * ALL_COMBAT_DOCTRINES.len() as f32
+                + COMBAT_DOCTRINE_CARD_GAP_PX * ALL_COMBAT_DOCTRINES.len().saturating_sub(1) as f32;
+            assert!(
+                doctrine_budget <= content_width,
+                "all doctrine cards must fit on one row at {width}px"
+            );
+        }
+    }
+
+    #[test]
+    fn battlefield_trajectory_labels_match_group_roles() {
+        assert!(battlefield::trajectory_is_active(CombatGroupRole::Assault));
+        assert!(battlefield::trajectory_is_active(CombatGroupRole::Screen));
+        assert!(battlefield::trajectory_is_active(
+            CombatGroupRole::Bombardment
+        ));
+        assert!(!battlefield::trajectory_is_active(CombatGroupRole::Reserve));
+        assert!(battlefield::trajectory_label(CombatGroupRole::Assault).contains("attaque"));
+        assert!(battlefield::trajectory_label(CombatGroupRole::Reserve).contains("RÉSERVE"));
+    }
+
+    #[test]
+    fn battlefield_round_visual_summary_maps_exchanges_losses_and_reserves() {
+        let simulation = simulation_with_pending_combat();
+        let pending = &simulation.state().pending_combats[0];
+        let mut draft = group_panel::CombatPlanDraft::from_pending(pending);
+        let allied_stack = draft
+            .groups()
+            .find(|group| group.id == CombatGroupPlanId::Alpha)
+            .and_then(|group| group.stacks.first().copied())
+            .expect("the fixture has an allied stack in Alpha");
+        let enemy_stack = enemy_intel(pending)
+            .stacks
+            .first()
+            .expect("the fixture has an enemy contact")
+            .stack_id;
+
+        let record = CombatRoundRecord {
+            round: 1,
+            attacker_doctrine: CombatDoctrineId::BalancedEngagement,
+            defender_doctrine: CombatDoctrineId::DefensiveScreen,
+            attacker_damage: 120,
+            defender_damage: 25,
+            attacker_exchanges: vec![CombatStackExchange {
+                source_group: CombatGroupPlanId::Alpha,
+                target: enemy_stack,
+                allocated_damage: 120,
+            }],
+            defender_exchanges: vec![CombatStackExchange {
+                source_group: CombatGroupPlanId::Alpha,
+                target: allied_stack,
+                allocated_damage: 25,
+            }],
+            attacker_losses: vec![CombatStackLoss {
+                stack_id: allied_stack,
+                quantity: 1,
+            }],
+            defender_losses: vec![CombatStackLoss {
+                stack_id: enemy_stack,
+                quantity: 2,
+            }],
+            notable_events: vec![CombatRoundEvent::StackDestroyed {
+                side: CombatSide::Defender,
+                stack_id: enemy_stack,
+            }],
+            intel_after: pending.intel_percent(),
+        };
+
+        let summary = battlefield::round_visual_summary(&record, &draft);
+        let alpha = summary
+            .group(CombatGroupPlanId::Alpha)
+            .expect("Alpha appears in the visual summary");
+        assert_eq!(alpha.outgoing_damage, 120);
+        assert_eq!(alpha.incoming_damage, 25);
+        assert_eq!(alpha.lost_quantity, 1);
+        assert_eq!(alpha.primary_target, Some(enemy_stack));
+
+        let target = summary
+            .target(enemy_stack)
+            .expect("the enemy target appears in the visual summary");
+        assert_eq!(target.damage, 120);
+        assert_eq!(target.lost_quantity, 2);
+        assert!(target.destroyed);
+
+        draft.assign_stack(allied_stack, CombatGroupPlanId::Gamma);
+        let reserve_summary = battlefield::round_visual_summary(
+            &CombatRoundRecord {
+                attacker_exchanges: Vec::new(),
+                defender_exchanges: Vec::new(),
+                attacker_losses: Vec::new(),
+                defender_losses: Vec::new(),
+                notable_events: Vec::new(),
+                ..record
+            },
+            &draft,
+        );
+        assert!(
+            reserve_summary
+                .group(CombatGroupPlanId::Gamma)
+                .expect("Gamma appears in the visual summary")
+                .stayed_in_reserve
+        );
+    }
+
+    #[test]
+    fn battlefield_panel_updates_without_a_query_conflict() {
+        let simulation = simulation_with_pending_combat();
+        let mission_id = simulation.state().pending_combats[0].mission_id;
+
+        let mut app = bevy::app::App::new();
+        app.init_resource::<Assets<Image>>()
+            .init_resource::<crate::presentation::icons::IconAssets>()
+            .init_resource::<group_panel::CombatPlanDraftState>()
+            .insert_resource(SimulationResource {
+                simulation,
+                pending_events: Vec::new(),
+            })
+            .insert_resource(CombatUiState {
+                current: Some(mission_id),
+                phase: CombatUiPhase::AwaitingDoctrine,
+                ..Default::default()
+            })
+            .add_systems(bevy::app::Startup, spawn_combat_screen)
+            .add_systems(
+                bevy::app::Update,
+                (
+                    group_panel::sync_combat_plan_draft,
+                    battlefield::update_battlefield_panel,
+                )
+                    .chain(),
+            );
+        let entity_visuals = {
+            let mut images = app.world_mut().resource_mut::<Assets<Image>>();
+            EntityVisualCatalog::for_tests(&mut images)
+        };
+        app.insert_resource(entity_visuals);
+
+        app.update();
+
+        let world = app.world_mut();
+        let mut texts = world.query::<&Text>();
+        let rendered_text = texts
+            .iter(world)
+            .map(|text| text.0.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered_text.contains("CARTE TACTIQUE"));
+        assert!(rendered_text.contains("Alpha"));
+        assert!(rendered_text.contains("Beta"));
+        assert!(rendered_text.contains("Gamma"));
+        assert!(rendered_text.contains("ORBITE"));
+        assert!(rendered_text.contains("CONTACTS"));
+
+        let mut rows = world.query::<(&battlefield::BattlefieldRow, &Visibility)>();
+        assert!(rows.iter(world).any(|(row, visibility)| {
+            row.0 == battlefield::BattlefieldRowKind::Enemy(0)
+                && *visibility == Visibility::Inherited
+        }));
+    }
+
+    #[test]
+    fn battlefield_panel_renders_round_pause_exchange_annotations_without_a_query_conflict() {
+        let mut simulation = simulation_with_pending_combat_using(2);
+        let mission_id = simulation.state().pending_combats[0].mission_id;
+        let events = simulation.apply_player_action(GameAction::ChooseCombatDoctrine {
+            mission_id,
+            round: 1,
+            doctrine: None,
+            intervention: None,
+        });
+        assert!(events.iter().any(|event| {
+            matches!(
+                event.kind,
+                GameEventKind::CombatRoundResolved(CombatRoundResolved {
+                    mission_id: id,
+                    round: 1,
+                }) if id == mission_id
+            )
+        }));
+        assert!(
+            simulation.state().pending_combat(mission_id).is_some(),
+            "the 2-frigate fixture should still be pending after one round"
+        );
+
+        let mut app = bevy::app::App::new();
+        app.init_resource::<Assets<Image>>()
+            .init_resource::<crate::presentation::icons::IconAssets>()
+            .init_resource::<group_panel::CombatPlanDraftState>()
+            .insert_resource(SimulationResource {
+                simulation,
+                pending_events: Vec::new(),
+            })
+            .insert_resource(CombatUiState {
+                current: Some(mission_id),
+                phase: CombatUiPhase::RoundPause,
+                ..Default::default()
+            })
+            .add_systems(bevy::app::Startup, spawn_combat_screen)
+            .add_systems(bevy::app::Update, battlefield::update_battlefield_panel);
+        let entity_visuals = {
+            let mut images = app.world_mut().resource_mut::<Assets<Image>>();
+            EntityVisualCatalog::for_tests(&mut images)
+        };
+        app.insert_resource(entity_visuals);
+
+        app.update();
+
+        let world = app.world_mut();
+        let mut texts = world.query::<&Text>();
+        let rendered_text = texts
+            .iter(world)
+            .map(|text| text.0.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered_text.contains("Round 1"));
+        assert!(rendered_text.contains("résolu"));
+        assert!(rendered_text.contains("Tir :") || rendered_text.contains("impact"));
     }
 
     #[test]
@@ -1858,6 +2939,11 @@ mod tests {
             })
             .add_systems(bevy::app::Startup, spawn_combat_screen)
             .add_systems(bevy::app::Update, update_combat_columns);
+        let entity_visuals = {
+            let mut images = app.world_mut().resource_mut::<Assets<Image>>();
+            EntityVisualCatalog::for_tests(&mut images)
+        };
+        app.insert_resource(entity_visuals);
 
         app.update();
 
@@ -1879,10 +2965,37 @@ mod tests {
             .find(|(marker, _)| marker.0 == 0)
             .map(|(_, image)| image.color)
             .expect("slot 0's icon entity exists");
-        assert_ne!(
+        assert_eq!(
             first_allied_icon_color,
             Color::WHITE,
-            "update_combat_columns should have recolored the icon from its spawn-time default"
+            "entity visuals are displayed without tinting their source image"
         );
+    }
+
+    #[test]
+    fn hidden_enemy_contact_uses_class_fallback_instead_of_exact_force_visual() {
+        let simulation = simulation_with_pending_combat();
+        let pending = &simulation.state().pending_combats[0];
+        let base_stack = *enemy_intel(pending)
+            .stacks
+            .first()
+            .expect("the combat fixture has at least one enemy stack");
+        let force_id = galactic_sim::PlanetaryForceId::from_static("sylve_thorn");
+
+        let mut images = Assets::<Image>::default();
+        let (catalog, handles) = EntityVisualCatalog::for_tests_with_force(&mut images, force_id);
+        let hidden_stack = CombatStackView {
+            target_class: Some(CombatTargetClass::Medium),
+            identity: None,
+            ..base_stack
+        };
+        let revealed_stack = CombatStackView {
+            identity: Some(CombatUnitRef::PlanetaryForce(force_id)),
+            ..hidden_stack
+        };
+
+        assert_eq!(catalog.enemy_contact(&hidden_stack), handles.contact_medium);
+        assert_ne!(catalog.enemy_contact(&hidden_stack), handles.force);
+        assert_eq!(catalog.enemy_contact(&revealed_stack), handles.force);
     }
 }

@@ -1,5 +1,8 @@
+#![allow(clippy::items_after_test_module)]
+
 use bevy::camera::Hdr;
 use bevy::core_pipeline::tonemapping::Tonemapping;
+use bevy::ecs::system::SystemParam;
 use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::light::DirectionalLightShadowMap;
 use bevy::post_process::bloom::Bloom;
@@ -14,14 +17,63 @@ use galactic_sim::{
 };
 
 use crate::presentation::components::*;
+use crate::presentation::entity_visuals::EntityVisualCatalog;
 use crate::presentation::graphics_settings::{GraphicsPreset, GraphicsSettings};
 use crate::presentation::icons::{IconAssets, IconKind, spawn_icon};
-use crate::presentation::procedural_materials::star_color;
+use crate::presentation::procedural_materials::{planet_material, star_color};
 use crate::presentation::resource_hud::*;
 use crate::presentation::strategic_navigation::*;
 use crate::*;
 
+use std::collections::HashMap;
+
 const INSPECTOR_PANEL_TOP_PX: f32 = navigation_ui::NAVIGATION_BAR_TOP_PX;
+
+#[derive(Resource, Default)]
+pub(crate) struct PlanetVisualMaterialCache {
+    revealed: HashMap<(PlanetId, PlanetKind), Handle<StandardMaterial>>,
+}
+
+impl PlanetVisualMaterialCache {
+    pub(crate) fn revealed_material(
+        &mut self,
+        planet_id: PlanetId,
+        kind: PlanetKind,
+        entity_visuals: &EntityVisualCatalog,
+        materials: &mut Assets<StandardMaterial>,
+    ) -> Handle<StandardMaterial> {
+        self.revealed
+            .entry((planet_id, kind))
+            .or_insert_with(|| {
+                let texture = entity_visuals.planet(planet_id, kind);
+                materials.add(planet_material(kind, texture))
+            })
+            .clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cached_count(&self) -> usize {
+        self.revealed.len()
+    }
+}
+
+#[derive(SystemParam)]
+pub(crate) struct PlanetVisualMaterials<'w> {
+    entity_visuals: Res<'w, EntityVisualCatalog>,
+    cache: ResMut<'w, PlanetVisualMaterialCache>,
+    materials: ResMut<'w, Assets<StandardMaterial>>,
+}
+
+impl<'w> PlanetVisualMaterials<'w> {
+    fn revealed_material(
+        &mut self,
+        planet_id: PlanetId,
+        kind: PlanetKind,
+    ) -> Handle<StandardMaterial> {
+        self.cache
+            .revealed_material(planet_id, kind, &self.entity_visuals, &mut self.materials)
+    }
+}
 
 pub(crate) fn spawn_scene(mut commands: Commands) {
     commands.spawn((
@@ -190,16 +242,25 @@ pub(crate) fn spawn_strategic_view(
     mut commands: Commands,
     simulation: Res<SimulationResource>,
     assets: Res<VisualAssets>,
+    mut planet_visuals: PlanetVisualMaterials,
     navigation: Res<StrategicNavigation>,
     existing: Query<Entity, With<StrategicViewEntity>>,
 ) {
-    rebuild_strategic_view(&mut commands, &simulation, &assets, &navigation, &existing);
+    rebuild_strategic_view(
+        &mut commands,
+        &simulation,
+        &assets,
+        &mut planet_visuals,
+        &navigation,
+        &existing,
+    );
 }
 
 pub(crate) fn rebuild_strategic_view_if_requested(
     mut commands: Commands,
     simulation: Res<SimulationResource>,
     assets: Res<VisualAssets>,
+    mut planet_visuals: PlanetVisualMaterials,
     navigation: Res<StrategicNavigation>,
     mut request: ResMut<ViewRebuildRequest>,
     existing: Query<Entity, With<StrategicViewEntity>>,
@@ -208,7 +269,14 @@ pub(crate) fn rebuild_strategic_view_if_requested(
         return;
     }
 
-    rebuild_strategic_view(&mut commands, &simulation, &assets, &navigation, &existing);
+    rebuild_strategic_view(
+        &mut commands,
+        &simulation,
+        &assets,
+        &mut planet_visuals,
+        &navigation,
+        &existing,
+    );
     request.0 = false;
 }
 
@@ -216,6 +284,7 @@ pub(crate) fn rebuild_strategic_view(
     commands: &mut Commands,
     simulation: &SimulationResource,
     assets: &VisualAssets,
+    planet_visuals: &mut PlanetVisualMaterials<'_>,
     navigation: &StrategicNavigation,
     existing: &Query<Entity, With<StrategicViewEntity>>,
 ) {
@@ -228,7 +297,7 @@ pub(crate) fn rebuild_strategic_view(
             spawn_universe_view(commands, simulation, assets, navigation);
         }
         StrategicViewMode::System(system_id) => {
-            spawn_system_view(commands, simulation, assets, system_id);
+            spawn_system_view(commands, simulation, assets, planet_visuals, system_id);
         }
     }
 }
@@ -538,6 +607,7 @@ pub(crate) fn spawn_system_view(
     commands: &mut Commands,
     simulation: &SimulationResource,
     assets: &VisualAssets,
+    planet_visuals: &mut PlanetVisualMaterials<'_>,
     system_id: SystemId,
 ) {
     let simulation = simulation.simulation();
@@ -612,11 +682,7 @@ pub(crate) fn spawn_system_view(
         let position = orbit.translation_at(0.0);
         let colony = state.colony_on_planet(planet.id);
         let material = if level.reveals_identity() {
-            assets
-                .planet_materials
-                .get(&planet.kind)
-                .expect("planet material exists")
-                .clone()
+            planet_visuals.revealed_material(planet.id, planet.kind)
         } else {
             assets.detected_material.clone()
         };
@@ -1589,6 +1655,7 @@ pub(crate) fn update_victory_modal(
     }
 }
 
+#[allow(clippy::type_complexity)]
 pub(crate) fn handle_scroll_areas(
     mut mouse_wheel: MessageReader<MouseWheel>,
     mut scrolls: Query<(
@@ -2353,10 +2420,13 @@ pub(crate) fn spawn_management_building_button(
             Button,
             Node {
                 width: Val::Percent(100.0),
-                min_height: Val::Px(37.0),
+                min_height: Val::Px(42.0),
                 padding: UiRect::axes(Val::Px(8.0), Val::Px(6.0)),
                 border: UiRect::all(Val::Px(1.0)),
                 border_radius: BorderRadius::all(Val::Px(5.0)),
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                column_gap: Val::Px(8.0),
                 ..default()
             },
             BackgroundColor(Color::srgba(0.035, 0.055, 0.070, 0.96)),
@@ -2371,9 +2441,28 @@ pub(crate) fn spawn_management_building_button(
         ))
         .with_children(|button| {
             button.spawn((
+                ImageNode {
+                    image: Handle::default(),
+                    color: Color::WHITE,
+                    ..default()
+                },
+                Node {
+                    width: Val::Px(30.0),
+                    height: Val::Px(30.0),
+                    flex_shrink: 0.0,
+                    ..default()
+                },
+                ManagementBuildingButtonIcon { kind },
+            ));
+            button.spawn((
                 Text::new(""),
                 ui_text_font(11.0),
                 TextColor(Color::srgb(0.82, 0.88, 0.90)),
+                Node {
+                    flex_grow: 1.0,
+                    min_width: Val::Px(0.0),
+                    ..default()
+                },
                 ManagementBuildingButtonText { kind },
             ));
         });
@@ -2395,6 +2484,21 @@ pub(crate) fn spawn_management_building_detail(row: &mut ChildSpawnerCommands) {
         Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
     ))
     .with_children(|detail| {
+        detail.spawn((
+            ImageNode {
+                image: Handle::default(),
+                color: Color::WHITE,
+                ..default()
+            },
+            Node {
+                width: Val::Px(128.0),
+                height: Val::Px(88.0),
+                align_self: AlignSelf::Center,
+                flex_shrink: 0.0,
+                ..default()
+            },
+            ManagementBuildingDetailIcon,
+        ));
         detail.spawn((
             Text::new("Sélectionne un bâtiment."),
             ui_text_font(12.0),
