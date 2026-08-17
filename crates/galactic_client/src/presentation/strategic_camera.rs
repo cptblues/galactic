@@ -19,6 +19,7 @@ pub(crate) struct StrategicCameraInput<'w> {
     mouse_motion: Res<'w, AccumulatedMouseMotion>,
     mouse_scroll: Res<'w, AccumulatedMouseScroll>,
     open_panel: Res<'w, OpenPanel>,
+    windows: Res<'w, OpenWindows>,
     intro_pitch: Res<'w, IntroPitchUiState>,
     victory: Res<'w, VictoryUiState>,
 }
@@ -31,19 +32,19 @@ pub(crate) fn update_strategic_camera(
     let Ok(mut transform) = query.single_mut() else {
         return;
     };
-    // Preserves the pre-refactor asymmetry: the Fleet panel never blocked the
-    // camera, unlike Colony/Research/Craft/Navigation. Not touched here — this
-    // pass moves the open-state mechanism, it does not change camera behavior.
+    // Colony/Research/Craft/Fleet are floating `GameWindowKind` windows tracked by
+    // `OpenWindows`, not `OpenPanel` — the latter resets to `None` whenever one of
+    // them opens, so matching on `OpenPanel` here never actually blocked the camera
+    // for those four (playtest feedback: scroll/keys over the Fleet window leaked
+    // through to the background map). Navigation/Objectives are non-window overlays
+    // that genuinely do live in `OpenPanel`, so both checks are needed.
     if input.intro_pitch.visible
         || input.victory.visible
         || matches!(
             *input.open_panel,
-            OpenPanel::Colony
-                | OpenPanel::Research
-                | OpenPanel::Craft
-                | OpenPanel::Navigation
-                | OpenPanel::Objectives
+            OpenPanel::Navigation | OpenPanel::Objectives
         )
+        || input.windows.any_visible()
     {
         return;
     }

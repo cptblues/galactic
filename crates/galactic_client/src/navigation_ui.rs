@@ -2,6 +2,7 @@
 use bevy::input::ButtonState;
 use bevy::input::keyboard::KeyboardInput;
 use bevy::prelude::*;
+use bevy::window::PrimaryWindow;
 use galactic_domain::{ColonyId, FleetId, MissionId, PlanetId, SectorId, SystemId};
 use galactic_sim::{
     FleetLocation, FleetState, GameState, KnowledgeLevel, MissionKind, Simulation,
@@ -9,20 +10,32 @@ use galactic_sim::{
 };
 
 use super::{
-    BreadcrumbKind, NavigationHistory, OpenPanel, PresentationUpdateSet, SimulationResource,
-    StrategicNavigation, UiPointerBlocker, ViewRebuildRequest, accent_fleet_blue,
-    action_button_color, action_button_outline, breadcrumb_segments, mission_kind_label,
-    mission_target_label, navigate_to_galaxy, navigate_to_sector, navigate_to_selection,
-    panel_background, panel_outline, ui_text_font,
+    BreadcrumbKind, BreadcrumbSegment, CommandDockButton, CommandDockGroup, CommandDockTarget,
+    NavigationHistory, OpenPanel, PresentationUpdateSet, SimulationResource, StrategicNavigation,
+    UiPointerBlocker, ViewRebuildRequest, accent_fleet_blue, action_button_color,
+    action_button_outline, breadcrumb_segments, mission_kind_label, mission_target_label,
+    navigate_to_galaxy, navigate_to_sector, navigate_to_selection, panel_background, panel_outline,
+    ui_text_font,
 };
 
 const NAVIGATION_Z_INDEX: i32 = 140;
 const MAX_SEARCH_ROWS: usize = 12;
 const MAX_BREADCRUMB_SEGMENTS: usize = 4;
 const MAX_QUERY_LENGTH: usize = 48;
-pub(crate) const NAVIGATION_BAR_TOP_PX: f32 = 64.0;
+pub(crate) const NAVIGATION_BAR_TOP_PX: f32 = 10.0;
 const NAVIGATION_BAR_LEFT_PX: f32 = 14.0;
-const NAVIGATION_PANEL_TOP_PX: f32 = 102.0;
+const NAVIGATION_PANEL_TOP_PX: f32 = 122.0;
+
+// Mirrors the resource bar's geometry (`presentation::scene::spawn_resource_bar`:
+// centered row, width 92% capped at 1120px) so the breadcrumb can tell how much
+// room it has before it would start drawing under the resource cards.
+const RESOURCE_BAR_WIDTH_FRACTION: f32 = 0.92;
+const RESOURCE_BAR_MAX_WIDTH_PX: f32 = 1120.0;
+const BREADCRUMB_SAFETY_GAP_PX: f32 = 16.0;
+const BREADCRUMB_CHAR_WIDTH_PX: f32 = 6.4;
+const BREADCRUMB_SEGMENT_CHROME_PX: f32 = 12.0;
+const BREADCRUMB_SEGMENT_GAP_PX: f32 = 6.0;
+const BREADCRUMB_ELLIPSIS: &str = "…";
 const MAP_FILTERS_ENABLED: bool = false;
 
 pub(crate) struct NavigationUiPlugin;
@@ -359,7 +372,7 @@ pub(crate) fn spawn_search_toggle(parent: &mut ChildSpawnerCommands) {
             Button,
             Node {
                 width: Val::Percent(100.0),
-                min_height: Val::Px(36.0),
+                min_height: Val::Px(42.0),
                 padding: UiRect::axes(Val::Px(10.0), Val::Px(7.0)),
                 border: UiRect::all(Val::Px(1.0)),
                 border_radius: BorderRadius::all(Val::Px(5.0)),
@@ -370,12 +383,16 @@ pub(crate) fn spawn_search_toggle(parent: &mut ChildSpawnerCommands) {
             BackgroundColor(Color::srgba(0.06, 0.10, 0.18, 0.96)),
             Outline::new(Val::Px(1.0), Val::ZERO, accent_fleet_blue()),
             NavAction::ToggleSearch,
+            CommandDockButton {
+                target: CommandDockTarget::Panel(OpenPanel::Navigation),
+                group: CommandDockGroup::Navigation,
+            },
             UiPointerBlocker,
         ))
         .with_children(|button| {
             button.spawn((
-                Text::new("Recherche carte  [/]"),
-                ui_text_font(12.0),
+                Text::new("Carte  [/]"),
+                ui_text_font(12.5),
                 TextColor(Color::srgb(0.78, 0.86, 1.0)),
             ));
         });
@@ -416,11 +433,13 @@ fn spawn_navigation_panels(mut commands: Commands) {
             Node {
                 position_type: PositionType::Absolute,
                 left: Val::Px(NAVIGATION_BAR_LEFT_PX),
-                right: Val::Px(370.0),
+                right: Val::Auto,
                 top: Val::Px(NAVIGATION_BAR_TOP_PX),
-                padding: UiRect::axes(Val::Px(10.0), Val::Px(6.0)),
+                max_width: Val::Percent(50.0),
+                overflow: Overflow::clip_x(),
+                padding: UiRect::axes(Val::Px(7.0), Val::Px(4.0)),
                 border: UiRect::all(Val::Px(1.0)),
-                border_radius: BorderRadius::all(Val::Px(6.0)),
+                border_radius: BorderRadius::all(Val::Px(5.0)),
                 flex_direction: FlexDirection::Row,
                 column_gap: Val::Px(6.0),
                 align_items: AlignItems::Center,
@@ -443,7 +462,8 @@ fn spawn_navigation_panels(mut commands: Commands) {
             Node {
                 position_type: PositionType::Absolute,
                 left: Val::Px(NAVIGATION_BAR_LEFT_PX),
-                right: Val::Px(370.0),
+                right: Val::Auto,
+                width: Val::Px(470.0),
                 top: Val::Px(NAVIGATION_PANEL_TOP_PX),
                 padding: UiRect::all(Val::Px(12.0)),
                 border: UiRect::all(Val::Px(1.0)),
@@ -612,7 +632,7 @@ fn spawn_breadcrumb_segment(parent: &mut ChildSpawnerCommands, slot: usize) {
         .spawn((
             Button,
             Node {
-                padding: UiRect::axes(Val::Px(6.0), Val::Px(3.0)),
+                padding: UiRect::axes(Val::Px(5.0), Val::Px(2.0)),
                 border: UiRect::all(Val::Px(1.0)),
                 border_radius: BorderRadius::all(Val::Px(4.0)),
                 ..default()
@@ -630,7 +650,7 @@ fn spawn_breadcrumb_segment(parent: &mut ChildSpawnerCommands, slot: usize) {
         .with_children(|button| {
             button.spawn((
                 Text::new(""),
-                ui_text_font(11.0),
+                ui_text_font(9.5),
                 TextColor(Color::srgb(0.86, 0.90, 0.98)),
             ));
         });
@@ -1007,22 +1027,87 @@ fn handle_breadcrumb_buttons(
     }
 }
 
+/// Left edge (in px) of the resource bar's centered content row for a given
+/// window width — see `RESOURCE_BAR_WIDTH_FRACTION`/`RESOURCE_BAR_MAX_WIDTH_PX`.
+fn resource_bar_left_edge_px(window_width: f32) -> f32 {
+    let fitted_width = window_width * RESOURCE_BAR_WIDTH_FRACTION;
+    let row_width = fitted_width.min(RESOURCE_BAR_MAX_WIDTH_PX);
+    (window_width - row_width) / 2.0
+}
+
+/// How much horizontal room the breadcrumb bar has before it would start
+/// drawing under the resource bar, for a given window width.
+fn breadcrumb_width_budget_px(window_width: f32) -> f32 {
+    (resource_bar_left_edge_px(window_width) - NAVIGATION_BAR_LEFT_PX - BREADCRUMB_SAFETY_GAP_PX)
+        .max(0.0)
+}
+
+/// Rough on-screen width estimate for a row of breadcrumb segment buttons —
+/// exact glyph metrics aren't available at this layer, so this uses a
+/// per-character estimate tuned to the breadcrumb's font size, which is close
+/// enough to decide whether segments need collapsing.
+fn estimated_breadcrumb_width_px(labels: &[&str]) -> f32 {
+    labels
+        .iter()
+        .map(|label| label.chars().count() as f32 * BREADCRUMB_CHAR_WIDTH_PX)
+        .sum::<f32>()
+        + labels.len() as f32 * BREADCRUMB_SEGMENT_CHROME_PX
+        + labels.len().saturating_sub(1) as f32 * BREADCRUMB_SEGMENT_GAP_PX
+}
+
+/// Builds the list of (label, kind) segments to actually render, collapsing
+/// the middle segments into a single non-clickable "…" placeholder (`kind:
+/// None`) when the full breadcrumb wouldn't fit in `budget_px` — keeps the
+/// first (Galaxy) and last (current location) segments visible and clickable.
+fn breadcrumb_display_list(
+    segments: &[BreadcrumbSegment],
+    budget_px: f32,
+) -> Vec<(String, Option<BreadcrumbKind>)> {
+    let full: Vec<(String, Option<BreadcrumbKind>)> = segments
+        .iter()
+        .map(|segment| (segment.label.clone(), Some(segment.kind)))
+        .collect();
+
+    if full.len() <= 2 {
+        return full;
+    }
+    let labels: Vec<&str> = full.iter().map(|(label, _)| label.as_str()).collect();
+    if estimated_breadcrumb_width_px(&labels) <= budget_px {
+        return full;
+    }
+
+    let first = full.first().cloned();
+    let last = full.last().cloned();
+    match (first, last) {
+        (Some(first), Some(last)) => {
+            vec![first, (BREADCRUMB_ELLIPSIS.to_string(), None), last]
+        }
+        _ => full,
+    }
+}
+
 fn update_breadcrumb_rows(
     simulation: Res<SimulationResource>,
     navigation: Res<StrategicNavigation>,
+    primary_window: Query<&Window, With<PrimaryWindow>>,
     mut rows: Query<(&mut BreadcrumbButton, &mut Visibility, &Children)>,
     mut texts: Query<&mut Text>,
 ) {
     let segments = breadcrumb_segments(simulation.simulation(), &navigation);
+    let budget_px = primary_window
+        .single()
+        .map(|window| breadcrumb_width_budget_px(window.resolution.width()))
+        .unwrap_or(f32::MAX);
+    let display = breadcrumb_display_list(&segments, budget_px);
     for (mut button, mut visibility, children) in &mut rows {
-        if let Some(segment) = segments.get(button.slot) {
-            button.kind = Some(segment.kind);
+        if let Some((label, kind)) = display.get(button.slot) {
+            button.kind = *kind;
             *visibility = Visibility::Inherited;
             for child in children {
                 if let Ok(mut text) = texts.get_mut(*child)
-                    && text.0 != segment.label
+                    && &text.0 != label
                 {
-                    text.0 = segment.label.clone();
+                    text.0 = label.clone();
                 }
             }
         } else {
@@ -1184,7 +1269,7 @@ mod tests {
     #[test]
     fn breadcrumb_layout_starts_at_the_left_ui_margin() {
         assert_eq!(NAVIGATION_BAR_LEFT_PX, 14.0);
-        assert_eq!(NAVIGATION_BAR_TOP_PX, 64.0);
+        assert_eq!(NAVIGATION_BAR_TOP_PX, 10.0);
     }
 
     #[test]

@@ -4,6 +4,7 @@ use galactic_domain::ResourceStock;
 use crate::presentation::components::{ResourceHudKind, ResourceHudStatus};
 use crate::presentation::inspector_panel::{format_saturation_time, format_strategic_duration};
 
+#[allow(dead_code)]
 pub(crate) struct ResourceHudView {
     pub(crate) text: String,
     pub(crate) fill_ratio: f32,
@@ -190,16 +191,36 @@ pub(crate) fn resource_card_background(kind: ResourceHudKind) -> Color {
     }
 }
 
+pub(crate) fn resource_bar_card_background(
+    kind: ResourceHudKind,
+    status: ResourceHudStatus,
+) -> Color {
+    match status {
+        ResourceHudStatus::Full | ResourceHudStatus::Deficit => {
+            Color::srgba(0.22, 0.06, 0.05, 0.96)
+        }
+        ResourceHudStatus::NearlyFull => Color::srgba(0.18, 0.12, 0.05, 0.96),
+        ResourceHudStatus::Normal => resource_card_background(kind),
+    }
+}
+
+pub(crate) fn resource_bar_outline_color(
+    kind: ResourceHudKind,
+    status: ResourceHudStatus,
+) -> Color {
+    match status {
+        ResourceHudStatus::Full | ResourceHudStatus::Deficit => Color::srgba(1.0, 0.36, 0.30, 0.76),
+        ResourceHudStatus::NearlyFull => Color::srgba(1.0, 0.72, 0.32, 0.66),
+        ResourceHudStatus::Normal => resource_outline_color(kind),
+    }
+}
+
 pub(crate) fn status_text_color(kind: ResourceHudKind, status: ResourceHudStatus) -> Color {
     match status {
         ResourceHudStatus::Full | ResourceHudStatus::Deficit => Color::srgb(1.0, 0.48, 0.42),
         ResourceHudStatus::NearlyFull => Color::srgb(1.0, 0.78, 0.36),
         ResourceHudStatus::Normal => resource_kind_color(kind),
     }
-}
-
-pub(crate) fn status_gauge_color(kind: ResourceHudKind, status: ResourceHudStatus) -> Color {
-    status_text_color(kind, status)
 }
 
 pub(crate) fn management_building_button_color(selected: bool, interaction: &Interaction) -> Color {
@@ -663,6 +684,21 @@ mod tests {
         let energy = resource_bar_text(ResourceHudKind::Energy, colony, production);
         assert!(!energy.contains('\n'));
         assert!(energy.contains('/'));
+    }
+
+    #[test]
+    fn resource_bar_alert_states_change_card_chrome() {
+        let normal_background =
+            resource_bar_card_background(ResourceHudKind::Metal, ResourceHudStatus::Normal);
+        let full_background =
+            resource_bar_card_background(ResourceHudKind::Metal, ResourceHudStatus::Full);
+        let normal_outline =
+            resource_bar_outline_color(ResourceHudKind::Metal, ResourceHudStatus::Normal);
+        let nearly_full_outline =
+            resource_bar_outline_color(ResourceHudKind::Metal, ResourceHudStatus::NearlyFull);
+
+        assert_ne!(normal_background, full_background);
+        assert_ne!(normal_outline, nearly_full_outline);
     }
 
     #[test]

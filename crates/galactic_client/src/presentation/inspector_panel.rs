@@ -17,10 +17,10 @@ use crate::presentation::procedural_materials::{
 use crate::presentation::scene::{action_button_color, action_button_outline, known_sector_labels};
 use crate::presentation::strategic_navigation::{StrategicNavigation, StrategicViewMode};
 use crate::{
-    InspectorContent, InspectorPanelRoot, InspectorSection, InspectorTabBarRoot,
-    InspectorTabButton, InspectorTabButtonQuery, InspectorTabLabelQuery, InspectorTabState,
-    InspectorTextQuery, InspectorTextRole, OpenPanel, PresentationLog, SimulationResource,
-    TopBarText,
+    InspectorButtonAction, InspectorButtonInteractionQuery, InspectorContent, InspectorPanelRoot,
+    InspectorPanelState, InspectorSection, InspectorTabBarRoot, InspectorTabButton,
+    InspectorTabButtonQuery, InspectorTabLabelQuery, InspectorTabState, InspectorTextQuery,
+    InspectorTextRole, OpenPanel, PresentationLog, SimulationResource, TopBarText,
 };
 
 pub(crate) fn information_panel_content(simulation: &Simulation) -> InspectorContent {
@@ -609,7 +609,27 @@ fn planetary_intelligence_text(simulation: &Simulation, planet_id: PlanetId) -> 
         .unwrap_or(intelligence)
 }
 
+/// Full report: `combat_report_summary_text` + the tactical timeline. Used
+/// verbatim by `fleet_ui.rs`'s mission-reports viewer and the planet
+/// inspector panel — kept unchanged so neither has to know about
+/// COMBAT-UX-001-H's tab split (`combat_ui.rs`'s detailed-report screen uses
+/// the 4 per-tab functions below instead).
 pub(crate) fn combat_report_text(report: &galactic_sim::CombatReport) -> String {
+    match &report.status {
+        CombatReportStatus::TargetInvalid(_) => combat_report_summary_text(report),
+        CombatReportStatus::Resolved(_) => {
+            let tactical = combat_tactical_timeline_text(report)
+                .map(|timeline| format!("\n\n{timeline}"))
+                .unwrap_or_default();
+            format!("{}{tactical}", combat_report_summary_text(report))
+        }
+    }
+}
+
+/// COMBAT-UX-001-H "Résumé" tab: outcome, rounds, engaged/losses/survivors
+/// per side, damage, salvage, control — everything except the round-by-round
+/// timeline (see `combat_report_timeline_text`).
+pub(crate) fn combat_report_summary_text(report: &galactic_sim::CombatReport) -> String {
     match &report.status {
         CombatReportStatus::TargetInvalid(reason) => format!(
             "RAPPORT DE COMBAT — CIBLE INVALIDÉE\nMission {} • tick {}\n{}.\nAucune donnée défensive supplémentaire n'a été révélée.",
@@ -622,11 +642,8 @@ pub(crate) fn combat_report_text(report: &galactic_sim::CombatReport) -> String 
                 CombatControlChange::Unchanged => "contrôle territorial inchangé",
                 CombatControlChange::Secured { .. } => "orbite et surface sécurisées par le joueur",
             };
-            let tactical = combat_tactical_timeline_text(report)
-                .map(|timeline| format!("\n\n{timeline}"))
-                .unwrap_or_default();
             format!(
-                "RAPPORT DE COMBAT — {}\nMission {} • tick {} • {} round(s)\nAttaquants engagés : {}\nPertes attaquantes : {}\nAttaquants survivants : {}\nDéfense engagée : {}\nPertes défense : {}\nDéfense survivante : {}\nDommages subis/infligés : {} / {}\nRécupérable : {} métal, {} cristal, {} carburant\nRécupéré : {} métal, {} cristal, {} carburant\nContrôle : {}{}",
+                "RAPPORT DE COMBAT — {}\nMission {} • tick {} • {} round(s)\nAttaquants engagés : {}\nPertes attaquantes : {}\nAttaquants survivants : {}\nDéfense engagée : {}\nPertes défense : {}\nDéfense survivante : {}\nDommages subis/infligés : {} / {}\nRécupérable : {} métal, {} cristal, {} carburant\nRécupéré : {} métal, {} cristal, {} carburant\nContrôle : {}",
                 combat_outcome_label(resolution.outcome).to_uppercase(),
                 report.mission_id.raw(),
                 report.resolved_at.value(),
@@ -646,10 +663,108 @@ pub(crate) fn combat_report_text(report: &galactic_sim::CombatReport) -> String 
                 resolution.salvage_recovered.crystal,
                 resolution.salvage_recovered.fuel,
                 control,
-                tactical,
             )
         }
     }
+}
+
+/// COMBAT-UX-001-H "Déroulement" tab: initial/final plan + interventions +
+/// round-by-round chronology — the timeline half of `combat_tactical_timeline_text`,
+/// exposed on its own so `combat_ui.rs`'s report tabs don't have to reparse
+/// the combined report string.
+pub(crate) fn combat_report_timeline_text(report: &galactic_sim::CombatReport) -> String {
+    combat_tactical_timeline_text(report).unwrap_or_else(|| "Aucun round n'a eu lieu.".to_string())
+}
+
+/// COMBAT-UX-001-H "Statistiques" tab: aggregate totals across every round —
+/// per-group damage dealt, destroyed/countered/repetition-penalty tallies,
+/// and command points spent on interventions. All derived from
+/// `report.round_history`/`intervention_history`, nothing new tracked.
+pub(crate) fn combat_report_statistics_text(report: &galactic_sim::CombatReport) -> String {
+    if report.round_history.is_empty() {
+        return "Aucune statistique : le combat n'a pas dépassé la planification.".to_string();
+    }
+
+    let mut lines = Vec::new();
+
+    let mut group_damage: std::collections::BTreeMap<galactic_sim::CombatGroupPlanId, u128> =
+        std::collections::BTreeMap::new();
+    let mut destroyed_attacker = 0usize;
+    let mut destroyed_defender = 0usize;
+    let mut counters = 0usize;
+    let mut penalties = 0usize;
+    for record in &report.round_history {
+        for exchange in &record.attacker_exchanges {
+            *group_damage.entry(exchange.source_group).or_insert(0) += exchange.allocated_damage;
+        }
+        for event in &record.notable_events {
+            match event {
+                galactic_sim::CombatRoundEvent::StackDestroyed {
+                    side: galactic_sim::CombatSide::Attacker,
+                    ..
+                } => destroyed_attacker += 1,
+                galactic_sim::CombatRoundEvent::StackDestroyed {
+                    side: galactic_sim::CombatSide::Defender,
+                    ..
+                } => destroyed_defender += 1,
+                galactic_sim::CombatRoundEvent::CounterTriggered { .. } => counters += 1,
+                galactic_sim::CombatRoundEvent::RepetitionPenaltyApplied { .. } => penalties += 1,
+            }
+        }
+    }
+
+    lines.push("DÉGÂTS PAR GROUPE (total)".to_string());
+    if group_damage.is_empty() {
+        lines.push("Aucun groupe n'a infligé de dégâts.".to_string());
+    } else {
+        for (group_id, damage) in group_damage {
+            lines.push(format!("{} : {damage}", combat_group_label(group_id)));
+        }
+    }
+
+    lines.push(format!(
+        "Piles détruites : {destroyed_attacker} allié(s), {destroyed_defender} ennemie(s)."
+    ));
+    lines.push(format!("Doctrines contrées : {counters}."));
+    if penalties > 0 {
+        lines.push(format!(
+            "Pénalité de répétition appliquée {penalties} fois."
+        ));
+    }
+
+    if report.intervention_history.is_empty() {
+        lines.push("Aucune intervention.".to_string());
+    } else {
+        let total_cost: u32 = report
+            .intervention_history
+            .iter()
+            .map(|record| u32::from(record.command_point_cost))
+            .sum();
+        lines.push(format!(
+            "Interventions : {} pour {total_cost} PC au total.",
+            report.intervention_history.len()
+        ));
+    }
+
+    lines.join("\n")
+}
+
+/// COMBAT-UX-001-H "Unités" tab: per-unit-type engaged/losses/survivors on
+/// both sides — the same helpers `combat_report_summary_text` already uses,
+/// just given their own tab instead of being buried mid-block.
+pub(crate) fn combat_report_units_text(report: &galactic_sim::CombatReport) -> String {
+    let CombatReportStatus::Resolved(resolution) = &report.status else {
+        return "Aucune donnée d'unité : la cible n'était plus valide.".to_string();
+    };
+    format!(
+        "VOTRE FLOTTE\nEngagés : {}\nPertes : {}\nSurvivants : {}\n\nDÉFENSE PLANÉTAIRE\nEngagée : {}\nPertes : {}\nSurvivante : {}",
+        combat_ship_stacks_text(&report.attacker.ships),
+        combat_ship_losses_text(&resolution.attacker_losses),
+        combat_ship_stacks_text(&resolution.attacker_survivors),
+        planetary_force_stacks_text(&report.defender.forces),
+        planetary_force_losses_text(&resolution.defender_losses),
+        planetary_force_stacks_text(&resolution.defender_survivors),
+    )
 }
 
 fn combat_tactical_timeline_text(report: &galactic_sim::CombatReport) -> Option<String> {
@@ -1429,6 +1544,23 @@ pub(crate) fn handle_inspector_tab_buttons(
     }
 }
 
+pub(crate) fn handle_inspector_buttons(
+    simulation: Res<SimulationResource>,
+    mut panel_state: ResMut<InspectorPanelState>,
+    interactions: InspectorButtonInteractionQuery,
+) {
+    for (interaction, action) in &interactions {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+        match *action {
+            InspectorButtonAction::Close => {
+                panel_state.hidden_for_selection = Some(simulation.simulation().state().selected);
+            }
+        }
+    }
+}
+
 #[derive(SystemParam)]
 pub(crate) struct InspectorPanelWidgets<'w, 's> {
     texts: InspectorTextQuery<'w, 's>,
@@ -1442,10 +1574,19 @@ pub(crate) struct InspectorPanelWidgets<'w, 's> {
 pub(crate) fn update_info_panel(
     simulation: Res<SimulationResource>,
     open_panel: Res<OpenPanel>,
+    mut panel_state: ResMut<InspectorPanelState>,
     mut tab_state: ResMut<InspectorTabState>,
     mut widgets: InspectorPanelWidgets,
 ) {
-    let visibility = if *open_panel == OpenPanel::None {
+    let selection = simulation.simulation().state().selected;
+    if panel_state
+        .hidden_for_selection
+        .is_some_and(|hidden| hidden != selection)
+    {
+        panel_state.hidden_for_selection = None;
+    }
+    let hidden_for_selection = panel_state.hidden_for_selection == Some(selection);
+    let visibility = if *open_panel == OpenPanel::None && !hidden_for_selection {
         Visibility::Inherited
     } else {
         Visibility::Hidden
@@ -1863,9 +2004,8 @@ mod tests {
         assert!(rendered.contains("Récupéré"));
     }
 
-    #[test]
-    fn combat_report_text_renders_tactical_round_timeline_when_available() {
-        let report = galactic_sim::CombatReport {
+    fn report_with_round_history_fixture() -> galactic_sim::CombatReport {
+        galactic_sim::CombatReport {
             mission_id: galactic_domain::MissionId::new(8),
             planet_id: galactic_domain::PlanetId::new(4),
             resolved_at: galactic_sim::StrategicTick::new(50),
@@ -1891,11 +2031,19 @@ mod tests {
                 defender_doctrine: galactic_sim::CombatDoctrineId::DefensiveScreen,
                 attacker_damage: 42,
                 defender_damage: 13,
+                // `CombatStackExchange::target` is a `CombatStackId`, which has
+                // no public constructor outside `galactic_sim` — this fixture
+                // can't fabricate one, so group-damage aggregation is
+                // exercised via the "no damage" branch instead (see
+                // `combat_report_statistics_text_aggregates_across_rounds`).
                 attacker_exchanges: Vec::new(),
                 defender_exchanges: Vec::new(),
                 attacker_losses: Vec::new(),
                 defender_losses: Vec::new(),
-                notable_events: Vec::new(),
+                notable_events: vec![galactic_sim::CombatRoundEvent::CounterTriggered {
+                    countered_side: galactic_sim::CombatSide::Defender,
+                    countering_side: galactic_sim::CombatSide::Attacker,
+                }],
                 intel_after: 65,
             }],
             initial_plan: Some(galactic_sim::CombatPlan {
@@ -1930,7 +2078,12 @@ mod tests {
                 salvage_recovered: galactic_domain::ResourceStock::ZERO,
                 control: CombatControlChange::Unchanged,
             }),
-        };
+        }
+    }
+
+    #[test]
+    fn combat_report_text_renders_tactical_round_timeline_when_available() {
+        let report = report_with_round_history_fixture();
 
         let rendered = combat_report_text(&report);
 
@@ -1942,6 +2095,61 @@ mod tests {
         assert!(rendered.contains("Round 1"));
         assert!(rendered.contains("analyse tactique"));
         assert!(rendered.contains("intel 65%"));
+    }
+
+    /// COMBAT-UX-001-H: `combat_report_text` must stay exactly
+    /// `combat_report_summary_text` + the timeline, byte for byte — its
+    /// other two callers (`fleet_ui.rs`'s mission reports, the planet
+    /// inspector panel) must see no behavior change from splitting the tabs
+    /// out of it.
+    #[test]
+    fn combat_report_text_equals_summary_plus_timeline() {
+        let report = report_with_round_history_fixture();
+        assert_eq!(
+            combat_report_text(&report),
+            format!(
+                "{}\n\n{}",
+                combat_report_summary_text(&report),
+                combat_report_timeline_text(&report)
+            )
+        );
+    }
+
+    #[test]
+    fn combat_report_summary_text_omits_the_timeline() {
+        let report = report_with_round_history_fixture();
+        let summary = combat_report_summary_text(&report);
+        assert!(summary.contains("RAPPORT DE COMBAT"));
+        assert!(summary.contains("Attaquants engagés"));
+        assert!(!summary.contains("Chronologie tactique"));
+        assert!(!summary.contains("Plan initial"));
+    }
+
+    #[test]
+    fn combat_report_timeline_text_has_the_chronology_without_the_headline_numbers() {
+        let report = report_with_round_history_fixture();
+        let timeline = combat_report_timeline_text(&report);
+        assert!(timeline.contains("Chronologie tactique"));
+        assert!(timeline.contains("Round 1"));
+        assert!(timeline.contains("Plan initial"));
+        assert!(!timeline.contains("RAPPORT DE COMBAT"));
+    }
+
+    #[test]
+    fn combat_report_statistics_text_aggregates_across_rounds() {
+        let report = report_with_round_history_fixture();
+        let stats = combat_report_statistics_text(&report);
+        assert!(stats.contains("DÉGÂTS PAR GROUPE"));
+        assert!(stats.contains("Doctrines contrées : 1."));
+        assert!(stats.contains("Interventions : 1 pour 1 PC au total."));
+    }
+
+    #[test]
+    fn combat_report_units_text_lists_engaged_and_survivors() {
+        let report = report_with_round_history_fixture();
+        let units = combat_report_units_text(&report);
+        assert!(units.contains("VOTRE FLOTTE"));
+        assert!(units.contains("DÉFENSE PLANÉTAIRE"));
     }
 
     #[test]

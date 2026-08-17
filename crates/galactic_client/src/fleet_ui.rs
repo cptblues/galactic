@@ -18,7 +18,9 @@ use crate::presentation::{
 };
 
 use super::{
-    OpenPanel, PresentationUpdateSet, SelectedMission, SimulationResource, UiPointerBlocker,
+    CommandDockButton, CommandDockGroup, CommandDockTarget, GameWindowKind, GameWindowRoot,
+    GameWindowTitleBar, OpenPanel, OpenWindows, PresentationUpdateSet, SelectedMission,
+    SimulationResource, UI_ICON_SIZE_LARGE, UI_ICON_SIZE_SMALL, UiPointerBlocker,
     accent_fleet_blue, apply_simulation_command, collect_presentation_events, combat_report_text,
     format_strategic_duration, mission_error_text, mission_kind_label, mission_next_deadline,
     mission_phase_label_for_kind, mission_result_text, mission_target_label, panel_background,
@@ -125,6 +127,7 @@ enum FleetButtonAction {
     Close,
     SelectTab(FleetUiTab),
     Ship(CraftableId, i64),
+    ShipMax(CraftableId),
     StartQuantityEdit(CraftableId),
     FormFleet,
     SelectFleet(usize),
@@ -218,7 +221,7 @@ pub(crate) fn spawn_fleet_toggle(parent: &mut ChildSpawnerCommands) {
             Button,
             Node {
                 width: Val::Percent(100.0),
-                min_height: Val::Px(36.0),
+                min_height: Val::Px(42.0),
                 padding: UiRect::axes(Val::Px(10.0), Val::Px(7.0)),
                 border: UiRect::all(Val::Px(1.0)),
                 border_radius: BorderRadius::all(Val::Px(5.0)),
@@ -229,12 +232,16 @@ pub(crate) fn spawn_fleet_toggle(parent: &mut ChildSpawnerCommands) {
             BackgroundColor(Color::srgba(0.06, 0.10, 0.18, 0.96)),
             Outline::new(Val::Px(1.0), Val::ZERO, accent_fleet_blue()),
             FleetButtonAction::Toggle,
+            CommandDockButton {
+                target: CommandDockTarget::Panel(OpenPanel::Fleet),
+                group: CommandDockGroup::Operations,
+            },
             UiPointerBlocker,
         ))
         .with_children(|button| {
             button.spawn((
-                Text::new("Flottes & missions  [V]"),
-                ui_text_font(12.0),
+                Text::new("Flottes  [V]"),
+                ui_text_font(12.5),
                 TextColor(Color::srgb(0.78, 0.86, 1.0)),
                 FleetTextRole::Toggle,
             ));
@@ -268,6 +275,9 @@ fn spawn_fleet_screen(mut commands: Commands) {
             Interaction::None,
             UiPointerBlocker,
             FleetRoot,
+            GameWindowRoot {
+                kind: GameWindowKind::Fleet,
+            },
         ))
         .with_children(|root| {
             spawn_fleet_header(root);
@@ -281,6 +291,7 @@ fn spawn_fleet_screen(mut commands: Commands) {
                 ui_text_font(11.0),
                 TextColor(Color::srgb(0.70, 0.86, 1.0)),
                 Node {
+                    width: Val::Percent(100.0),
                     min_height: Val::Px(18.0),
                     ..default()
                 },
@@ -290,31 +301,41 @@ fn spawn_fleet_screen(mut commands: Commands) {
 }
 
 fn spawn_fleet_header(root: &mut ChildSpawnerCommands) {
-    root.spawn((Node {
-        width: Val::Percent(100.0),
-        min_height: Val::Px(42.0),
-        flex_direction: FlexDirection::Row,
-        align_items: AlignItems::Center,
-        column_gap: Val::Px(8.0),
-        ..default()
-    },))
-        .with_children(|header| {
-            header.spawn((
-                Text::new("FLOTTES & MISSIONS"),
-                ui_text_font(18.0),
-                TextColor(Color::srgb(0.80, 0.88, 1.0)),
-                Node {
-                    flex_grow: 1.0,
-                    ..default()
-                },
-            ));
-            spawn_small_button(
-                header,
-                "Fermer  [V / Échap]",
-                FleetButtonAction::Close,
-                160.0,
-            );
-        });
+    root.spawn((
+        Node {
+            width: Val::Percent(100.0),
+            min_height: Val::Px(42.0),
+            padding: UiRect::axes(Val::Px(8.0), Val::Px(0.0)),
+            border_radius: BorderRadius::all(Val::Px(5.0)),
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            column_gap: Val::Px(8.0),
+            ..default()
+        },
+        BackgroundColor(Color::srgba(0.16, 0.24, 0.38, 0.55)),
+        Interaction::None,
+        GameWindowTitleBar {
+            kind: GameWindowKind::Fleet,
+        },
+        UiPointerBlocker,
+    ))
+    .with_children(|header| {
+        header.spawn((
+            Text::new("FLOTTES & MISSIONS"),
+            ui_text_font(18.0),
+            TextColor(Color::srgb(0.80, 0.88, 1.0)),
+            Node {
+                flex_grow: 1.0,
+                ..default()
+            },
+        ));
+        spawn_small_button(
+            header,
+            "Fermer  [V / Échap]",
+            FleetButtonAction::Close,
+            160.0,
+        );
+    });
 }
 
 fn spawn_small_button(
@@ -405,6 +426,7 @@ fn spawn_fleets_tab(root: &mut ChildSpawnerCommands) {
         Node {
             width: Val::Percent(100.0),
             flex_grow: 1.0,
+            min_height: Val::Px(0.0),
             flex_direction: FlexDirection::Row,
             column_gap: Val::Px(9.0),
             ..default()
@@ -418,210 +440,245 @@ fn spawn_fleets_tab(root: &mut ChildSpawnerCommands) {
 }
 
 fn spawn_fleet_list_panel(row: &mut ChildSpawnerCommands) {
-    row.spawn((
-        Node {
-            flex_grow: 1.0,
-            flex_basis: Val::Px(0.0),
-            padding: UiRect::all(Val::Px(9.0)),
-            border: UiRect::all(Val::Px(1.0)),
-            border_radius: BorderRadius::all(Val::Px(6.0)),
-            flex_direction: FlexDirection::Column,
-            row_gap: Val::Px(4.0),
-            overflow: Overflow::scroll_y(),
-            ..default()
-        },
-        BackgroundColor(panel_background()),
-        Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
-    ))
-    .with_children(|list| {
-        list.spawn((
-            Text::new("FLOTTES CONTRÔLÉES"),
-            ui_text_font(12.0),
-            TextColor(Color::srgb(0.78, 0.86, 1.0)),
-        ));
-        list.spawn((
-            Text::new(""),
-            ui_text_font(10.5),
-            TextColor(Color::srgb(0.76, 0.86, 0.98)),
-            Node {
-                min_height: Val::Px(18.0),
-                ..default()
-            },
-            FleetNameEditorText,
-        ));
-        list.spawn((Node {
-            width: Val::Percent(100.0),
-            min_height: Val::Px(28.0),
-            flex_direction: FlexDirection::Row,
-            column_gap: Val::Px(6.0),
-            ..default()
-        },))
-            .with_children(|actions| {
-                spawn_small_button(
-                    actions,
-                    "Éditer nom",
-                    FleetButtonAction::StartFleetRename,
-                    118.0,
-                );
-                spawn_small_button(
-                    actions,
-                    "Valider nom",
-                    FleetButtonAction::ApplyFleetRename,
-                    118.0,
-                );
-            });
-        for slot in 0..MAX_FLEET_ROWS {
-            list.spawn((
+    row.spawn(Node {
+        flex_grow: 1.0,
+        flex_basis: Val::Px(0.0),
+        min_width: Val::Px(0.0),
+        min_height: Val::Px(0.0),
+        position_type: PositionType::Relative,
+        ..default()
+    })
+    .with_children(|frame| {
+        frame
+            .spawn((
                 Node {
                     width: Val::Percent(100.0),
-                    min_height: Val::Px(34.0),
-                    flex_direction: FlexDirection::Row,
-                    align_items: AlignItems::Center,
-                    column_gap: Val::Px(6.0),
+                    height: Val::Percent(100.0),
+                    min_height: Val::Px(0.0),
+                    padding: UiRect::all(Val::Px(9.0)),
+                    border: UiRect::all(Val::Px(1.0)),
+                    border_radius: BorderRadius::all(Val::Px(6.0)),
+                    flex_direction: FlexDirection::Column,
+                    row_gap: Val::Px(4.0),
+                    overflow: Overflow::scroll_y(),
                     ..default()
                 },
-                Visibility::Hidden,
-                FleetListRow(slot),
+                ScrollPosition::default(),
+                RelativeCursorPosition::default(),
+                ScrollIndicatorArea {
+                    id: ScrollIndicatorId::FleetList,
+                },
+                BackgroundColor(panel_background()),
+                Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
             ))
-            .with_children(|row| {
-                row.spawn((
-                    Button,
+            .with_children(|list| {
+                list.spawn((
+                    Text::new("FLOTTES CONTRÔLÉES"),
+                    ui_text_font(12.0),
+                    TextColor(Color::srgb(0.78, 0.86, 1.0)),
+                ));
+                list.spawn((
+                    Text::new(""),
+                    ui_text_font(10.5),
+                    TextColor(Color::srgb(0.76, 0.86, 0.98)),
                     Node {
-                        flex_grow: 1.0,
-                        min_height: Val::Px(30.0),
-                        padding: UiRect::axes(Val::Px(7.0), Val::Px(4.0)),
-                        border: UiRect::all(Val::Px(1.0)),
-                        border_radius: BorderRadius::all(Val::Px(4.0)),
-                        flex_direction: FlexDirection::Row,
-                        justify_content: JustifyContent::FlexStart,
-                        align_items: AlignItems::Center,
-                        column_gap: Val::Px(7.0),
+                        min_height: Val::Px(18.0),
                         ..default()
                     },
-                    BackgroundColor(Color::srgba(0.04, 0.06, 0.10, 0.9)),
-                    Outline::new(
-                        Val::Px(1.0),
-                        Val::ZERO,
-                        Color::srgba(0.34, 0.46, 0.62, 0.40),
-                    ),
-                    FleetButtonAction::SelectFleet(slot),
-                    UiPointerBlocker,
-                ))
-                .with_children(|button| {
-                    button.spawn((
-                        ImageNode {
-                            image: Handle::default(),
-                            color: Color::WHITE,
-                            ..default()
-                        },
+                    FleetNameEditorText,
+                ));
+                list.spawn((Node {
+                    width: Val::Percent(100.0),
+                    min_height: Val::Px(28.0),
+                    flex_direction: FlexDirection::Row,
+                    column_gap: Val::Px(6.0),
+                    ..default()
+                },))
+                    .with_children(|actions| {
+                        spawn_small_button(
+                            actions,
+                            "Éditer nom",
+                            FleetButtonAction::StartFleetRename,
+                            118.0,
+                        );
+                        spawn_small_button(
+                            actions,
+                            "Valider nom",
+                            FleetButtonAction::ApplyFleetRename,
+                            118.0,
+                        );
+                    });
+                for slot in 0..MAX_FLEET_ROWS {
+                    list.spawn((
                         Node {
-                            width: Val::Px(24.0),
-                            height: Val::Px(24.0),
-                            flex_shrink: 0.0,
+                            width: Val::Percent(100.0),
+                            min_height: Val::Px(UI_ICON_SIZE_SMALL + 12.0),
+                            flex_direction: FlexDirection::Row,
+                            align_items: AlignItems::Center,
+                            column_gap: Val::Px(6.0),
                             ..default()
                         },
-                        FleetListRowIcon(slot),
-                    ));
-                    button.spawn((
-                        Text::new(""),
-                        ui_text_font(10.5),
-                        TextColor(Color::srgb(0.88, 0.92, 0.98)),
-                        Node {
-                            flex_grow: 1.0,
-                            min_width: Val::Px(0.0),
-                            ..default()
-                        },
-                        FleetListRowText(slot),
-                    ));
-                });
-                row.spawn((
-                    Button,
-                    Node {
-                        width: Val::Px(94.0),
-                        min_height: Val::Px(30.0),
-                        padding: UiRect::axes(Val::Px(6.0), Val::Px(4.0)),
-                        border: UiRect::all(Val::Px(1.0)),
-                        border_radius: BorderRadius::all(Val::Px(4.0)),
-                        justify_content: JustifyContent::Center,
-                        align_items: AlignItems::Center,
-                        ..default()
-                    },
-                    BackgroundColor(Color::srgba(0.18, 0.07, 0.08, 0.96)),
-                    Outline::new(
-                        Val::Px(1.0),
-                        Val::ZERO,
-                        Color::srgba(0.82, 0.34, 0.34, 0.64),
-                    ),
-                    FleetButtonAction::DisbandFleet(slot),
-                    FleetDisbandButton(slot),
-                    UiPointerBlocker,
-                ))
-                .with_children(|button| {
-                    button.spawn((
-                        Text::new("Dissoudre"),
-                        ui_text_font(10.0),
-                        TextColor(Color::srgb(1.0, 0.82, 0.82)),
-                    ));
-                });
+                        Visibility::Hidden,
+                        FleetListRow(slot),
+                    ))
+                    .with_children(|row| {
+                        row.spawn((
+                            Button,
+                            Node {
+                                flex_grow: 1.0,
+                                min_height: Val::Px(UI_ICON_SIZE_SMALL + 8.0),
+                                padding: UiRect::axes(Val::Px(7.0), Val::Px(4.0)),
+                                border: UiRect::all(Val::Px(1.0)),
+                                border_radius: BorderRadius::all(Val::Px(4.0)),
+                                flex_direction: FlexDirection::Row,
+                                justify_content: JustifyContent::FlexStart,
+                                align_items: AlignItems::Center,
+                                column_gap: Val::Px(7.0),
+                                ..default()
+                            },
+                            BackgroundColor(Color::srgba(0.04, 0.06, 0.10, 0.9)),
+                            Outline::new(
+                                Val::Px(1.0),
+                                Val::ZERO,
+                                Color::srgba(0.34, 0.46, 0.62, 0.40),
+                            ),
+                            FleetButtonAction::SelectFleet(slot),
+                            UiPointerBlocker,
+                        ))
+                        .with_children(|button| {
+                            button.spawn((
+                                ImageNode {
+                                    image: Handle::default(),
+                                    color: Color::WHITE,
+                                    ..default()
+                                },
+                                Node {
+                                    width: Val::Px(UI_ICON_SIZE_SMALL),
+                                    height: Val::Px(UI_ICON_SIZE_SMALL),
+                                    flex_shrink: 0.0,
+                                    ..default()
+                                },
+                                FleetListRowIcon(slot),
+                            ));
+                            button.spawn((
+                                Text::new(""),
+                                ui_text_font(10.5),
+                                TextColor(Color::srgb(0.88, 0.92, 0.98)),
+                                Node {
+                                    flex_grow: 1.0,
+                                    min_width: Val::Px(0.0),
+                                    ..default()
+                                },
+                                FleetListRowText(slot),
+                            ));
+                        });
+                        row.spawn((
+                            Button,
+                            Node {
+                                width: Val::Px(94.0),
+                                min_height: Val::Px(38.0),
+                                padding: UiRect::axes(Val::Px(6.0), Val::Px(4.0)),
+                                border: UiRect::all(Val::Px(1.0)),
+                                border_radius: BorderRadius::all(Val::Px(4.0)),
+                                justify_content: JustifyContent::Center,
+                                align_items: AlignItems::Center,
+                                ..default()
+                            },
+                            BackgroundColor(Color::srgba(0.18, 0.07, 0.08, 0.96)),
+                            Outline::new(
+                                Val::Px(1.0),
+                                Val::ZERO,
+                                Color::srgba(0.82, 0.34, 0.34, 0.64),
+                            ),
+                            FleetButtonAction::DisbandFleet(slot),
+                            FleetDisbandButton(slot),
+                            UiPointerBlocker,
+                        ))
+                        .with_children(|button| {
+                            button.spawn((
+                                Text::new("Dissoudre"),
+                                ui_text_font(10.0),
+                                TextColor(Color::srgb(1.0, 0.82, 0.82)),
+                            ));
+                        });
+                    });
+                }
             });
-        }
+        spawn_scroll_indicator(frame, ScrollIndicatorId::FleetList);
     });
 }
 
 fn spawn_fleet_composer_panel(row: &mut ChildSpawnerCommands) {
-    row.spawn((
-        Node {
-            width: Val::Px(560.0),
-            padding: UiRect::all(Val::Px(11.0)),
-            border: UiRect::all(Val::Px(1.0)),
-            border_radius: BorderRadius::all(Val::Px(6.0)),
-            flex_direction: FlexDirection::Column,
-            row_gap: Val::Px(7.0),
-            overflow: Overflow::scroll_y(),
-            ..default()
-        },
-        BackgroundColor(panel_background()),
-        Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
-    ))
-    .with_children(|composer| {
-        composer.spawn((
-            Text::new("COMPOSER UNE NOUVELLE FLOTTE"),
-            ui_text_font(13.0),
-            TextColor(Color::srgb(0.78, 0.86, 1.0)),
-        ));
-        for definition in craftable_catalog().definitions() {
-            let Some(_) = definition.ship else { continue };
-            spawn_ship_stepper_row(composer, definition.id);
-        }
-        composer
+    row.spawn(Node {
+        width: Val::Px(540.0),
+        min_height: Val::Px(0.0),
+        position_type: PositionType::Relative,
+        ..default()
+    })
+    .with_children(|frame| {
+        frame
             .spawn((
-                Button,
                 Node {
                     width: Val::Percent(100.0),
-                    min_height: Val::Px(38.0),
-                    margin: UiRect::top(Val::Px(6.0)),
-                    justify_content: JustifyContent::Center,
-                    align_items: AlignItems::Center,
+                    height: Val::Percent(100.0),
+                    min_height: Val::Px(0.0),
+                    padding: UiRect::all(Val::Px(11.0)),
                     border: UiRect::all(Val::Px(1.0)),
                     border_radius: BorderRadius::all(Val::Px(6.0)),
+                    flex_direction: FlexDirection::Column,
+                    row_gap: Val::Px(7.0),
+                    overflow: Overflow::scroll_y(),
                     ..default()
                 },
-                BackgroundColor(Color::srgba(0.08, 0.20, 0.36, 0.98)),
-                Outline::new(
-                    Val::Px(1.0),
-                    Val::ZERO,
-                    Color::srgba(0.40, 0.66, 0.98, 0.78),
-                ),
-                FleetButtonAction::FormFleet,
-                UiPointerBlocker,
+                ScrollPosition::default(),
+                RelativeCursorPosition::default(),
+                ScrollIndicatorArea {
+                    id: ScrollIndicatorId::FleetComposer,
+                },
+                BackgroundColor(panel_background()),
+                Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
             ))
-            .with_children(|button| {
-                button.spawn((
-                    Text::new("FORMER LA FLOTTE"),
-                    ui_text_font(12.0),
-                    TextColor(Color::srgb(0.86, 0.92, 1.0)),
+            .with_children(|composer| {
+                composer.spawn((
+                    Text::new("COMPOSER UNE NOUVELLE FLOTTE"),
+                    ui_text_font(13.0),
+                    TextColor(Color::srgb(0.78, 0.86, 1.0)),
                 ));
+                for definition in craftable_catalog().definitions() {
+                    let Some(_) = definition.ship else { continue };
+                    spawn_ship_stepper_row(composer, definition.id);
+                }
+                composer
+                    .spawn((
+                        Button,
+                        Node {
+                            width: Val::Percent(100.0),
+                            min_height: Val::Px(38.0),
+                            margin: UiRect::top(Val::Px(6.0)),
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
+                            border: UiRect::all(Val::Px(1.0)),
+                            border_radius: BorderRadius::all(Val::Px(6.0)),
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgba(0.08, 0.20, 0.36, 0.98)),
+                        Outline::new(
+                            Val::Px(1.0),
+                            Val::ZERO,
+                            Color::srgba(0.40, 0.66, 0.98, 0.78),
+                        ),
+                        FleetButtonAction::FormFleet,
+                        UiPointerBlocker,
+                    ))
+                    .with_children(|button| {
+                        button.spawn((
+                            Text::new("FORMER LA FLOTTE"),
+                            ui_text_font(12.0),
+                            TextColor(Color::srgb(0.86, 0.92, 1.0)),
+                        ));
+                    });
             });
+        spawn_scroll_indicator(frame, ScrollIndicatorId::FleetComposer);
     });
 }
 
@@ -629,7 +686,7 @@ fn spawn_ship_stepper_row(parent: &mut ChildSpawnerCommands, craftable: Craftabl
     parent
         .spawn((Node {
             width: Val::Percent(100.0),
-            min_height: Val::Px(42.0),
+            min_height: Val::Px(UI_ICON_SIZE_LARGE + 6.0),
             flex_direction: FlexDirection::Row,
             align_items: AlignItems::Center,
             column_gap: Val::Px(7.0),
@@ -643,8 +700,8 @@ fn spawn_ship_stepper_row(parent: &mut ChildSpawnerCommands, craftable: Craftabl
                     ..default()
                 },
                 Node {
-                    width: Val::Px(34.0),
-                    height: Val::Px(34.0),
+                    width: Val::Px(UI_ICON_SIZE_LARGE),
+                    height: Val::Px(UI_ICON_SIZE_LARGE),
                     flex_shrink: 0.0,
                     ..default()
                 },
@@ -656,13 +713,15 @@ fn spawn_ship_stepper_row(parent: &mut ChildSpawnerCommands, craftable: Craftabl
                 TextColor(Color::srgb(0.84, 0.90, 0.98)),
                 Node {
                     flex_grow: 1.0,
+                    min_width: Val::Px(0.0),
                     ..default()
                 },
                 ShipStepperRow { craftable },
             ));
-            spawn_stepper_button(row, "-", FleetButtonAction::Ship(craftable, -1));
+            spawn_stepper_button(row, "-1", FleetButtonAction::Ship(craftable, -1));
             spawn_quantity_editor(row, craftable);
-            spawn_stepper_button(row, "+", FleetButtonAction::Ship(craftable, 1));
+            spawn_stepper_button(row, "+1", FleetButtonAction::Ship(craftable, 1));
+            spawn_stepper_button(row, "MAX", FleetButtonAction::ShipMax(craftable));
         });
 }
 
@@ -671,8 +730,9 @@ fn spawn_stepper_button(parent: &mut ChildSpawnerCommands, label: &str, action: 
         .spawn((
             Button,
             Node {
-                width: Val::Px(36.0),
+                min_width: Val::Px(36.0),
                 min_height: Val::Px(34.0),
+                padding: UiRect::axes(Val::Px(6.0), Val::Px(0.0)),
                 justify_content: JustifyContent::Center,
                 align_items: AlignItems::Center,
                 border: UiRect::all(Val::Px(1.0)),
@@ -730,6 +790,7 @@ fn spawn_active_tab(root: &mut ChildSpawnerCommands) {
         Node {
             width: Val::Percent(100.0),
             flex_grow: 1.0,
+            min_height: Val::Px(0.0),
             padding: UiRect::all(Val::Px(9.0)),
             border: UiRect::all(Val::Px(1.0)),
             border_radius: BorderRadius::all(Val::Px(6.0)),
@@ -738,6 +799,7 @@ fn spawn_active_tab(root: &mut ChildSpawnerCommands) {
             overflow: Overflow::scroll_y(),
             ..default()
         },
+        ScrollPosition::default(),
         BackgroundColor(panel_background()),
         Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
         TabContent(FleetUiTab::Active),
@@ -801,12 +863,13 @@ fn spawn_mission_row(parent: &mut ChildSpawnerCommands, slot: usize) {
                 TextColor(Color::srgb(0.88, 0.92, 0.98)),
                 Node {
                     flex_grow: 1.0,
+                    min_width: Val::Px(0.0),
                     ..default()
                 },
             ));
             spawn_row_action_button(row, "Origine", FleetButtonAction::FocusOrigin(slot));
             spawn_row_action_button(row, "Cible", FleetButtonAction::FocusTarget(slot));
-            spawn_row_action_button(row, "Surligner", FleetButtonAction::HighlightMission(slot));
+            spawn_row_action_button(row, "Suivre", FleetButtonAction::HighlightMission(slot));
             row.spawn((
                 Button,
                 Node {
@@ -1027,6 +1090,7 @@ fn handle_fleet_shortcuts(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut ui: ResMut<FleetUiState>,
     mut open_panel: ResMut<OpenPanel>,
+    mut windows: ResMut<OpenWindows>,
     mut navigation_ui: ResMut<super::navigation_ui::NavigationUiState>,
     save_load_ui: Res<crate::save_load_ui::SaveLoadUiState>,
 ) {
@@ -1038,12 +1102,16 @@ fn handle_fleet_shortcuts(
     }
 
     if keyboard.just_pressed(KeyCode::KeyV) {
-        let opening = *open_panel != OpenPanel::Fleet;
-        *open_panel = if opening {
-            OpenPanel::Fleet
+        let opening = !windows.is_visible(GameWindowKind::Fleet);
+        if opening {
+            windows.open(GameWindowKind::Fleet);
+            *open_panel = OpenPanel::None;
         } else {
-            OpenPanel::None
-        };
+            windows.close(GameWindowKind::Fleet);
+            ui.rename_editing = false;
+            ui.quantity_editing = None;
+            ui.quantity_buffer.clear();
+        }
         ui.feedback.clear();
         if opening {
             navigation_ui.search_open = false;
@@ -1052,14 +1120,18 @@ fn handle_fleet_shortcuts(
         return;
     }
 
-    if *open_panel == OpenPanel::Fleet && keyboard.just_pressed(KeyCode::Escape) {
-        *open_panel = OpenPanel::None;
+    if windows.topmost() == Some(GameWindowKind::Fleet) && keyboard.just_pressed(KeyCode::Escape) {
+        windows.close(GameWindowKind::Fleet);
+        ui.rename_editing = false;
+        ui.quantity_editing = None;
+        ui.quantity_buffer.clear();
     }
 }
 
 fn handle_fleet_tab_buttons(
     mut ui: ResMut<FleetUiState>,
     mut open_panel: ResMut<OpenPanel>,
+    mut windows: ResMut<OpenWindows>,
     mut navigation_ui: ResMut<super::navigation_ui::NavigationUiState>,
     interactions: FleetButtonInteractionQuery,
 ) {
@@ -1069,14 +1141,15 @@ fn handle_fleet_tab_buttons(
         }
         match *action {
             FleetButtonAction::Toggle => {
-                let opening = *open_panel != OpenPanel::Fleet;
-                *open_panel = if opening {
-                    OpenPanel::Fleet
+                let opening = !windows.is_visible(GameWindowKind::Fleet);
+                if opening {
+                    windows.open(GameWindowKind::Fleet);
+                    *open_panel = OpenPanel::None;
                 } else {
-                    OpenPanel::None
-                };
-                if !opening {
+                    windows.close(GameWindowKind::Fleet);
                     ui.rename_editing = false;
+                    ui.quantity_editing = None;
+                    ui.quantity_buffer.clear();
                 }
                 ui.feedback.clear();
                 if opening {
@@ -1088,7 +1161,7 @@ fn handle_fleet_tab_buttons(
                 ui.rename_editing = false;
                 ui.quantity_editing = None;
                 ui.quantity_buffer.clear();
-                *open_panel = OpenPanel::None;
+                windows.close(GameWindowKind::Fleet);
             }
             FleetButtonAction::SelectTab(tab) => {
                 ui.rename_editing = false;
@@ -1128,6 +1201,14 @@ fn handle_ship_stepper_buttons(
                     (*entry + 1).min(available)
                 };
                 *entry = next;
+                ui.feedback.clear();
+            }
+            FleetButtonAction::ShipMax(craftable) => {
+                ui.quantity_editing = None;
+                ui.quantity_buffer.clear();
+                let available =
+                    available_by_craftable.map_or(0, |inventory| inventory.quantity(craftable));
+                ui.pending_composition.insert(craftable, available);
                 ui.feedback.clear();
             }
             FleetButtonAction::StartQuantityEdit(craftable) => {
@@ -1249,11 +1330,14 @@ fn handle_fleet_management_buttons(
 
 fn handle_fleet_name_input(
     mut events: MessageReader<KeyboardInput>,
-    open_panel: Res<OpenPanel>,
+    windows: Res<OpenWindows>,
     mut simulation: ResMut<SimulationResource>,
     mut ui: ResMut<FleetUiState>,
 ) {
-    if *open_panel != OpenPanel::Fleet || ui.tab != FleetUiTab::Fleets || !ui.rename_editing {
+    if !windows.is_visible(GameWindowKind::Fleet)
+        || ui.tab != FleetUiTab::Fleets
+        || !ui.rename_editing
+    {
         return;
     }
 
@@ -1318,11 +1402,11 @@ const MAX_QUANTITY_DIGITS: usize = 6;
 /// character") and the commit action differ.
 fn handle_fleet_quantity_input(
     mut events: MessageReader<KeyboardInput>,
-    open_panel: Res<OpenPanel>,
+    windows: Res<OpenWindows>,
     simulation: Res<SimulationResource>,
     mut ui: ResMut<FleetUiState>,
 ) {
-    if *open_panel != OpenPanel::Fleet || ui.tab != FleetUiTab::Fleets {
+    if !windows.is_visible(GameWindowKind::Fleet) || ui.tab != FleetUiTab::Fleets {
         return;
     }
     let Some(craftable) = ui.quantity_editing else {
@@ -1517,14 +1601,14 @@ fn capture_fleet_feedback(simulation: Res<SimulationResource>, mut ui: ResMut<Fl
 
 fn update_fleet_visibility(
     ui: Res<FleetUiState>,
-    open_panel: Res<OpenPanel>,
+    windows: Res<OpenWindows>,
     mut roots: Query<&mut Visibility, (With<FleetRoot>, Without<TabContent>)>,
     mut tabs: Query<(&TabContent, &mut Visibility, &mut Node), Without<FleetRoot>>,
     mut texts: Query<(&FleetTextRole, &mut Text)>,
     mut tab_buttons: Query<(&TabButton, &Interaction, &mut BackgroundColor, &mut Outline)>,
     mut tab_labels: Query<(&TabButtonLabel, &mut TextColor)>,
 ) {
-    let is_open = *open_panel == OpenPanel::Fleet;
+    let is_open = windows.is_visible(GameWindowKind::Fleet);
     for mut visibility in &mut roots {
         let next = if is_open {
             Visibility::Visible
@@ -1555,7 +1639,7 @@ fn update_fleet_visibility(
             let next = if is_open {
                 "Fermer flottes".to_string()
             } else {
-                "Flottes & missions  [V]".to_string()
+                "Flottes  [V]".to_string()
             };
             if text.0 != next {
                 text.0 = next;
@@ -1578,10 +1662,10 @@ fn update_fleet_visibility(
 
 fn update_feedback_text(
     ui: Res<FleetUiState>,
-    open_panel: Res<OpenPanel>,
+    windows: Res<OpenWindows>,
     mut texts: Query<(&FleetTextRole, &mut Text)>,
 ) {
-    if *open_panel != OpenPanel::Fleet {
+    if !windows.is_visible(GameWindowKind::Fleet) {
         return;
     }
     for (role, mut text) in &mut texts {
@@ -1594,12 +1678,12 @@ fn update_feedback_text(
 fn update_fleet_list_rows(
     simulation: Res<SimulationResource>,
     ui: Res<FleetUiState>,
-    open_panel: Res<OpenPanel>,
+    windows: Res<OpenWindows>,
     mut rows: Query<(&FleetListRow, &mut Visibility), Without<FleetDisbandButton>>,
     mut labels: Query<(&FleetListRowText, &mut Text)>,
     mut disband_buttons: Query<(&FleetDisbandButton, &mut Visibility), Without<FleetListRow>>,
 ) {
-    if *open_panel != OpenPanel::Fleet || ui.tab != FleetUiTab::Fleets {
+    if !windows.is_visible(GameWindowKind::Fleet) || ui.tab != FleetUiTab::Fleets {
         return;
     }
     let simulation = simulation.simulation();
@@ -1648,11 +1732,11 @@ fn update_fleet_list_rows(
 fn update_fleet_list_icons(
     simulation: Res<SimulationResource>,
     ui: Res<FleetUiState>,
-    open_panel: Res<OpenPanel>,
+    windows: Res<OpenWindows>,
     entity_visuals: Res<EntityVisualCatalog>,
     mut icons: Query<(&FleetListRowIcon, &mut ImageNode)>,
 ) {
-    if *open_panel != OpenPanel::Fleet || ui.tab != FleetUiTab::Fleets {
+    if !windows.is_visible(GameWindowKind::Fleet) || ui.tab != FleetUiTab::Fleets {
         return;
     }
     let fleets = simulation
@@ -1677,10 +1761,10 @@ fn update_fleet_list_icons(
 fn update_fleet_name_editor(
     simulation: Res<SimulationResource>,
     ui: Res<FleetUiState>,
-    open_panel: Res<OpenPanel>,
+    windows: Res<OpenWindows>,
     mut texts: Query<&mut Text, With<FleetNameEditorText>>,
 ) {
-    if *open_panel != OpenPanel::Fleet || ui.tab != FleetUiTab::Fleets {
+    if !windows.is_visible(GameWindowKind::Fleet) || ui.tab != FleetUiTab::Fleets {
         return;
     }
     let selected = ui
@@ -1701,12 +1785,12 @@ fn update_fleet_name_editor(
 
 fn update_fleet_rename_buttons(
     ui: Res<FleetUiState>,
-    open_panel: Res<OpenPanel>,
+    windows: Res<OpenWindows>,
     buttons: Query<(&FleetButtonAction, &Children), With<Button>>,
     mut button_visibility: Query<(&FleetButtonAction, &mut Visibility), With<Button>>,
     mut texts: Query<&mut Text>,
 ) {
-    if *open_panel != OpenPanel::Fleet || ui.tab != FleetUiTab::Fleets {
+    if !windows.is_visible(GameWindowKind::Fleet) || ui.tab != FleetUiTab::Fleets {
         return;
     }
     for (action, children) in &buttons {
@@ -1727,12 +1811,22 @@ fn update_fleet_rename_buttons(
         }
     }
     for (action, mut visibility) in &mut button_visibility {
-        if *action == FleetButtonAction::ApplyFleetRename {
-            *visibility = if ui.rename_editing {
-                Visibility::Inherited
-            } else {
-                Visibility::Hidden
-            };
+        match action {
+            FleetButtonAction::ApplyFleetRename => {
+                *visibility = if ui.rename_editing {
+                    Visibility::Inherited
+                } else {
+                    Visibility::Hidden
+                };
+            }
+            FleetButtonAction::StartFleetRename => {
+                *visibility = if ui.selected_fleet_id.is_some() {
+                    Visibility::Inherited
+                } else {
+                    Visibility::Hidden
+                };
+            }
+            _ => {}
         }
     }
 }
@@ -1740,12 +1834,12 @@ fn update_fleet_rename_buttons(
 fn update_ship_stepper_rows(
     simulation: Res<SimulationResource>,
     ui: Res<FleetUiState>,
-    open_panel: Res<OpenPanel>,
+    windows: Res<OpenWindows>,
     entity_visuals: Res<EntityVisualCatalog>,
     mut rows: Query<(&ShipStepperRow, &mut Text)>,
     mut icons: Query<(&ShipStepperIcon, &mut ImageNode)>,
 ) {
-    if *open_panel != OpenPanel::Fleet || ui.tab != FleetUiTab::Fleets {
+    if !windows.is_visible(GameWindowKind::Fleet) || ui.tab != FleetUiTab::Fleets {
         return;
     }
     let colony = active_colony(simulation.simulation());
@@ -1775,10 +1869,10 @@ fn update_ship_stepper_rows(
 
 fn update_quantity_editor_text(
     ui: Res<FleetUiState>,
-    open_panel: Res<OpenPanel>,
+    windows: Res<OpenWindows>,
     mut texts: Query<(&QuantityEditorText, &mut Text)>,
 ) {
-    if *open_panel != OpenPanel::Fleet || ui.tab != FleetUiTab::Fleets {
+    if !windows.is_visible(GameWindowKind::Fleet) || ui.tab != FleetUiTab::Fleets {
         return;
     }
     for (marker, mut text) in &mut texts {
@@ -1800,12 +1894,12 @@ fn update_quantity_editor_text(
 fn update_active_mission_rows(
     simulation: Res<SimulationResource>,
     ui: Res<FleetUiState>,
-    open_panel: Res<OpenPanel>,
+    windows: Res<OpenWindows>,
     mut rows: Query<(&mut MissionRow, &mut Visibility, &Children)>,
     mut texts: Query<&mut Text>,
     mut cancel_buttons: Query<(&MissionCancelButton, &mut Visibility), Without<MissionRow>>,
 ) {
-    if *open_panel != OpenPanel::Fleet || ui.tab != FleetUiTab::Active {
+    if !windows.is_visible(GameWindowKind::Fleet) || ui.tab != FleetUiTab::Active {
         return;
     }
     let simulation = simulation.simulation();
@@ -1871,7 +1965,7 @@ fn update_active_mission_rows(
 fn update_report_rows(
     simulation: Res<SimulationResource>,
     ui: Res<FleetUiState>,
-    open_panel: Res<OpenPanel>,
+    windows: Res<OpenWindows>,
     mut rows: Query<(
         &mut ReportRow,
         &Interaction,
@@ -1883,7 +1977,7 @@ fn update_report_rows(
     mut row_texts: Query<&mut Text, Without<ReportDetailText>>,
     mut detail_texts: Query<&mut Text, With<ReportDetailText>>,
 ) {
-    if *open_panel != OpenPanel::Fleet || ui.tab != FleetUiTab::Reports {
+    if !windows.is_visible(GameWindowKind::Fleet) || ui.tab != FleetUiTab::Reports {
         return;
     }
     let state = simulation.simulation().state();
@@ -2385,10 +2479,13 @@ mod tests {
 
     #[test]
     fn fleet_composer_rows_use_ship_visuals() {
+        let mut windows = OpenWindows::default();
+        windows.open(GameWindowKind::Fleet);
         let mut app = bevy::app::App::new();
         app.init_resource::<Assets<Image>>()
             .insert_resource(fresh_simulation_resource())
-            .insert_resource(OpenPanel::Fleet)
+            .insert_resource(OpenPanel::None)
+            .insert_resource(windows)
             .insert_resource(FleetUiState::default())
             .add_systems(bevy::app::Startup, spawn_fleet_screen)
             .add_systems(bevy::app::Update, update_ship_stepper_rows);
@@ -2446,13 +2543,16 @@ mod tests {
             cargo: galactic_domain::ResourceStock::ZERO,
             assignment: FleetAssignment::Idle,
         });
+        let mut windows = OpenWindows::default();
+        windows.open(GameWindowKind::Fleet);
         let mut app = bevy::app::App::new();
         app.init_resource::<Assets<Image>>()
             .insert_resource(SimulationResource {
                 simulation,
                 pending_events: Vec::new(),
             })
-            .insert_resource(OpenPanel::Fleet)
+            .insert_resource(OpenPanel::None)
+            .insert_resource(windows)
             .insert_resource(FleetUiState {
                 selected_fleet_id: Some(fleet_id),
                 ..Default::default()
@@ -2528,9 +2628,12 @@ mod tests {
     }
 
     #[test]
-    fn opening_fleet_panel_overrides_another_open_panel() {
+    fn opening_fleet_window_keeps_other_game_windows_open() {
         let mut world = World::new();
-        world.insert_resource(OpenPanel::Craft);
+        let mut windows = OpenWindows::default();
+        windows.open(GameWindowKind::Craft);
+        world.insert_resource(OpenPanel::None);
+        world.insert_resource(windows);
         world.insert_resource(FleetUiState::default());
         world.insert_resource(super::super::navigation_ui::NavigationUiState::default());
         world.insert_resource(super::super::save_load_ui::SaveLoadUiState::default());
@@ -2542,13 +2645,19 @@ mod tests {
             .run_system_once(handle_fleet_shortcuts)
             .expect("handle_fleet_shortcuts runs");
 
-        assert_eq!(*world.resource::<OpenPanel>(), OpenPanel::Fleet);
+        assert_eq!(*world.resource::<OpenPanel>(), OpenPanel::None);
+        let windows = world.resource::<OpenWindows>();
+        assert!(windows.is_visible(GameWindowKind::Craft));
+        assert!(windows.is_visible(GameWindowKind::Fleet));
     }
 
     #[test]
     fn fleet_shortcuts_are_ignored_while_renaming_a_fleet() {
         let mut world = World::new();
-        world.insert_resource(OpenPanel::Fleet);
+        let mut windows = OpenWindows::default();
+        windows.open(GameWindowKind::Fleet);
+        world.insert_resource(OpenPanel::None);
+        world.insert_resource(windows);
         world.insert_resource(FleetUiState {
             rename_editing: true,
             ..default()
@@ -2563,7 +2672,12 @@ mod tests {
             .run_system_once(handle_fleet_shortcuts)
             .expect("handle_fleet_shortcuts runs");
 
-        assert_eq!(*world.resource::<OpenPanel>(), OpenPanel::Fleet);
+        assert_eq!(*world.resource::<OpenPanel>(), OpenPanel::None);
+        assert!(
+            world
+                .resource::<OpenWindows>()
+                .is_visible(GameWindowKind::Fleet)
+        );
         assert!(world.resource::<FleetUiState>().rename_editing);
     }
 
@@ -2641,7 +2755,10 @@ mod tests {
     #[test]
     fn escape_closes_the_fleet_panel() {
         let mut world = World::new();
-        world.insert_resource(OpenPanel::Fleet);
+        let mut windows = OpenWindows::default();
+        windows.open(GameWindowKind::Fleet);
+        world.insert_resource(OpenPanel::None);
+        world.insert_resource(windows);
         world.insert_resource(FleetUiState::default());
         world.insert_resource(super::super::navigation_ui::NavigationUiState::default());
         world.insert_resource(super::super::save_load_ui::SaveLoadUiState::default());
@@ -2654,5 +2771,10 @@ mod tests {
             .expect("handle_fleet_shortcuts runs");
 
         assert_eq!(*world.resource::<OpenPanel>(), OpenPanel::None);
+        assert!(
+            !world
+                .resource::<OpenWindows>()
+                .is_visible(GameWindowKind::Fleet)
+        );
     }
 }

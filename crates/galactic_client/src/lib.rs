@@ -26,15 +26,16 @@ use objectives_ui::ObjectivesUiPlugin;
 use presentation::colony_management_ui::{
     capture_colony_management_feedback, cycle_management_colony, handle_colony_management_buttons,
     update_action_buttons, update_colony_management_buildings, update_colony_management_detail,
-    update_colony_management_queue, update_colony_management_resources,
-    update_colony_management_visibility,
+    update_colony_management_queue, update_colony_management_visibility,
 };
 use presentation::components::{
-    ColonyManagementState, DebugOverlayState, HelpUiState, InspectorContent, InspectorPanelRoot,
-    InspectorSection, InspectorTabBarRoot, InspectorTabButton, InspectorTabButtonQuery,
-    InspectorTabLabelQuery, InspectorTabState, InspectorTextQuery, InspectorTextRole,
-    IntroPitchUiState, OpenPanel, PointerSelectionState, SelectedMission, StrategicViewEntity,
-    TopBarText, UiPointerBlocker, VictoryUiState,
+    ColonyManagementState, CommandDockButton, CommandDockGroup, CommandDockTarget,
+    DebugOverlayState, GameWindowKind, GameWindowRoot, GameWindowTitleBar, HelpUiState,
+    InspectorButtonAction, InspectorButtonInteractionQuery, InspectorContent, InspectorPanelRoot,
+    InspectorPanelState, InspectorSection, InspectorTabBarRoot, InspectorTabButton,
+    InspectorTabButtonQuery, InspectorTabLabelQuery, InspectorTabState, InspectorTextQuery,
+    InspectorTextRole, IntroPitchUiState, OpenPanel, OpenWindows, PointerSelectionState,
+    SelectedMission, StrategicViewEntity, TopBarText, UiPointerBlocker, VictoryUiState,
 };
 use presentation::entity_visuals::EntityVisualCatalog;
 use presentation::icons::IconAssets;
@@ -45,7 +46,9 @@ use presentation::input::{
     update_pointer_tooltip,
 };
 use presentation::inspector_panel::{
-    combat_report_text, format_strategic_duration, handle_inspector_tab_buttons,
+    combat_outcome_label, combat_report_statistics_text, combat_report_summary_text,
+    combat_report_text, combat_report_timeline_text, combat_report_units_text,
+    format_strategic_duration, handle_inspector_buttons, handle_inspector_tab_buttons,
     mission_error_text, mission_kind_label, mission_next_deadline, mission_phase_label_for_kind,
     mission_result_text, mission_target_label, update_info_panel, update_ui,
 };
@@ -59,19 +62,21 @@ use presentation::procedural_materials::{
     atmosphere_material, star_halo_material, star_material, territory_tint_material,
 };
 use presentation::scene::{
-    PlanetVisualMaterialCache, accent_craft_amber, accent_fleet_blue, accent_research_violet,
-    action_button_color, action_button_outline, handle_help_toggle_button,
-    handle_intro_pitch_buttons, handle_scroll_areas, handle_tab_bar_galaxy_button,
-    handle_victory_modal_buttons, panel_background, panel_outline,
-    rebuild_strategic_view_if_requested, spawn_scene, spawn_strategic_view, spawn_ui, ui_text_font,
-    update_camera_graphics_preset, update_help_visibility, update_intro_pitch_visibility,
-    update_resource_bar, update_scroll_indicators, update_sun_light_preset, update_victory_modal,
-    update_victory_state, update_window_resolution_preset,
+    PlanetVisualMaterialCache, UI_ICON_SIZE_LARGE, UI_ICON_SIZE_SMALL, accent_craft_amber,
+    accent_fleet_blue, accent_research_violet, action_button_color, action_button_outline,
+    handle_game_window_drag, handle_help_toggle_button, handle_intro_pitch_buttons,
+    handle_scroll_areas, handle_tab_bar_galaxy_button, handle_victory_modal_buttons,
+    panel_background, panel_outline, rebuild_strategic_view_if_requested, spawn_scene,
+    spawn_strategic_view, spawn_ui, ui_text_font, update_camera_graphics_preset,
+    update_command_dock_buttons, update_game_window_roots, update_help_visibility,
+    update_intro_pitch_visibility, update_resource_bar, update_scroll_indicators,
+    update_sun_light_preset, update_victory_modal, update_victory_state,
+    update_window_resolution_preset,
 };
 use presentation::shortcuts::{apply_simulation_command, apply_ui_action, replace_simulation};
 use presentation::strategic_camera::{tick_simulation, update_strategic_camera};
 use presentation::strategic_navigation::{
-    BreadcrumbKind, NavigationHistory, StrategicNavigation, ViewRebuildRequest,
+    BreadcrumbKind, BreadcrumbSegment, NavigationHistory, StrategicNavigation, ViewRebuildRequest,
     breadcrumb_segments, navigate_to_galaxy, navigate_to_sector, navigate_to_selection,
 };
 use presentation::universe_labels::LabelBudgetState;
@@ -93,7 +98,7 @@ use bevy::render::{
 use bevy::text::{FontAtlasSet, FontCx, FontSource};
 use bevy::window::PresentMode;
 use galactic_domain::{PlanetKind, StarClass, SystemId, UniverseConfig, UniverseScalePreset};
-use galactic_sim::{GameEvent, GameEventKind, Simulation, SystemVisibility};
+use galactic_sim::{GameEvent, GameEventKind, Simulation, SystemVisibility, seed_debug_scenario};
 
 fn default_asset_folder() -> String {
     let cwd = PathBuf::from(".");
@@ -160,16 +165,20 @@ pub(crate) const UNIVERSE_VERTICAL_EXAGGERATION: f32 = 3.4;
 const INITIAL_OBSERVATION_SYSTEM_LIMIT: usize = 14;
 
 pub fn run() {
-    let (scale_preset, benchmark) = match parse_launch_args(std::env::args().skip(1)) {
-        Ok(parsed) => parsed,
-        Err(message) => {
-            eprintln!("{message}");
-            return;
-        }
-    };
+    let (scale_preset, benchmark, dev_combat_fleet) =
+        match parse_launch_args(std::env::args().skip(1)) {
+            Ok(parsed) => parsed,
+            Err(message) => {
+                eprintln!("{message}");
+                return;
+            }
+        };
     let mut plugin = ClientPlugin::new(scale_preset);
     if let Some(config) = benchmark {
         plugin = plugin.with_benchmark(config);
+    }
+    if dev_combat_fleet {
+        plugin = plugin.with_dev_combat_fleet();
     }
     App::new().add_plugins(plugin).run();
 }
@@ -177,6 +186,7 @@ pub fn run() {
 pub struct ClientPlugin {
     scale_preset: UniverseScalePreset,
     benchmark: Option<BenchmarkConfig>,
+    dev_combat_fleet: bool,
 }
 
 impl ClientPlugin {
@@ -184,11 +194,21 @@ impl ClientPlugin {
         Self {
             scale_preset,
             benchmark: None,
+            dev_combat_fleet: false,
         }
     }
 
     pub(crate) fn with_benchmark(mut self, config: BenchmarkConfig) -> Self {
         self.benchmark = Some(config);
+        self
+    }
+
+    /// Maxes out the home colony's buildings, unlocks every technology, and
+    /// forms a fleet of every ship type on startup, so playtesting doesn't
+    /// require a full build-up grind first. Debug-only: wired from the
+    /// `--dev-combat` launch flag.
+    pub(crate) const fn with_dev_combat_fleet(mut self) -> Self {
+        self.dev_combat_fleet = true;
         self
     }
 }
@@ -201,10 +221,14 @@ impl Default for ClientPlugin {
 
 impl Plugin for ClientPlugin {
     fn build(&self, app: &mut App) {
-        let simulation = Simulation::new(UniverseConfig::for_preset(
+        let mut simulation = Simulation::new(UniverseConfig::for_preset(
             galactic_domain::MVP_UNIVERSE_SEED,
             self.scale_preset,
         ));
+        if self.dev_combat_fleet {
+            seed_debug_scenario(simulation.state_mut())
+                .expect("the debug scenario must always be a valid fleet composition");
+        }
         let navigation =
             StrategicNavigation::for_universe(self.scale_preset, simulation.universe());
         let graphics_settings = presentation::graphics_settings::GraphicsSettings {
@@ -250,12 +274,14 @@ impl Plugin for ClientPlugin {
         .init_resource::<PointerSelectionState>()
         .init_resource::<ColonyManagementState>()
         .init_resource::<OpenPanel>()
+        .init_resource::<OpenWindows>()
         .init_resource::<MemoryDiagnostics>()
         .init_resource::<DebugOverlayState>()
         .init_resource::<HelpUiState>()
         .init_resource::<IntroPitchUiState>()
         .init_resource::<VictoryUiState>()
         .init_resource::<InspectorTabState>()
+        .init_resource::<InspectorPanelState>()
         .init_resource::<FleetTrailSpawnTimer>();
 
         if let Some(config) = self.benchmark.clone() {
@@ -312,13 +338,14 @@ fn take_flag_value(
 
 fn parse_launch_args(
     args: impl IntoIterator<Item = String>,
-) -> Result<(UniverseScalePreset, Option<BenchmarkConfig>), String> {
+) -> Result<(UniverseScalePreset, Option<BenchmarkConfig>, bool), String> {
     let mut args = args.into_iter();
     let mut preset = UniverseScalePreset::default();
     let mut benchmark_enabled = false;
     let mut benchmark_resolution = None;
     let mut benchmark_preset = None;
     let mut benchmark_export_dir = None;
+    let mut dev_combat_fleet = false;
 
     while let Some(argument) = args.next() {
         if let Some(value) = take_flag_value(&argument, "--scale", &mut args)? {
@@ -327,6 +354,8 @@ fn parse_launch_args(
             })?;
         } else if argument == "--benchmark" {
             benchmark_enabled = true;
+        } else if argument == "--dev-combat" {
+            dev_combat_fleet = true;
         } else if let Some(value) = take_flag_value(&argument, "--benchmark-resolution", &mut args)?
         {
             benchmark_resolution = Some(BenchmarkResolution::from_slug(&value).ok_or_else(|| {
@@ -344,7 +373,7 @@ fn parse_launch_args(
             return Err(format!(
                 "Option inconnue « {argument} ». Utiliser --scale test|mvp|stress, --benchmark, \
                  --benchmark-resolution 720p|1080p, --benchmark-preset low|medium|high, \
-                 --benchmark-export <dossier>."
+                 --benchmark-export <dossier>, --dev-combat."
             ));
         }
     }
@@ -363,7 +392,7 @@ fn parse_launch_args(
         config
     });
 
-    Ok((preset, benchmark))
+    Ok((preset, benchmark, dev_combat_fleet))
 }
 
 pub struct SimulationBridgePlugin;
@@ -446,8 +475,10 @@ impl Plugin for PresentationPlugin {
                 handle_help_toggle_button,
                 handle_intro_pitch_buttons,
                 handle_victory_modal_buttons,
+                handle_inspector_buttons,
                 handle_inspector_tab_buttons,
                 toggle_debug_overlay,
+                handle_game_window_drag,
             )
                 .chain()
                 .in_set(PresentationUpdateSet::Interaction),
@@ -459,7 +490,6 @@ impl Plugin for PresentationPlugin {
                 update_pointer_tooltip,
                 update_ambiguity_panel,
                 update_colony_management_visibility,
-                update_colony_management_resources,
                 update_colony_management_buildings,
                 update_colony_management_detail,
                 update_colony_management_queue,
@@ -471,6 +501,8 @@ impl Plugin for PresentationPlugin {
             Update,
             (
                 update_resource_bar,
+                update_command_dock_buttons,
+                update_game_window_roots,
                 update_ui,
                 update_victory_state,
                 handle_scroll_areas,
@@ -880,15 +912,15 @@ VmSwap:\t      2048 kB
     #[test]
     fn scale_cli_defaults_to_mvp_and_accepts_all_presets() {
         assert_eq!(
-            parse_launch_args(Vec::<String>::new()).map(|(preset, _)| preset),
+            parse_launch_args(Vec::<String>::new()).map(|(preset, ..)| preset),
             Ok(UniverseScalePreset::Mvp),
         );
         assert_eq!(
-            parse_launch_args(["--scale", "test"].map(str::to_string)).map(|(preset, _)| preset),
+            parse_launch_args(["--scale", "test"].map(str::to_string)).map(|(preset, ..)| preset),
             Ok(UniverseScalePreset::Test),
         );
         assert_eq!(
-            parse_launch_args(["--scale=stress"].map(str::to_string)).map(|(preset, _)| preset),
+            parse_launch_args(["--scale=stress"].map(str::to_string)).map(|(preset, ..)| preset),
             Ok(UniverseScalePreset::Stress),
         );
         assert!(parse_launch_args(["--scale=huge"].map(str::to_string)).is_err());
@@ -896,13 +928,13 @@ VmSwap:\t      2048 kB
 
     #[test]
     fn benchmark_flag_absent_means_no_benchmark_config() {
-        let (_, benchmark) = parse_launch_args(Vec::<String>::new()).expect("parses");
+        let (_, benchmark, _) = parse_launch_args(Vec::<String>::new()).expect("parses");
         assert!(benchmark.is_none());
     }
 
     #[test]
     fn benchmark_flag_alone_runs_the_full_matrix() {
-        let (_, benchmark) =
+        let (_, benchmark, _) =
             parse_launch_args(["--benchmark"].map(str::to_string)).expect("parses");
         let config = benchmark.expect("benchmark enabled");
         assert_eq!(config.resolutions.len(), 2);
@@ -911,7 +943,7 @@ VmSwap:\t      2048 kB
 
     #[test]
     fn benchmark_resolution_and_preset_flags_restrict_the_matrix() {
-        let (_, benchmark) = parse_launch_args(
+        let (_, benchmark, _) = parse_launch_args(
             [
                 "--benchmark",
                 "--benchmark-resolution",
@@ -931,7 +963,7 @@ VmSwap:\t      2048 kB
 
     #[test]
     fn benchmark_export_flag_overrides_the_output_directory() {
-        let (_, benchmark) = parse_launch_args(
+        let (_, benchmark, _) = parse_launch_args(
             ["--benchmark", "--benchmark-export", "/tmp/my-benchmarks"].map(str::to_string),
         )
         .expect("parses");
@@ -955,6 +987,16 @@ VmSwap:\t      2048 kB
     #[test]
     fn unknown_flag_is_rejected() {
         assert!(parse_launch_args(["--nope"].map(str::to_string)).is_err());
+    }
+
+    #[test]
+    fn dev_combat_flag_defaults_to_off_and_can_be_enabled() {
+        let (_, _, dev_combat_fleet) = parse_launch_args(Vec::<String>::new()).expect("parses");
+        assert!(!dev_combat_fleet);
+
+        let (_, _, dev_combat_fleet) =
+            parse_launch_args(["--dev-combat"].map(str::to_string)).expect("parses");
+        assert!(dev_combat_fleet);
     }
 
     #[test]
@@ -1215,7 +1257,12 @@ VmSwap:\t      2048 kB
                 simulation: Simulation::new(UniverseConfig::mvp()),
                 pending_events: Vec::new(),
             })
-            .insert_resource(OpenPanel::Colony)
+            .insert_resource(OpenPanel::None)
+            .insert_resource({
+                let mut windows = OpenWindows::default();
+                windows.open(GameWindowKind::Colony);
+                windows
+            })
             .init_resource::<ColonyManagementState>()
             .add_systems(Startup, spawn_management_for_test)
             .add_systems(

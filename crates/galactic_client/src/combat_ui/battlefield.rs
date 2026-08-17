@@ -15,10 +15,13 @@ use crate::{
     },
 };
 
-use super::group_panel::{self, CombatPlanDraft, CombatPlanDraftGroupView, CombatPlanDraftState};
+use super::group_panel::{
+    self, CombatPlanDraft, CombatPlanDraftGroupView, CombatPlanDraftState, DraftAction,
+    DraftActionButton,
+};
 use super::{
-    CombatRoundLogText, CombatUiPhase, CombatUiState, combat_unit_name, doctrine_name,
-    integrity_reveal_text, quantity_reveal_text, target_class_label,
+    CombatRoundLogText, CombatUiPhase, CombatUiState, UiPointerBlocker, combat_unit_name,
+    doctrine_name, integrity_reveal_text, quantity_reveal_text, target_class_label,
 };
 
 const MAX_BATTLEFIELD_CONTACTS: usize = 5;
@@ -187,6 +190,13 @@ pub(super) fn spawn_battlefield_panel(parent: &mut ChildSpawnerCommands, icon_as
         });
 }
 
+/// COMBAT-UX-001-C: the 3 group tokens cluster vertically centered (doc §18
+/// — "les groupes doivent occuper une petite zone autour de la planète")
+/// instead of stretching to fill the lane, and are real click targets: each
+/// carries `DraftAction::AssignSelected` — the exact same action/system
+/// `group_panel.rs`'s "VOS FORCES" buttons already use (doc §5.4's MVP
+/// assignment flow: "stack sélectionné + gros boutons Alpha/Beta/Gamma"),
+/// so clicking a token assigns the selected stack for free, no new state.
 fn spawn_group_lane(parent: &mut ChildSpawnerCommands, placeholder: Handle<Image>) {
     parent
         .spawn(Node {
@@ -194,16 +204,19 @@ fn spawn_group_lane(parent: &mut ChildSpawnerCommands, placeholder: Handle<Image
             height: Val::Percent(100.0),
             min_height: Val::Px(0.0),
             flex_direction: FlexDirection::Column,
-            row_gap: Val::Px(6.0),
+            justify_content: JustifyContent::Center,
+            row_gap: Val::Px(10.0),
             ..default()
         })
         .with_children(|lane| {
             for id in CombatGroupPlanId::ALL {
                 lane.spawn((
+                    Button,
                     Node {
                         width: Val::Percent(100.0),
-                        flex_grow: 1.0,
-                        min_height: Val::Px(0.0),
+                        flex_grow: 0.0,
+                        flex_shrink: 0.0,
+                        min_height: Val::Px(64.0),
                         flex_direction: FlexDirection::Row,
                         align_items: AlignItems::Center,
                         column_gap: Val::Px(6.0),
@@ -215,6 +228,8 @@ fn spawn_group_lane(parent: &mut ChildSpawnerCommands, placeholder: Handle<Image
                     BackgroundColor(Color::srgba(0.04, 0.07, 0.08, 0.78)),
                     Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
                     BattlefieldRow(BattlefieldRowKind::Group(id)),
+                    DraftActionButton(DraftAction::AssignSelected(id)),
+                    UiPointerBlocker,
                 ))
                 .with_children(|row| {
                     row.spawn((
@@ -299,6 +314,9 @@ fn spawn_orbit_lane(parent: &mut ChildSpawnerCommands) {
         });
 }
 
+/// Enemy tokens mirror the group lane's compact/centered treatment (see
+/// `spawn_group_lane`) for visual symmetry around the planet — no click
+/// action here, contacts aren't assignable.
 fn spawn_contact_lane(parent: &mut ChildSpawnerCommands, placeholder: Handle<Image>) {
     parent
         .spawn(Node {
@@ -306,6 +324,7 @@ fn spawn_contact_lane(parent: &mut ChildSpawnerCommands, placeholder: Handle<Ima
             height: Val::Percent(100.0),
             min_height: Val::Px(0.0),
             flex_direction: FlexDirection::Column,
+            justify_content: JustifyContent::Center,
             row_gap: Val::Px(5.0),
             ..default()
         })
@@ -319,8 +338,9 @@ fn spawn_contact_lane(parent: &mut ChildSpawnerCommands, placeholder: Handle<Ima
                 lane.spawn((
                     Node {
                         width: Val::Percent(100.0),
-                        flex_grow: 1.0,
-                        min_height: Val::Px(0.0),
+                        flex_grow: 0.0,
+                        flex_shrink: 0.0,
+                        min_height: Val::Px(52.0),
                         flex_direction: FlexDirection::Row,
                         align_items: AlignItems::Center,
                         column_gap: Val::Px(6.0),

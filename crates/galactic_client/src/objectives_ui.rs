@@ -19,8 +19,9 @@ use crate::presentation::{
 };
 
 use super::{
-    OpenPanel, PresentationUpdateSet, SimulationResource, UiPointerBlocker,
-    collect_presentation_events, panel_background, panel_outline, ui_text_font,
+    CommandDockButton, CommandDockGroup, CommandDockTarget, OpenPanel, PresentationUpdateSet,
+    SimulationResource, UiPointerBlocker, collect_presentation_events, panel_background,
+    panel_outline, ui_text_font,
 };
 
 const OBJECTIVES_Z_INDEX: i32 = 125;
@@ -200,7 +201,7 @@ pub(crate) fn spawn_objectives_toggle(parent: &mut ChildSpawnerCommands) {
             Button,
             Node {
                 width: Val::Percent(100.0),
-                min_height: Val::Px(36.0),
+                min_height: Val::Px(42.0),
                 padding: UiRect::axes(Val::Px(10.0), Val::Px(7.0)),
                 border: UiRect::all(Val::Px(1.0)),
                 border_radius: BorderRadius::all(Val::Px(5.0)),
@@ -211,12 +212,16 @@ pub(crate) fn spawn_objectives_toggle(parent: &mut ChildSpawnerCommands) {
             BackgroundColor(Color::srgba(0.08, 0.13, 0.11, 0.96)),
             Outline::new(Val::Px(1.0), Val::ZERO, objective_accent()),
             ObjectiveButtonAction::Toggle,
+            CommandDockButton {
+                target: CommandDockTarget::Panel(OpenPanel::Objectives),
+                group: CommandDockGroup::Meta,
+            },
             UiPointerBlocker,
         ))
         .with_children(|button| {
             button.spawn((
                 Text::new("Objectifs  [O]"),
-                ui_text_font(12.0),
+                ui_text_font(12.5),
                 TextColor(Color::srgb(0.82, 0.96, 0.88)),
                 ObjectiveTextRole::Toggle,
             ));
@@ -279,6 +284,7 @@ fn spawn_objectives_screen(mut commands: Commands) {
                 ui_text_font(11.0),
                 TextColor(Color::srgb(0.94, 0.78, 0.44)),
                 Node {
+                    width: Val::Percent(100.0),
                     min_height: Val::Px(18.0),
                     ..default()
                 },

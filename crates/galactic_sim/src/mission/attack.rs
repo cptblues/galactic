@@ -42,7 +42,7 @@ pub fn launch_attack_mission(
             candidate.can_manage(actor, fleet.owner)
                 && fleet.is_idle()
                 && fleet.location == crate::FleetLocation::Docked(origin_colony_id)
-                && combat_rules().is_combat_fleet(fleet)
+                && combat_rules().has_combat_ships(fleet)
         })
         .map(|fleet| fleet.id)
         .min();

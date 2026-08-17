@@ -1,7 +1,9 @@
 // MVP-030-A4: a step-by-step mission planner replacing the previous auto-pick launch tab.
 // The player must explicitly choose a fleet at every step; nothing is auto-formed or
 // auto-selected on their behalf.
+use bevy::input::{ButtonState, keyboard::KeyboardInput};
 use bevy::prelude::*;
+use bevy::ui::RelativeCursorPosition;
 use galactic_domain::{ColonyId, ExtractionSiteId, FleetId, PlanetId, ResourceStock, SystemId};
 use galactic_sim::{
     FleetLocation, GameAction, KnowledgeLevel, MissionKind, MissionOrder, MissionTarget,
@@ -11,24 +13,39 @@ use galactic_sim::{
 };
 
 use super::{
-    OpenPanel, PresentationUpdateSet, SimulationResource, UiPointerBlocker, action_button_color,
-    action_button_outline, apply_simulation_command, collect_presentation_events,
-    format_strategic_duration, mission_error_text, mission_kind_label, panel_background,
-    panel_outline, provisional_planet_label, ui_text_font,
+    GameWindowKind, OpenWindows, PresentationUpdateSet, SimulationResource, UiPointerBlocker,
+    action_button_color, action_button_outline, apply_simulation_command,
+    collect_presentation_events, format_strategic_duration, mission_error_text, mission_kind_label,
+    panel_background, panel_outline, provisional_planet_label, ui_text_font,
 };
 use crate::fleet_ui::{
     FleetUiTab, TabContent, active_colony, fleet_composition_summary, fleet_location_label,
 };
+use crate::presentation::{
+    components::{ScrollIndicatorArea, ScrollIndicatorId},
+    scene::spawn_scroll_indicator,
+};
 
 const MAX_TARGET_ROWS: usize = 16;
 const MAX_FLEET_ROWS: usize = 8;
-const CARGO_STEP: u64 = 50;
+const MAX_CARGO_DIGITS: usize = 7;
+// Order matters beyond display: `handle_wizard_fleet_buttons`/
+// `sync_mission_wizard_selection` auto-pick the *first* kind here a newly
+// selected fleet supports. Colonize's requirement (exactly one ship, and it
+// must be the colony ship) is far more specific than Harvest/Transport's
+// (empty cargo + any spare cargo capacity) — the colony ship itself carries
+// cargo capacity (`assets/rulesets/default/craftables.ron`), so a lone
+// colony-ship fleet satisfies Harvest/Transport too. Colonize must come
+// before them here or the auto-pick silently lands on "Récolte" instead of
+// "Colonisation" for a colony-ship-only fleet (playtest feedback: the
+// Colonize action "wasn't available" even with a genuinely eligible fleet —
+// it was available, just silently not the selected kind).
 const MISSION_KIND_OPTIONS: [MissionKind; 6] = [
     MissionKind::Probe,
     MissionKind::Analyze,
     MissionKind::Attack,
-    MissionKind::Harvest,
     MissionKind::Colonize,
+    MissionKind::Harvest,
     MissionKind::Transport,
 ];
 
@@ -50,6 +67,7 @@ impl Plugin for MissionWizardPlugin {
                     handle_wizard_target_buttons,
                     handle_wizard_fleet_buttons,
                     handle_wizard_cargo_buttons,
+                    handle_wizard_cargo_input,
                     handle_wizard_step_buttons,
                     handle_wizard_confirm_button,
                 )
@@ -59,11 +77,13 @@ impl Plugin for MissionWizardPlugin {
             .add_systems(
                 Update,
                 (
+                    sync_mission_wizard_selection,
                     update_wizard_step_visibility,
                     update_wizard_origin_text,
                     update_wizard_kind_buttons,
                     update_wizard_target_rows,
                     update_wizard_fleet_rows,
+                    update_wizard_cargo_value_texts,
                     update_wizard_params_text,
                     update_wizard_preview_text,
                     update_wizard_feedback_text,
@@ -109,6 +129,13 @@ enum WizardTarget {
     Site(ExtractionSiteId),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CargoField {
+    Metal,
+    Crystal,
+    Fuel,
+}
+
 #[derive(Resource)]
 pub(crate) struct MissionWizardState {
     step: WizardStep,
@@ -116,6 +143,8 @@ pub(crate) struct MissionWizardState {
     target: Option<WizardTarget>,
     fleet_id: Option<FleetId>,
     cargo: ResourceStock,
+    cargo_editing: Option<CargoField>,
+    cargo_buffer: String,
     feedback: String,
 }
 
@@ -127,6 +156,8 @@ impl Default for MissionWizardState {
             target: None,
             fleet_id: None,
             cargo: ResourceStock::ZERO,
+            cargo_editing: None,
+            cargo_buffer: String::new(),
             feedback: String::new(),
         }
     }
@@ -149,6 +180,7 @@ enum WizardButtonAction {
     AdjustMetal(i64),
     AdjustCrystal(i64),
     AdjustFuel(i64),
+    StartCargoEdit(CargoField),
     MaxMetal,
     MaxCrystal,
     MaxFuel,
@@ -193,7 +225,13 @@ struct WizardFleetHintText;
 struct WizardDestinationHintText;
 
 #[derive(Component)]
+struct WizardKindHintText;
+
+#[derive(Component)]
 struct WizardParamsText;
+
+#[derive(Component)]
+struct WizardCargoValueText(CargoField);
 
 #[derive(Component)]
 struct WizardPreviewText;
@@ -218,6 +256,7 @@ pub(crate) fn spawn_mission_wizard_tab(root: &mut ChildSpawnerCommands) {
         Node {
             width: Val::Percent(100.0),
             flex_grow: 1.0,
+            min_height: Val::Px(0.0),
             flex_direction: FlexDirection::Column,
             row_gap: Val::Px(8.0),
             ..default()
@@ -239,21 +278,39 @@ pub(crate) fn spawn_mission_wizard_tab(root: &mut ChildSpawnerCommands) {
         ));
 
         column
-            .spawn((Node {
+            .spawn(Node {
                 width: Val::Percent(100.0),
                 flex_grow: 1.0,
                 min_height: Val::Px(0.0),
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(8.0),
-                overflow: Overflow::scroll_y(),
+                position_type: PositionType::Relative,
                 ..default()
-            },))
-            .with_children(|steps| {
-                spawn_wizard_fleet_block(steps);
-                spawn_wizard_kind_block(steps);
-                spawn_wizard_destination_block(steps);
-                spawn_wizard_params_block(steps);
-                spawn_wizard_preview_block(steps);
+            })
+            .with_children(|frame| {
+                frame
+                    .spawn((
+                        Node {
+                            width: Val::Percent(100.0),
+                            height: Val::Percent(100.0),
+                            min_height: Val::Px(0.0),
+                            flex_direction: FlexDirection::Column,
+                            row_gap: Val::Px(8.0),
+                            overflow: Overflow::scroll_y(),
+                            ..default()
+                        },
+                        ScrollPosition::default(),
+                        RelativeCursorPosition::default(),
+                        ScrollIndicatorArea {
+                            id: ScrollIndicatorId::WizardStepsColumn,
+                        },
+                    ))
+                    .with_children(|steps| {
+                        spawn_wizard_fleet_block(steps);
+                        spawn_wizard_kind_block(steps);
+                        spawn_wizard_destination_block(steps);
+                        spawn_wizard_params_block(steps);
+                        spawn_wizard_preview_block(steps);
+                    });
+                spawn_scroll_indicator(frame, ScrollIndicatorId::WizardStepsColumn);
             });
 
         column
@@ -328,19 +385,39 @@ fn spawn_wizard_kind_block(parent: &mut ChildSpawnerCommands) {
             Node {
                 width: Val::Percent(100.0),
                 flex_grow: 1.0,
-                flex_direction: FlexDirection::Row,
-                column_gap: Val::Px(6.0),
+                min_height: Val::Px(0.0),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(4.0),
                 ..default()
             },
             WizardStepBlock(WizardStep::Kind),
         ))
-        .with_children(|bar| {
-            spawn_wizard_kind_button(bar, MissionKind::Probe, "Reconnaissance");
-            spawn_wizard_kind_button(bar, MissionKind::Analyze, "Analyse");
-            spawn_wizard_kind_button(bar, MissionKind::Attack, "Attaque");
-            spawn_wizard_kind_button(bar, MissionKind::Harvest, "Récolte");
-            spawn_wizard_kind_button(bar, MissionKind::Colonize, "Colonisation");
-            spawn_wizard_kind_button(bar, MissionKind::Transport, "Transport");
+        .with_children(|column| {
+            column
+                .spawn(Node {
+                    width: Val::Percent(100.0),
+                    flex_direction: FlexDirection::Row,
+                    column_gap: Val::Px(6.0),
+                    ..default()
+                })
+                .with_children(|bar| {
+                    spawn_wizard_kind_button(bar, MissionKind::Probe, "Reconnaissance");
+                    spawn_wizard_kind_button(bar, MissionKind::Analyze, "Analyse");
+                    spawn_wizard_kind_button(bar, MissionKind::Attack, "Attaque");
+                    spawn_wizard_kind_button(bar, MissionKind::Harvest, "Récolte");
+                    spawn_wizard_kind_button(bar, MissionKind::Colonize, "Colonisation");
+                    spawn_wizard_kind_button(bar, MissionKind::Transport, "Transport");
+                });
+            column.spawn((
+                Text::new(""),
+                ui_text_font(10.5),
+                TextColor(Color::srgb(0.94, 0.72, 0.68)),
+                Node {
+                    width: Val::Percent(100.0),
+                    ..default()
+                },
+                WizardKindHintText,
+            ));
         });
 }
 
@@ -379,33 +456,52 @@ fn spawn_wizard_destination_block(parent: &mut ChildSpawnerCommands) {
             Node {
                 width: Val::Percent(100.0),
                 flex_grow: 1.0,
-                padding: UiRect::all(Val::Px(9.0)),
-                border: UiRect::all(Val::Px(1.0)),
-                border_radius: BorderRadius::all(Val::Px(6.0)),
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(3.0),
-                overflow: Overflow::scroll_y(),
+                min_height: Val::Px(0.0),
+                position_type: PositionType::Relative,
                 ..default()
             },
-            BackgroundColor(panel_background()),
-            Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
             WizardStepBlock(WizardStep::Destination),
         ))
-        .with_children(|list| {
-            list.spawn((
-                Text::new("DESTINATION"),
-                ui_text_font(12.0),
-                TextColor(Color::srgb(0.78, 0.86, 1.0)),
-            ));
-            list.spawn((
-                Text::new(""),
-                ui_text_font(10.5),
-                TextColor(Color::srgb(0.94, 0.72, 0.68)),
-                WizardDestinationHintText,
-            ));
-            for slot in 0..MAX_TARGET_ROWS {
-                spawn_wizard_target_row(list, slot);
-            }
+        .with_children(|frame| {
+            frame
+                .spawn((
+                    Node {
+                        width: Val::Percent(100.0),
+                        height: Val::Percent(100.0),
+                        min_height: Val::Px(0.0),
+                        padding: UiRect::all(Val::Px(9.0)),
+                        border: UiRect::all(Val::Px(1.0)),
+                        border_radius: BorderRadius::all(Val::Px(6.0)),
+                        flex_direction: FlexDirection::Column,
+                        row_gap: Val::Px(3.0),
+                        overflow: Overflow::scroll_y(),
+                        ..default()
+                    },
+                    ScrollPosition::default(),
+                    RelativeCursorPosition::default(),
+                    ScrollIndicatorArea {
+                        id: ScrollIndicatorId::WizardStepPanel,
+                    },
+                    BackgroundColor(panel_background()),
+                    Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
+                ))
+                .with_children(|list| {
+                    list.spawn((
+                        Text::new("DESTINATION"),
+                        ui_text_font(12.0),
+                        TextColor(Color::srgb(0.78, 0.86, 1.0)),
+                    ));
+                    list.spawn((
+                        Text::new(""),
+                        ui_text_font(10.5),
+                        TextColor(Color::srgb(0.94, 0.72, 0.68)),
+                        WizardDestinationHintText,
+                    ));
+                    for slot in 0..MAX_TARGET_ROWS {
+                        spawn_wizard_target_row(list, slot);
+                    }
+                });
+            spawn_scroll_indicator(frame, ScrollIndicatorId::WizardStepPanel);
         });
 }
 
@@ -450,33 +546,52 @@ fn spawn_wizard_fleet_block(parent: &mut ChildSpawnerCommands) {
             Node {
                 width: Val::Percent(100.0),
                 flex_grow: 1.0,
-                padding: UiRect::all(Val::Px(9.0)),
-                border: UiRect::all(Val::Px(1.0)),
-                border_radius: BorderRadius::all(Val::Px(6.0)),
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(3.0),
-                overflow: Overflow::scroll_y(),
+                min_height: Val::Px(0.0),
+                position_type: PositionType::Relative,
                 ..default()
             },
-            BackgroundColor(panel_background()),
-            Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
             WizardStepBlock(WizardStep::Fleet),
         ))
-        .with_children(|list| {
-            list.spawn((
-                Text::new("FLOTTE"),
-                ui_text_font(12.0),
-                TextColor(Color::srgb(0.78, 0.86, 1.0)),
-            ));
-            list.spawn((
-                Text::new(""),
-                ui_text_font(10.5),
-                TextColor(Color::srgb(0.94, 0.72, 0.68)),
-                WizardFleetHintText,
-            ));
-            for slot in 0..MAX_FLEET_ROWS {
-                spawn_wizard_fleet_row(list, slot);
-            }
+        .with_children(|frame| {
+            frame
+                .spawn((
+                    Node {
+                        width: Val::Percent(100.0),
+                        height: Val::Percent(100.0),
+                        min_height: Val::Px(0.0),
+                        padding: UiRect::all(Val::Px(9.0)),
+                        border: UiRect::all(Val::Px(1.0)),
+                        border_radius: BorderRadius::all(Val::Px(6.0)),
+                        flex_direction: FlexDirection::Column,
+                        row_gap: Val::Px(3.0),
+                        overflow: Overflow::scroll_y(),
+                        ..default()
+                    },
+                    ScrollPosition::default(),
+                    RelativeCursorPosition::default(),
+                    ScrollIndicatorArea {
+                        id: ScrollIndicatorId::WizardStepPanel,
+                    },
+                    BackgroundColor(panel_background()),
+                    Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
+                ))
+                .with_children(|list| {
+                    list.spawn((
+                        Text::new("FLOTTE"),
+                        ui_text_font(12.0),
+                        TextColor(Color::srgb(0.78, 0.86, 1.0)),
+                    ));
+                    list.spawn((
+                        Text::new(""),
+                        ui_text_font(10.5),
+                        TextColor(Color::srgb(0.94, 0.72, 0.68)),
+                        WizardFleetHintText,
+                    ));
+                    for slot in 0..MAX_FLEET_ROWS {
+                        spawn_wizard_fleet_row(list, slot);
+                    }
+                });
+            spawn_scroll_indicator(frame, ScrollIndicatorId::WizardStepPanel);
         });
 }
 
@@ -521,63 +636,86 @@ fn spawn_wizard_params_block(parent: &mut ChildSpawnerCommands) {
             Node {
                 width: Val::Percent(100.0),
                 flex_grow: 1.0,
-                padding: UiRect::all(Val::Px(9.0)),
-                border: UiRect::all(Val::Px(1.0)),
-                border_radius: BorderRadius::all(Val::Px(6.0)),
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(6.0),
-                overflow: Overflow::scroll_y(),
+                min_height: Val::Px(0.0),
+                position_type: PositionType::Relative,
                 ..default()
             },
-            BackgroundColor(panel_background()),
-            Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
             WizardStepBlock(WizardStep::Params),
         ))
-        .with_children(|column| {
-            column.spawn((
-                Text::new("CARGAISON / PARAMÈTRES"),
-                ui_text_font(12.0),
-                TextColor(Color::srgb(0.78, 0.86, 1.0)),
-            ));
-            column.spawn((
-                Text::new(""),
-                ui_text_font(10.5),
-                TextColor(Color::srgb(0.86, 0.90, 0.98)),
-                WizardParamsText,
-            ));
-            spawn_wizard_cargo_row(
-                column,
-                "Métal",
-                WizardButtonAction::AdjustMetal(-(CARGO_STEP as i64)),
-                WizardButtonAction::AdjustMetal(CARGO_STEP as i64),
-                WizardButtonAction::MaxMetal,
-            );
-            spawn_wizard_cargo_row(
-                column,
-                "Cristal",
-                WizardButtonAction::AdjustCrystal(-(CARGO_STEP as i64)),
-                WizardButtonAction::AdjustCrystal(CARGO_STEP as i64),
-                WizardButtonAction::MaxCrystal,
-            );
-            spawn_wizard_cargo_row(
-                column,
-                "Carburant",
-                WizardButtonAction::AdjustFuel(-(CARGO_STEP as i64)),
-                WizardButtonAction::AdjustFuel(CARGO_STEP as i64),
-                WizardButtonAction::MaxFuel,
-            );
-            spawn_wizard_nav_button(
-                column,
-                "Vider la cargaison",
-                WizardButtonAction::ClearCargo,
-                (),
-            );
+        .with_children(|frame| {
+            frame
+                .spawn((
+                    Node {
+                        width: Val::Percent(100.0),
+                        height: Val::Percent(100.0),
+                        min_height: Val::Px(0.0),
+                        padding: UiRect::all(Val::Px(9.0)),
+                        border: UiRect::all(Val::Px(1.0)),
+                        border_radius: BorderRadius::all(Val::Px(6.0)),
+                        flex_direction: FlexDirection::Column,
+                        row_gap: Val::Px(6.0),
+                        overflow: Overflow::scroll_y(),
+                        ..default()
+                    },
+                    ScrollPosition::default(),
+                    RelativeCursorPosition::default(),
+                    ScrollIndicatorArea {
+                        id: ScrollIndicatorId::WizardStepPanel,
+                    },
+                    BackgroundColor(panel_background()),
+                    Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
+                ))
+                .with_children(|column| {
+                    column.spawn((
+                        Text::new("CARGAISON / PARAMÈTRES"),
+                        ui_text_font(12.0),
+                        TextColor(Color::srgb(0.78, 0.86, 1.0)),
+                    ));
+                    column.spawn((
+                        Text::new(""),
+                        ui_text_font(10.5),
+                        TextColor(Color::srgb(0.86, 0.90, 0.98)),
+                        WizardParamsText,
+                    ));
+                    spawn_wizard_cargo_row(
+                        column,
+                        "Métal",
+                        CargoField::Metal,
+                        WizardButtonAction::AdjustMetal(-1),
+                        WizardButtonAction::AdjustMetal(1),
+                        WizardButtonAction::MaxMetal,
+                    );
+                    spawn_wizard_cargo_row(
+                        column,
+                        "Cristal",
+                        CargoField::Crystal,
+                        WizardButtonAction::AdjustCrystal(-1),
+                        WizardButtonAction::AdjustCrystal(1),
+                        WizardButtonAction::MaxCrystal,
+                    );
+                    spawn_wizard_cargo_row(
+                        column,
+                        "Carburant",
+                        CargoField::Fuel,
+                        WizardButtonAction::AdjustFuel(-1),
+                        WizardButtonAction::AdjustFuel(1),
+                        WizardButtonAction::MaxFuel,
+                    );
+                    spawn_wizard_nav_button(
+                        column,
+                        "Vider la cargaison",
+                        WizardButtonAction::ClearCargo,
+                        (),
+                    );
+                });
+            spawn_scroll_indicator(frame, ScrollIndicatorId::WizardStepPanel);
         });
 }
 
 fn spawn_wizard_cargo_row(
     parent: &mut ChildSpawnerCommands,
     label: &str,
+    field: CargoField,
     minus: WizardButtonAction,
     plus: WizardButtonAction,
     max: WizardButtonAction,
@@ -598,12 +736,44 @@ fn spawn_wizard_cargo_row(
                 TextColor(Color::srgb(0.84, 0.90, 0.98)),
                 Node {
                     flex_grow: 1.0,
+                    min_width: Val::Px(0.0),
                     ..default()
                 },
             ));
-            spawn_wizard_small_button(row, "-50", minus);
-            spawn_wizard_small_button(row, "+50", plus);
+            spawn_wizard_small_button(row, "-1", minus);
+            spawn_wizard_cargo_editor(row, field);
+            spawn_wizard_small_button(row, "+1", plus);
             spawn_wizard_small_button(row, "MAX", max);
+        });
+}
+
+/// A click-to-edit numeric box between the `-1`/`+1` steppers — mirrors
+/// `craft_ui::spawn_craft_quantity_editor` / `fleet_ui::spawn_quantity_editor`.
+fn spawn_wizard_cargo_editor(parent: &mut ChildSpawnerCommands, field: CargoField) {
+    parent
+        .spawn((
+            Button,
+            Node {
+                width: Val::Px(58.0),
+                min_height: Val::Px(24.0),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                border: UiRect::all(Val::Px(1.0)),
+                border_radius: BorderRadius::all(Val::Px(4.0)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.04, 0.07, 0.12, 0.98)),
+            Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
+            WizardButtonAction::StartCargoEdit(field),
+            UiPointerBlocker,
+        ))
+        .with_children(|button| {
+            button.spawn((
+                Text::new("0"),
+                ui_text_font(10.5),
+                TextColor(Color::srgb(0.90, 0.94, 1.0)),
+                WizardCargoValueText(field),
+            ));
         });
 }
 
@@ -644,69 +814,88 @@ fn spawn_wizard_preview_block(parent: &mut ChildSpawnerCommands) {
             Node {
                 width: Val::Percent(100.0),
                 flex_grow: 1.0,
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(8.0),
-                padding: UiRect::all(Val::Px(9.0)),
-                border: UiRect::all(Val::Px(1.0)),
-                border_radius: BorderRadius::all(Val::Px(6.0)),
-                overflow: Overflow::scroll_y(),
+                min_height: Val::Px(0.0),
+                position_type: PositionType::Relative,
                 ..default()
             },
-            BackgroundColor(panel_background()),
-            Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
             WizardStepBlock(WizardStep::Preview),
         ))
-        .with_children(|column| {
-            column.spawn((
-                Text::new("ROUTE ET DURÉE"),
-                ui_text_font(12.0),
-                TextColor(Color::srgb(0.78, 0.86, 1.0)),
-            ));
-            column.spawn((
-                Text::new(""),
-                ui_text_font(10.5),
-                TextColor(Color::srgb(0.86, 0.90, 0.98)),
-                WizardPreviewText,
-            ));
-            column
+        .with_children(|frame| {
+            frame
                 .spawn((
-                    Button,
                     Node {
                         width: Val::Percent(100.0),
-                        min_height: Val::Px(40.0),
-                        justify_content: JustifyContent::Center,
-                        align_items: AlignItems::Center,
+                        height: Val::Percent(100.0),
+                        min_height: Val::Px(0.0),
+                        flex_direction: FlexDirection::Column,
+                        row_gap: Val::Px(8.0),
+                        padding: UiRect::all(Val::Px(9.0)),
                         border: UiRect::all(Val::Px(1.0)),
                         border_radius: BorderRadius::all(Val::Px(6.0)),
+                        overflow: Overflow::scroll_y(),
                         ..default()
                     },
-                    BackgroundColor(Color::srgba(0.08, 0.20, 0.36, 0.98)),
-                    Outline::new(
-                        Val::Px(1.0),
-                        Val::ZERO,
-                        Color::srgba(0.40, 0.66, 0.98, 0.78),
-                    ),
-                    WizardButtonAction::Confirm,
-                    WizardConfirmButton,
-                    UiPointerBlocker,
+                    ScrollPosition::default(),
+                    RelativeCursorPosition::default(),
+                    ScrollIndicatorArea {
+                        id: ScrollIndicatorId::WizardStepPanel,
+                    },
+                    BackgroundColor(panel_background()),
+                    Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
                 ))
-                .with_children(|button| {
-                    button.spawn((
-                        Text::new("LANCER LA MISSION"),
-                        ui_text_font(13.0),
-                        TextColor(Color::srgb(0.88, 0.94, 1.0)),
+                .with_children(|column| {
+                    column.spawn((
+                        Text::new("ROUTE ET DURÉE"),
+                        ui_text_font(12.0),
+                        TextColor(Color::srgb(0.78, 0.86, 1.0)),
                     ));
+                    column.spawn((
+                        Text::new(""),
+                        ui_text_font(10.5),
+                        TextColor(Color::srgb(0.86, 0.90, 0.98)),
+                        WizardPreviewText,
+                    ));
+                    column
+                        .spawn((
+                            Button,
+                            Node {
+                                width: Val::Percent(100.0),
+                                min_height: Val::Px(40.0),
+                                justify_content: JustifyContent::Center,
+                                align_items: AlignItems::Center,
+                                border: UiRect::all(Val::Px(1.0)),
+                                border_radius: BorderRadius::all(Val::Px(6.0)),
+                                ..default()
+                            },
+                            BackgroundColor(Color::srgba(0.08, 0.20, 0.36, 0.98)),
+                            Outline::new(
+                                Val::Px(1.0),
+                                Val::ZERO,
+                                Color::srgba(0.40, 0.66, 0.98, 0.78),
+                            ),
+                            WizardButtonAction::Confirm,
+                            WizardConfirmButton,
+                            UiPointerBlocker,
+                        ))
+                        .with_children(|button| {
+                            button.spawn((
+                                Text::new("LANCER LA MISSION"),
+                                ui_text_font(13.0),
+                                TextColor(Color::srgb(0.88, 0.94, 1.0)),
+                            ));
+                        });
                 });
+            spawn_scroll_indicator(frame, ScrollIndicatorId::WizardStepPanel);
         });
 }
 
 fn handle_wizard_kind_buttons(
     simulation: Res<SimulationResource>,
-    open_panel: Res<OpenPanel>,
+    windows: Res<OpenWindows>,
     mut ui: ResMut<MissionWizardState>,
     interactions: WizardButtonInteractionQuery,
 ) {
-    if *open_panel != OpenPanel::Fleet {
+    if !windows.is_visible(GameWindowKind::Fleet) {
         return;
     }
     for (interaction, action) in &interactions {
@@ -718,7 +907,7 @@ fn handle_wizard_kind_buttons(
                 && let Some(fleet) = simulation.simulation().state().fleet(fleet_id)
                 && !fleet_supports_mission_kind(fleet, kind)
             {
-                ui.feedback = "Cette flotte ne peut pas exécuter ce type de mission.".to_string();
+                ui.feedback = wizard_kind_unavailable_hint(kind);
                 continue;
             }
             ui.kind = kind;
@@ -730,12 +919,12 @@ fn handle_wizard_kind_buttons(
 }
 
 fn handle_wizard_target_buttons(
-    open_panel: Res<OpenPanel>,
+    windows: Res<OpenWindows>,
     mut ui: ResMut<MissionWizardState>,
     interactions: WizardButtonInteractionQuery,
     rows: Query<&WizardTargetRow>,
 ) {
-    if *open_panel != OpenPanel::Fleet {
+    if !windows.is_visible(GameWindowKind::Fleet) {
         return;
     }
     for (interaction, action) in &interactions {
@@ -754,12 +943,12 @@ fn handle_wizard_target_buttons(
 
 fn handle_wizard_fleet_buttons(
     simulation: Res<SimulationResource>,
-    open_panel: Res<OpenPanel>,
+    windows: Res<OpenWindows>,
     mut ui: ResMut<MissionWizardState>,
     interactions: WizardButtonInteractionQuery,
     rows: Query<&WizardFleetRow>,
 ) {
-    if *open_panel != OpenPanel::Fleet {
+    if !windows.is_visible(GameWindowKind::Fleet) {
         return;
     }
     for (interaction, action) in &interactions {
@@ -789,11 +978,11 @@ fn handle_wizard_fleet_buttons(
 
 fn handle_wizard_cargo_buttons(
     simulation: Res<SimulationResource>,
-    open_panel: Res<OpenPanel>,
+    windows: Res<OpenWindows>,
     mut ui: ResMut<MissionWizardState>,
     interactions: WizardButtonInteractionQuery,
 ) {
-    if *open_panel != OpenPanel::Fleet {
+    if !windows.is_visible(GameWindowKind::Fleet) {
         return;
     }
     let capacity = wizard_selected_fleet_capacity(&simulation, &ui);
@@ -804,6 +993,13 @@ fn handle_wizard_cargo_buttons(
         if *interaction != Interaction::Pressed {
             continue;
         }
+        if !matches!(*action, WizardButtonAction::StartCargoEdit(_)) {
+            // Any other cargo control is a clear "use this instead" signal —
+            // cancel in-progress numeric text entry rather than letting it
+            // silently apply later (mirrors fleet_ui's ship stepper).
+            ui.cargo_editing = None;
+            ui.cargo_buffer.clear();
+        }
         match *action {
             WizardButtonAction::AdjustMetal(delta) => {
                 ui.cargo.metal = adjust_cargo_value(ui.cargo, ui.cargo.metal, delta, capacity);
@@ -813,6 +1009,20 @@ fn handle_wizard_cargo_buttons(
             }
             WizardButtonAction::AdjustFuel(delta) => {
                 ui.cargo.fuel = adjust_cargo_value(ui.cargo, ui.cargo.fuel, delta, capacity);
+            }
+            WizardButtonAction::StartCargoEdit(field) => {
+                if let Some(previous) = ui.cargo_editing
+                    && previous != field
+                {
+                    commit_wizard_cargo_edit(&mut ui, &simulation);
+                }
+                let current = match field {
+                    CargoField::Metal => ui.cargo.metal,
+                    CargoField::Crystal => ui.cargo.crystal,
+                    CargoField::Fuel => ui.cargo.fuel,
+                };
+                ui.cargo_buffer = current.to_string();
+                ui.cargo_editing = Some(field);
             }
             WizardButtonAction::MaxMetal => {
                 let remaining = capacity.saturating_sub(ui.cargo.crystal + ui.cargo.fuel);
@@ -835,6 +1045,92 @@ fn handle_wizard_cargo_buttons(
     }
 }
 
+/// Parses `ui.cargo_buffer` and applies it to the field being edited,
+/// clamped to what the selected fleet's remaining capacity and the colony's
+/// available stock actually allow — same bounds the +/MAX buttons enforce.
+fn commit_wizard_cargo_edit(ui: &mut MissionWizardState, simulation: &SimulationResource) {
+    let Some(field) = ui.cargo_editing else {
+        return;
+    };
+    let capacity = wizard_selected_fleet_capacity(simulation, ui);
+    let available = active_colony(simulation.simulation())
+        .map(|colony| colony.resources.available())
+        .unwrap_or(ResourceStock::ZERO);
+    let requested: u64 = ui.cargo_buffer.parse().unwrap_or(0);
+    let (other_total, available_for_field) = match field {
+        CargoField::Metal => (ui.cargo.crystal + ui.cargo.fuel, available.metal),
+        CargoField::Crystal => (ui.cargo.metal + ui.cargo.fuel, available.crystal),
+        CargoField::Fuel => (ui.cargo.metal + ui.cargo.crystal, available.fuel),
+    };
+    let remaining_capacity = capacity.saturating_sub(other_total);
+    let clamped = requested.min(remaining_capacity).min(available_for_field);
+    match field {
+        CargoField::Metal => ui.cargo.metal = clamped,
+        CargoField::Crystal => ui.cargo.crystal = clamped,
+        CargoField::Fuel => ui.cargo.fuel = clamped,
+    }
+    ui.cargo_editing = None;
+    ui.cargo_buffer.clear();
+}
+
+fn handle_wizard_cargo_input(
+    mut events: MessageReader<KeyboardInput>,
+    windows: Res<OpenWindows>,
+    simulation: Res<SimulationResource>,
+    mut ui: ResMut<MissionWizardState>,
+) {
+    if !windows.is_visible(GameWindowKind::Fleet) || ui.cargo_editing.is_none() {
+        return;
+    }
+
+    for event in events.read() {
+        if event.state != ButtonState::Pressed {
+            continue;
+        }
+        match event.key_code {
+            KeyCode::Backspace => {
+                ui.cargo_buffer.pop();
+            }
+            KeyCode::Enter => commit_wizard_cargo_edit(&mut ui, &simulation),
+            KeyCode::Escape => {
+                ui.cargo_editing = None;
+                ui.cargo_buffer.clear();
+            }
+            _ => {
+                if let Some(text) = &event.text {
+                    for ch in text.chars() {
+                        if ch.is_ascii_digit() && ui.cargo_buffer.chars().count() < MAX_CARGO_DIGITS
+                        {
+                            ui.cargo_buffer.push(ch);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn update_wizard_cargo_value_texts(
+    ui: Res<MissionWizardState>,
+    mut texts: Query<(&WizardCargoValueText, &mut Text)>,
+) {
+    for (marker, mut text) in &mut texts {
+        let next = if ui.cargo_editing == Some(marker.0) {
+            format!("{}_", ui.cargo_buffer)
+        } else {
+            let value = match marker.0 {
+                CargoField::Metal => ui.cargo.metal,
+                CargoField::Crystal => ui.cargo.crystal,
+                CargoField::Fuel => ui.cargo.fuel,
+            };
+            value.to_string()
+        };
+        if text.0 != next {
+            text.0 = next;
+        }
+    }
+}
+
 fn adjust_cargo_value(cargo: ResourceStock, current: u64, delta: i64, capacity: u64) -> u64 {
     let other_total = cargo.metal + cargo.crystal + cargo.fuel - current;
     let remaining_capacity = capacity.saturating_sub(other_total);
@@ -847,11 +1143,11 @@ fn adjust_cargo_value(cargo: ResourceStock, current: u64, delta: i64, capacity: 
 
 fn handle_wizard_step_buttons(
     simulation: Res<SimulationResource>,
-    open_panel: Res<OpenPanel>,
+    windows: Res<OpenWindows>,
     mut ui: ResMut<MissionWizardState>,
     interactions: WizardButtonInteractionQuery,
 ) {
-    if *open_panel != OpenPanel::Fleet {
+    if !windows.is_visible(GameWindowKind::Fleet) {
         return;
     }
     for (interaction, action) in &interactions {
@@ -906,7 +1202,11 @@ fn validate_wizard_step(
                 return Err("La flotte sélectionnée n'est plus disponible.");
             };
             if !fleet_supports_mission_kind(fleet, ui.kind) {
-                return Err("Cette flotte ne peut pas exécuter ce type de mission.");
+                return Err(if ui.kind == MissionKind::Colonize {
+                    "Coloniser nécessite une flotte composée uniquement d'un vaisseau de colonisation."
+                } else {
+                    "Cette flotte ne peut pas exécuter ce type de mission."
+                });
             }
             Ok(())
         }
@@ -1020,6 +1320,52 @@ fn capture_mission_wizard_feedback(
     }
 }
 
+fn sync_mission_wizard_selection(
+    simulation: Res<SimulationResource>,
+    mut ui: ResMut<MissionWizardState>,
+) {
+    let state = simulation.simulation().state();
+    let selected = ui.fleet_id.and_then(|fleet_id| state.fleet(fleet_id));
+    let Some(fleet) = selected else {
+        if ui.fleet_id.is_some() {
+            reset_wizard_fleet_selection(&mut ui);
+        }
+        return;
+    };
+    let Some(colony_id) = state.active_colony_id else {
+        reset_wizard_fleet_selection(&mut ui);
+        return;
+    };
+    if !state.can_manage(state.player_faction, fleet.owner)
+        || !fleet.is_idle()
+        || fleet.location != FleetLocation::Docked(colony_id)
+    {
+        reset_wizard_fleet_selection(&mut ui);
+        return;
+    }
+    if !fleet_supports_mission_kind(fleet, ui.kind) {
+        if let Some(kind) = MISSION_KIND_OPTIONS
+            .iter()
+            .copied()
+            .find(|kind| fleet_supports_mission_kind(fleet, *kind))
+        {
+            ui.kind = kind;
+            ui.target = None;
+            ui.cargo = ResourceStock::ZERO;
+            ui.step = WizardStep::Kind;
+        } else {
+            reset_wizard_fleet_selection(&mut ui);
+        }
+    }
+}
+
+fn reset_wizard_fleet_selection(ui: &mut MissionWizardState) {
+    ui.fleet_id = None;
+    ui.target = None;
+    ui.cargo = ResourceStock::ZERO;
+    ui.step = WizardStep::Fleet;
+}
+
 type WizardPreviousButtonQuery<'w, 's> =
     Query<'w, 's, &'static mut Visibility, (With<WizardPreviousButton>, Without<WizardStepBlock>)>;
 
@@ -1036,13 +1382,13 @@ type WizardNextButtonQuery<'w, 's> = Query<
 
 fn update_wizard_step_visibility(
     ui: Res<MissionWizardState>,
-    open_panel: Res<OpenPanel>,
+    windows: Res<OpenWindows>,
     mut blocks: Query<(&WizardStepBlock, &mut Visibility, &mut Node)>,
     mut previous_buttons: WizardPreviousButtonQuery,
     mut next_buttons: WizardNextButtonQuery,
     mut texts: Query<(&WizardStepLabel, &mut Text)>,
 ) {
-    if *open_panel != OpenPanel::Fleet {
+    if !windows.is_visible(GameWindowKind::Fleet) {
         return;
     }
     for (block, mut visibility, mut node) in &mut blocks {
@@ -1140,10 +1486,10 @@ fn wizard_no_destination_hint(kind: MissionKind) -> String {
 
 fn update_wizard_origin_text(
     simulation: Res<SimulationResource>,
-    open_panel: Res<OpenPanel>,
+    windows: Res<OpenWindows>,
     mut texts: Query<(&WizardOriginText, &mut Text)>,
 ) {
-    if *open_panel != OpenPanel::Fleet {
+    if !windows.is_visible(GameWindowKind::Fleet) {
         return;
     }
     let label = active_colony(simulation.simulation())
@@ -1159,15 +1505,16 @@ fn update_wizard_origin_text(
 fn update_wizard_kind_buttons(
     simulation: Res<SimulationResource>,
     ui: Res<MissionWizardState>,
-    open_panel: Res<OpenPanel>,
+    windows: Res<OpenWindows>,
     mut buttons: Query<(
         &WizardKindButton,
         &Interaction,
         &mut BackgroundColor,
         &mut Outline,
     )>,
+    mut hints: Query<(&WizardKindHintText, &mut Text)>,
 ) {
-    if *open_panel != OpenPanel::Fleet {
+    if !windows.is_visible(GameWindowKind::Fleet) {
         return;
     }
     let selected_fleet = ui
@@ -1181,12 +1528,40 @@ fn update_wizard_kind_buttons(
         background.0 = action_button_color(enabled, selected, interaction);
         outline.color = action_button_outline(enabled, selected, interaction);
     }
+
+    let hint = match selected_fleet {
+        None => "Sélectionnez une flotte à l'étape précédente.".to_string(),
+        Some(fleet) if !fleet_supports_mission_kind(fleet, ui.kind) => {
+            wizard_kind_unavailable_hint(ui.kind)
+        }
+        Some(_) => String::new(),
+    };
+    for (_, mut text) in &mut hints {
+        if text.0 != hint {
+            text.0 = hint.clone();
+        }
+    }
+}
+
+/// Explains why the selected fleet can't run the highlighted mission kind —
+/// the button alone just renders disabled, which reads as broken rather than
+/// as a fleet-composition requirement (playtest feedback, specifically hit
+/// for Colonize).
+fn wizard_kind_unavailable_hint(kind: MissionKind) -> String {
+    match kind {
+        MissionKind::Colonize => {
+            "Coloniser nécessite une flotte composée uniquement d'un vaisseau de colonisation \
+             (pas d'escorte)."
+                .to_string()
+        }
+        _ => "Cette flotte ne peut pas exécuter ce type de mission.".to_string(),
+    }
 }
 
 fn update_wizard_target_rows(
     simulation: Res<SimulationResource>,
     ui: Res<MissionWizardState>,
-    open_panel: Res<OpenPanel>,
+    windows: Res<OpenWindows>,
     mut rows: Query<(
         &mut WizardTargetRow,
         &Interaction,
@@ -1198,7 +1573,7 @@ fn update_wizard_target_rows(
     mut texts: Query<&mut Text, Without<WizardDestinationHintText>>,
     mut hints: Query<(&WizardDestinationHintText, &mut Text)>,
 ) {
-    if *open_panel != OpenPanel::Fleet || ui.step != WizardStep::Destination {
+    if !windows.is_visible(GameWindowKind::Fleet) || ui.step != WizardStep::Destination {
         return;
     }
     let candidates = wizard_target_candidates(simulation.simulation(), &ui);
@@ -1247,7 +1622,7 @@ fn update_wizard_target_rows(
 fn update_wizard_fleet_rows(
     simulation: Res<SimulationResource>,
     ui: Res<MissionWizardState>,
-    open_panel: Res<OpenPanel>,
+    windows: Res<OpenWindows>,
     mut rows: Query<(
         &mut WizardFleetRow,
         &Interaction,
@@ -1259,7 +1634,7 @@ fn update_wizard_fleet_rows(
     mut texts: Query<&mut Text, Without<WizardFleetHintText>>,
     mut hints: Query<(&WizardFleetHintText, &mut Text)>,
 ) {
-    if *open_panel != OpenPanel::Fleet || ui.step != WizardStep::Fleet {
+    if !windows.is_visible(GameWindowKind::Fleet) || ui.step != WizardStep::Fleet {
         return;
     }
     let sim = simulation.simulation();
@@ -1386,10 +1761,10 @@ fn set_wizard_fleet_hint(hints: &mut Query<(&WizardFleetHintText, &mut Text)>, m
 fn update_wizard_params_text(
     simulation: Res<SimulationResource>,
     ui: Res<MissionWizardState>,
-    open_panel: Res<OpenPanel>,
+    windows: Res<OpenWindows>,
     mut texts: Query<(&WizardParamsText, &mut Text)>,
 ) {
-    if *open_panel != OpenPanel::Fleet || ui.step != WizardStep::Params {
+    if !windows.is_visible(GameWindowKind::Fleet) || ui.step != WizardStep::Params {
         return;
     }
     let sim = simulation.simulation();
@@ -1455,10 +1830,10 @@ fn update_wizard_params_text(
 fn update_wizard_preview_text(
     simulation: Res<SimulationResource>,
     ui: Res<MissionWizardState>,
-    open_panel: Res<OpenPanel>,
+    windows: Res<OpenWindows>,
     mut texts: Query<(&WizardPreviewText, &mut Text)>,
 ) {
-    if *open_panel != OpenPanel::Fleet || ui.step != WizardStep::Preview {
+    if !windows.is_visible(GameWindowKind::Fleet) || ui.step != WizardStep::Preview {
         return;
     }
     let sim = simulation.simulation();
@@ -1664,10 +2039,10 @@ fn estimate_range_short(range: galactic_sim::EstimateRange) -> String {
 
 fn update_wizard_feedback_text(
     ui: Res<MissionWizardState>,
-    open_panel: Res<OpenPanel>,
+    windows: Res<OpenWindows>,
     mut texts: Query<(&WizardFeedbackText, &mut Text)>,
 ) {
-    if *open_panel != OpenPanel::Fleet {
+    if !windows.is_visible(GameWindowKind::Fleet) {
         return;
     }
     for (_, mut text) in &mut texts {
@@ -2041,6 +2416,8 @@ mod tests {
             target: Some(WizardTarget::System(target_system)),
             fleet_id: Some(fleet_id),
             cargo: ResourceStock::ZERO,
+            cargo_editing: None,
+            cargo_buffer: String::new(),
             feedback: String::new(),
         };
 
@@ -2106,6 +2483,8 @@ mod tests {
             target: Some(target),
             fleet_id: Some(fleet_id),
             cargo: ResourceStock::ZERO,
+            cargo_editing: None,
+            cargo_buffer: String::new(),
             feedback: String::new(),
         };
 
@@ -2116,6 +2495,95 @@ mod tests {
         assert!(estimate.contains("attaque 84"));
         assert!(estimate.contains("léger 2"));
         assert!(estimate.contains("défense connue"));
+    }
+
+    #[test]
+    fn wizard_selection_resets_when_selected_fleet_disappears() {
+        let mut app = App::new();
+        app.insert_resource(SimulationResource {
+            simulation: Simulation::new(galactic_domain::UniverseConfig::mvp()),
+            pending_events: Vec::new(),
+        })
+        .insert_resource(MissionWizardState {
+            step: WizardStep::Destination,
+            kind: MissionKind::Attack,
+            target: Some(WizardTarget::System(SystemId::new(0))),
+            fleet_id: Some(FleetId::new(999)),
+            cargo: ResourceStock::new(10, 0, 0),
+            cargo_editing: None,
+            cargo_buffer: String::new(),
+            feedback: String::new(),
+        })
+        .add_systems(Update, sync_mission_wizard_selection);
+
+        app.update();
+
+        let ui = app.world().resource::<MissionWizardState>();
+        assert_eq!(ui.step, WizardStep::Fleet);
+        assert_eq!(ui.fleet_id, None);
+        assert_eq!(ui.target, None);
+        assert_eq!(ui.cargo, ResourceStock::ZERO);
+    }
+
+    /// Playtest feedback: "Coloniser" read as unavailable even with a
+    /// genuinely eligible fleet. Root cause was `MISSION_KIND_OPTIONS`'
+    /// order — the colony ship carries cargo capacity
+    /// (`assets/rulesets/default/craftables.ron`), so a lone colony-ship
+    /// fleet also satisfies Harvest's generic "empty cargo + spare capacity"
+    /// check, and Harvest used to be listed before Colonize, silently
+    /// auto-picking "Récolte" instead. Selecting the fleet must land on
+    /// Colonize, not Harvest.
+    #[test]
+    fn selecting_a_lone_colony_ship_fleet_auto_picks_colonize_not_harvest() {
+        let mut simulation = Simulation::new(galactic_domain::UniverseConfig::mvp());
+        let colony_id = simulation
+            .state()
+            .active_colony_id
+            .expect("home colony is active");
+        let actor = simulation.state().player_faction;
+        let fleet_id = FleetId::new(0);
+        let composition =
+            galactic_sim::FleetComposition::from_stacks([galactic_sim::ShipStack::new(
+                galactic_sim::CraftableId::COLONY_SHIP,
+                1,
+            )])
+            .expect("colony ship fleet composition is valid");
+        simulation
+            .state_mut()
+            .fleets
+            .push(galactic_sim::FleetState {
+                id: fleet_id,
+                name: "Colonisation test".to_string(),
+                owner: galactic_domain::Owner::Faction(actor),
+                location: FleetLocation::Docked(colony_id),
+                composition,
+                cargo: ResourceStock::ZERO,
+                assignment: galactic_sim::FleetAssignment::Idle,
+            });
+        simulation.state_mut().next_fleet_id = 1;
+
+        let mut app = App::new();
+        app.insert_resource(SimulationResource {
+            simulation,
+            pending_events: Vec::new(),
+        })
+        .insert_resource(MissionWizardState {
+            step: WizardStep::Fleet,
+            kind: MissionKind::Probe,
+            target: None,
+            fleet_id: Some(fleet_id),
+            cargo: ResourceStock::ZERO,
+            cargo_editing: None,
+            cargo_buffer: String::new(),
+            feedback: String::new(),
+        })
+        .add_systems(Update, sync_mission_wizard_selection);
+
+        app.update();
+
+        let ui = app.world().resource::<MissionWizardState>();
+        assert_eq!(ui.kind, MissionKind::Colonize);
+        assert_eq!(ui.fleet_id, Some(fleet_id));
     }
 
     macro_rules! assert_disjoint_queries {
@@ -2156,6 +2624,10 @@ mod tests {
     assert_disjoint_queries!(
         handle_wizard_confirm_button_queries_are_disjoint,
         handle_wizard_confirm_button
+    );
+    assert_disjoint_queries!(
+        sync_mission_wizard_selection_queries_are_disjoint,
+        sync_mission_wizard_selection
     );
     assert_disjoint_queries!(
         update_wizard_step_visibility_queries_are_disjoint,

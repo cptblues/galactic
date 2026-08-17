@@ -1,6 +1,7 @@
 // MVP-017: dedicated minimal shipyard screen.
 use bevy::input::{ButtonState, keyboard::KeyboardInput};
 use bevy::prelude::*;
+use bevy::ui::RelativeCursorPosition;
 use galactic_sim::{
     BuildingKind, CraftError, CraftQuote, CraftableId, GameAction, GameEventKind,
     MAX_CRAFT_BATCH_QUANTITY, StrategicDuration, craft_progress_ratio, craft_quote,
@@ -10,12 +11,17 @@ use galactic_sim::{
 };
 
 use super::{
-    OpenPanel, PresentationUpdateSet, SimulationResource, UiPointerBlocker, accent_craft_amber,
-    action_button_color, action_button_outline, apply_simulation_command,
-    collect_presentation_events, format_strategic_duration, panel_background, panel_outline,
-    ui_text_font,
+    CommandDockButton, CommandDockGroup, CommandDockTarget, GameWindowKind, GameWindowRoot,
+    GameWindowTitleBar, OpenPanel, OpenWindows, PresentationUpdateSet, SimulationResource,
+    UI_ICON_SIZE_LARGE, UiPointerBlocker, accent_craft_amber, action_button_color,
+    action_button_outline, apply_simulation_command, collect_presentation_events,
+    format_strategic_duration, panel_background, panel_outline, ui_text_font,
 };
-use crate::presentation::entity_visuals::EntityVisualCatalog;
+use crate::presentation::{
+    components::{ScrollIndicatorArea, ScrollIndicatorId},
+    entity_visuals::EntityVisualCatalog,
+    scene::spawn_scroll_indicator,
+};
 
 const CRAFT_Z_INDEX: i32 = 120;
 
@@ -166,7 +172,7 @@ pub(crate) fn spawn_craft_toggle(parent: &mut ChildSpawnerCommands) {
             Button,
             Node {
                 width: Val::Percent(100.0),
-                min_height: Val::Px(36.0),
+                min_height: Val::Px(42.0),
                 padding: UiRect::axes(Val::Px(10.0), Val::Px(7.0)),
                 border: UiRect::all(Val::Px(1.0)),
                 border_radius: BorderRadius::all(Val::Px(5.0)),
@@ -177,12 +183,16 @@ pub(crate) fn spawn_craft_toggle(parent: &mut ChildSpawnerCommands) {
             BackgroundColor(Color::srgba(0.17, 0.11, 0.05, 0.96)),
             Outline::new(Val::Px(1.0), Val::ZERO, accent_craft_amber()),
             CraftButtonAction::Toggle,
+            CommandDockButton {
+                target: CommandDockTarget::Panel(OpenPanel::Craft),
+                group: CommandDockGroup::Operations,
+            },
             UiPointerBlocker,
         ))
         .with_children(|button| {
             button.spawn((
-                Text::new(format!("{}  [Y]", shipyard_building_name())),
-                ui_text_font(12.0),
+                Text::new("Chantier  [Y]"),
+                ui_text_font(12.5),
                 TextColor(Color::srgb(1.0, 0.86, 0.66)),
                 CraftTextRole::Toggle,
             ));
@@ -216,6 +226,9 @@ fn spawn_craft_screen(mut commands: Commands) {
             Interaction::None,
             UiPointerBlocker,
             CraftRoot,
+            GameWindowRoot {
+                kind: GameWindowKind::Craft,
+            },
         ))
         .with_children(|root| {
             spawn_craft_header(root);
@@ -235,6 +248,7 @@ fn spawn_craft_screen(mut commands: Commands) {
                 ui_text_font(11.0),
                 TextColor(Color::srgb(1.0, 0.70, 0.34)),
                 Node {
+                    width: Val::Percent(100.0),
                     min_height: Val::Px(18.0),
                     ..default()
                 },
@@ -244,39 +258,49 @@ fn spawn_craft_screen(mut commands: Commands) {
 }
 
 fn spawn_craft_header(root: &mut ChildSpawnerCommands) {
-    root.spawn((Node {
-        width: Val::Percent(100.0),
-        min_height: Val::Px(42.0),
-        flex_direction: FlexDirection::Row,
-        align_items: AlignItems::Center,
-        column_gap: Val::Px(8.0),
-        ..default()
-    },))
-        .with_children(|header| {
-            header.spawn((
-                Text::new(shipyard_building_name().to_uppercase()),
-                ui_text_font(18.0),
-                TextColor(Color::srgb(1.0, 0.86, 0.68)),
-                Node {
-                    flex_grow: 1.0,
-                    ..default()
-                },
-                CraftTextRole::Title,
-            ));
-            spawn_craft_small_button(
-                header,
-                "< Précédente",
-                CraftButtonAction::PreviousColony,
-                92.0,
-            );
-            spawn_craft_small_button(header, "Suivante >", CraftButtonAction::NextColony, 92.0);
-            spawn_craft_small_button(
-                header,
-                "Fermer  [Y / Échap]",
-                CraftButtonAction::Close,
-                160.0,
-            );
-        });
+    root.spawn((
+        Node {
+            width: Val::Percent(100.0),
+            min_height: Val::Px(42.0),
+            padding: UiRect::axes(Val::Px(8.0), Val::Px(0.0)),
+            border_radius: BorderRadius::all(Val::Px(5.0)),
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            column_gap: Val::Px(8.0),
+            ..default()
+        },
+        BackgroundColor(Color::srgba(0.32, 0.20, 0.09, 0.55)),
+        Interaction::None,
+        GameWindowTitleBar {
+            kind: GameWindowKind::Craft,
+        },
+        UiPointerBlocker,
+    ))
+    .with_children(|header| {
+        header.spawn((
+            Text::new(shipyard_building_name().to_uppercase()),
+            ui_text_font(18.0),
+            TextColor(Color::srgb(1.0, 0.86, 0.68)),
+            Node {
+                flex_grow: 1.0,
+                ..default()
+            },
+            CraftTextRole::Title,
+        ));
+        spawn_craft_small_button(
+            header,
+            "< Précédente",
+            CraftButtonAction::PreviousColony,
+            92.0,
+        );
+        spawn_craft_small_button(header, "Suivante >", CraftButtonAction::NextColony, 92.0);
+        spawn_craft_small_button(
+            header,
+            "Fermer  [Y / Échap]",
+            CraftButtonAction::Close,
+            160.0,
+        );
+    });
 }
 
 fn spawn_craft_small_button(
@@ -320,7 +344,7 @@ fn spawn_craft_main_row(root: &mut ChildSpawnerCommands) {
     root.spawn((Node {
         width: Val::Percent(100.0),
         flex_grow: 1.0,
-        min_height: Val::Px(450.0),
+        min_height: Val::Px(0.0),
         flex_direction: FlexDirection::Row,
         column_gap: Val::Px(9.0),
         ..default()
@@ -333,28 +357,46 @@ fn spawn_craft_main_row(root: &mut ChildSpawnerCommands) {
 }
 
 fn spawn_craftable_list(row: &mut ChildSpawnerCommands) {
-    row.spawn((
-        Node {
-            width: Val::Px(310.0),
-            padding: UiRect::all(Val::Px(9.0)),
-            border: UiRect::all(Val::Px(1.0)),
-            border_radius: BorderRadius::all(Val::Px(6.0)),
-            flex_direction: FlexDirection::Column,
-            row_gap: Val::Px(7.0),
-            ..default()
-        },
-        BackgroundColor(panel_background()),
-        Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
-    ))
-    .with_children(|list| {
-        list.spawn((
-            Text::new("CATALOGUE DE FABRICATION"),
-            ui_text_font(12.0),
-            TextColor(Color::srgb(1.0, 0.82, 0.58)),
-        ));
-        for craftable in craftable_catalog().ids() {
-            spawn_craftable_button(list, craftable);
-        }
+    row.spawn(Node {
+        width: Val::Px(330.0),
+        min_height: Val::Px(0.0),
+        position_type: PositionType::Relative,
+        ..default()
+    })
+    .with_children(|frame| {
+        frame
+            .spawn((
+                Node {
+                    width: Val::Percent(100.0),
+                    height: Val::Percent(100.0),
+                    min_height: Val::Px(0.0),
+                    padding: UiRect::all(Val::Px(9.0)),
+                    border: UiRect::all(Val::Px(1.0)),
+                    border_radius: BorderRadius::all(Val::Px(6.0)),
+                    flex_direction: FlexDirection::Column,
+                    row_gap: Val::Px(7.0),
+                    overflow: Overflow::scroll_y(),
+                    ..default()
+                },
+                ScrollPosition::default(),
+                RelativeCursorPosition::default(),
+                ScrollIndicatorArea {
+                    id: ScrollIndicatorId::CraftableList,
+                },
+                BackgroundColor(panel_background()),
+                Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
+            ))
+            .with_children(|list| {
+                list.spawn((
+                    Text::new("CATALOGUE DE FABRICATION"),
+                    ui_text_font(12.0),
+                    TextColor(Color::srgb(1.0, 0.82, 0.58)),
+                ));
+                for craftable in craftable_catalog().ids() {
+                    spawn_craftable_button(list, craftable);
+                }
+            });
+        spawn_scroll_indicator(frame, ScrollIndicatorId::CraftableList);
     });
 }
 
@@ -364,7 +406,7 @@ fn spawn_craftable_button(parent: &mut ChildSpawnerCommands, craftable: Craftabl
             Button,
             Node {
                 width: Val::Percent(100.0),
-                min_height: Val::Px(52.0),
+                min_height: Val::Px(UI_ICON_SIZE_LARGE + 16.0),
                 padding: UiRect::axes(Val::Px(9.0), Val::Px(7.0)),
                 border: UiRect::all(Val::Px(1.0)),
                 border_radius: BorderRadius::all(Val::Px(5.0)),
@@ -391,8 +433,8 @@ fn spawn_craftable_button(parent: &mut ChildSpawnerCommands, craftable: Craftabl
                     ..default()
                 },
                 Node {
-                    width: Val::Px(34.0),
-                    height: Val::Px(34.0),
+                    width: Val::Px(UI_ICON_SIZE_LARGE),
+                    height: Val::Px(UI_ICON_SIZE_LARGE),
                     flex_shrink: 0.0,
                     ..default()
                 },
@@ -413,80 +455,97 @@ fn spawn_craftable_button(parent: &mut ChildSpawnerCommands, craftable: Craftabl
 }
 
 fn spawn_craftable_detail(row: &mut ChildSpawnerCommands) {
-    row.spawn((
-        Node {
-            flex_grow: 1.0,
-            flex_basis: Val::Px(0.0),
-            padding: UiRect::all(Val::Px(12.0)),
-            border: UiRect::all(Val::Px(1.0)),
-            border_radius: BorderRadius::all(Val::Px(6.0)),
-            flex_direction: FlexDirection::Column,
-            row_gap: Val::Px(10.0),
-            ..default()
-        },
-        BackgroundColor(panel_background()),
-        Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
-    ))
-    .with_children(|detail| {
-        detail.spawn((
-            Text::new("Sélectionne un objet."),
-            ui_text_font(12.0),
-            TextColor(Color::srgb(0.94, 0.88, 0.80)),
-            Node {
-                flex_grow: 1.0,
-                ..default()
-            },
-            CraftTextRole::Detail,
-        ));
-        detail
-            .spawn(Node {
-                width: Val::Percent(100.0),
-                flex_direction: FlexDirection::Row,
-                align_items: AlignItems::Center,
-                column_gap: Val::Px(6.0),
-                ..default()
-            })
-            .with_children(|row| {
-                spawn_quantity_button(row, "-10", CraftButtonAction::AdjustQuantity(-10));
-                spawn_quantity_button(row, "-1", CraftButtonAction::AdjustQuantity(-1));
-                spawn_craft_quantity_editor(row);
-                spawn_quantity_button(row, "+1", CraftButtonAction::AdjustQuantity(1));
-                spawn_quantity_button(row, "+10", CraftButtonAction::AdjustQuantity(10));
-                spawn_quantity_button(row, "MAX", CraftButtonAction::SetQuantityMax);
-            });
-        detail.spawn((
-            Text::new(""),
-            ui_text_font(10.5),
-            TextColor(Color::srgba(0.74, 0.80, 0.86, 0.80)),
-            CraftTextRole::MaxAffordable,
-        ));
-        detail
+    row.spawn(Node {
+        flex_grow: 1.0,
+        flex_basis: Val::Px(0.0),
+        min_width: Val::Px(0.0),
+        min_height: Val::Px(0.0),
+        position_type: PositionType::Relative,
+        ..default()
+    })
+    .with_children(|frame| {
+        frame
             .spawn((
-                Button,
                 Node {
                     width: Val::Percent(100.0),
-                    min_height: Val::Px(42.0),
-                    padding: UiRect::axes(Val::Px(12.0), Val::Px(8.0)),
+                    height: Val::Percent(100.0),
+                    min_height: Val::Px(0.0),
+                    padding: UiRect::all(Val::Px(12.0)),
                     border: UiRect::all(Val::Px(1.0)),
                     border_radius: BorderRadius::all(Val::Px(6.0)),
-                    justify_content: JustifyContent::Center,
-                    align_items: AlignItems::Center,
+                    flex_direction: FlexDirection::Column,
+                    row_gap: Val::Px(10.0),
+                    overflow: Overflow::scroll_y(),
                     ..default()
                 },
-                BackgroundColor(Color::srgba(0.38, 0.18, 0.05, 0.98)),
-                Outline::new(Val::Px(1.0), Val::ZERO, Color::srgba(1.0, 0.62, 0.22, 0.78)),
-                CraftButtonAction::QueueSelected,
-                QueueCraftButton,
-                UiPointerBlocker,
+                ScrollPosition::default(),
+                RelativeCursorPosition::default(),
+                ScrollIndicatorArea {
+                    id: ScrollIndicatorId::CraftableDetail,
+                },
+                BackgroundColor(panel_background()),
+                Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
             ))
-            .with_children(|button| {
-                button.spawn((
-                    Text::new("AJOUTER À LA FILE"),
+            .with_children(|detail| {
+                detail.spawn((
+                    Text::new("Sélectionne un objet."),
                     ui_text_font(12.0),
-                    TextColor(Color::srgb(1.0, 0.90, 0.76)),
-                    CraftTextRole::QueueButton,
+                    TextColor(Color::srgb(0.94, 0.88, 0.80)),
+                    Node {
+                        flex_grow: 1.0,
+                        ..default()
+                    },
+                    CraftTextRole::Detail,
                 ));
+                detail
+                    .spawn(Node {
+                        width: Val::Percent(100.0),
+                        flex_direction: FlexDirection::Row,
+                        align_items: AlignItems::Center,
+                        column_gap: Val::Px(6.0),
+                        ..default()
+                    })
+                    .with_children(|row| {
+                        spawn_quantity_button(row, "-1", CraftButtonAction::AdjustQuantity(-1));
+                        spawn_craft_quantity_editor(row);
+                        spawn_quantity_button(row, "+1", CraftButtonAction::AdjustQuantity(1));
+                        spawn_quantity_button(row, "MAX", CraftButtonAction::SetQuantityMax);
+                    });
+                detail.spawn((
+                    Text::new(""),
+                    ui_text_font(10.5),
+                    TextColor(Color::srgba(0.74, 0.80, 0.86, 0.80)),
+                    CraftTextRole::MaxAffordable,
+                ));
+                detail
+                    .spawn((
+                        Button,
+                        Node {
+                            width: Val::Percent(100.0),
+                            min_height: Val::Px(42.0),
+                            padding: UiRect::axes(Val::Px(12.0), Val::Px(8.0)),
+                            border: UiRect::all(Val::Px(1.0)),
+                            border_radius: BorderRadius::all(Val::Px(6.0)),
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgba(0.38, 0.18, 0.05, 0.98)),
+                        Outline::new(Val::Px(1.0), Val::ZERO, Color::srgba(1.0, 0.62, 0.22, 0.78)),
+                        CraftButtonAction::QueueSelected,
+                        QueueCraftButton,
+                        UiPointerBlocker,
+                    ))
+                    .with_children(|button| {
+                        button.spawn((
+                            Text::new("AJOUTER À LA FILE"),
+                            ui_text_font(12.0),
+                            TextColor(Color::srgb(1.0, 0.90, 0.76)),
+                            CraftTextRole::QueueButton,
+                        ));
+                    });
             });
+        spawn_scroll_indicator(frame, ScrollIndicatorId::CraftableDetail);
     });
 }
 
@@ -562,83 +621,101 @@ fn spawn_craft_quantity_editor(parent: &mut ChildSpawnerCommands) {
 }
 
 fn spawn_craft_queue(row: &mut ChildSpawnerCommands) {
-    row.spawn((
-        Node {
-            width: Val::Px(340.0),
-            padding: UiRect::all(Val::Px(10.0)),
-            border: UiRect::all(Val::Px(1.0)),
-            border_radius: BorderRadius::all(Val::Px(6.0)),
-            flex_direction: FlexDirection::Column,
-            row_gap: Val::Px(8.0),
-            ..default()
-        },
-        BackgroundColor(panel_background()),
-        Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
-    ))
-    .with_children(|queue| {
-        queue.spawn((
-            Text::new("FILE ET UNITÉS DISPONIBLES"),
-            ui_text_font(12.0),
-            TextColor(Color::srgb(1.0, 0.82, 0.58)),
-        ));
-        queue
+    row.spawn(Node {
+        width: Val::Px(340.0),
+        min_height: Val::Px(0.0),
+        position_type: PositionType::Relative,
+        ..default()
+    })
+    .with_children(|frame| {
+        frame
             .spawn((
                 Node {
                     width: Val::Percent(100.0),
-                    height: Val::Px(8.0),
-                    border_radius: BorderRadius::all(Val::Px(4.0)),
-                    ..default()
-                },
-                BackgroundColor(Color::srgba(0.14, 0.08, 0.035, 0.96)),
-            ))
-            .with_children(|gauge| {
-                gauge.spawn((
-                    Node {
-                        width: Val::Percent(0.0),
-                        height: Val::Percent(100.0),
-                        border_radius: BorderRadius::all(Val::Px(4.0)),
-                        ..default()
-                    },
-                    BackgroundColor(Color::srgb(1.0, 0.56, 0.18)),
-                    CraftProgressFill,
-                ));
-            });
-        queue.spawn((
-            Text::new("File vide."),
-            ui_text_font(11.0),
-            TextColor(Color::srgb(0.92, 0.84, 0.74)),
-            CraftTextRole::Queue,
-        ));
-        queue
-            .spawn((
-                Button,
-                Node {
-                    width: Val::Percent(100.0),
-                    min_height: Val::Px(32.0),
-                    padding: UiRect::axes(Val::Px(10.0), Val::Px(6.0)),
+                    height: Val::Percent(100.0),
+                    min_height: Val::Px(0.0),
+                    padding: UiRect::all(Val::Px(10.0)),
                     border: UiRect::all(Val::Px(1.0)),
-                    border_radius: BorderRadius::all(Val::Px(5.0)),
-                    justify_content: JustifyContent::Center,
-                    align_items: AlignItems::Center,
+                    border_radius: BorderRadius::all(Val::Px(6.0)),
+                    flex_direction: FlexDirection::Column,
+                    row_gap: Val::Px(8.0),
+                    overflow: Overflow::scroll_y(),
                     ..default()
                 },
-                BackgroundColor(Color::srgba(0.34, 0.08, 0.06, 0.94)),
-                Outline::new(
-                    Val::Px(1.0),
-                    Val::ZERO,
-                    Color::srgba(0.86, 0.36, 0.28, 0.60),
-                ),
-                CraftButtonAction::CancelActive,
-                CancelCraftButton,
-                UiPointerBlocker,
+                ScrollPosition::default(),
+                RelativeCursorPosition::default(),
+                ScrollIndicatorArea {
+                    id: ScrollIndicatorId::CraftQueue,
+                },
+                BackgroundColor(panel_background()),
+                Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
             ))
-            .with_children(|button| {
-                button.spawn((
-                    Text::new("Annuler la fabrication en cours"),
-                    ui_text_font(11.0),
-                    TextColor(Color::srgb(1.0, 0.82, 0.78)),
+            .with_children(|queue| {
+                queue.spawn((
+                    Text::new("FILE ET UNITÉS DISPONIBLES"),
+                    ui_text_font(12.0),
+                    TextColor(Color::srgb(1.0, 0.82, 0.58)),
                 ));
+                queue
+                    .spawn((
+                        Node {
+                            width: Val::Percent(100.0),
+                            height: Val::Px(8.0),
+                            border_radius: BorderRadius::all(Val::Px(4.0)),
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgba(0.14, 0.08, 0.035, 0.96)),
+                    ))
+                    .with_children(|gauge| {
+                        gauge.spawn((
+                            Node {
+                                width: Val::Percent(0.0),
+                                height: Val::Percent(100.0),
+                                border_radius: BorderRadius::all(Val::Px(4.0)),
+                                ..default()
+                            },
+                            BackgroundColor(Color::srgb(1.0, 0.56, 0.18)),
+                            CraftProgressFill,
+                        ));
+                    });
+                queue.spawn((
+                    Text::new("File vide."),
+                    ui_text_font(11.0),
+                    TextColor(Color::srgb(0.92, 0.84, 0.74)),
+                    CraftTextRole::Queue,
+                ));
+                queue
+                    .spawn((
+                        Button,
+                        Node {
+                            width: Val::Percent(100.0),
+                            min_height: Val::Px(32.0),
+                            padding: UiRect::axes(Val::Px(10.0), Val::Px(6.0)),
+                            border: UiRect::all(Val::Px(1.0)),
+                            border_radius: BorderRadius::all(Val::Px(5.0)),
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgba(0.34, 0.08, 0.06, 0.94)),
+                        Outline::new(
+                            Val::Px(1.0),
+                            Val::ZERO,
+                            Color::srgba(0.86, 0.36, 0.28, 0.60),
+                        ),
+                        CraftButtonAction::CancelActive,
+                        CancelCraftButton,
+                        UiPointerBlocker,
+                    ))
+                    .with_children(|button| {
+                        button.spawn((
+                            Text::new("Annuler la fabrication en cours"),
+                            ui_text_font(11.0),
+                            TextColor(Color::srgb(1.0, 0.82, 0.78)),
+                        ));
+                    });
             });
+        spawn_scroll_indicator(frame, ScrollIndicatorId::CraftQueue);
     });
 }
 
@@ -646,6 +723,7 @@ fn handle_craft_shortcuts(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut ui: ResMut<CraftUiState>,
     mut open_panel: ResMut<OpenPanel>,
+    mut windows: ResMut<OpenWindows>,
     mut navigation_ui: ResMut<super::navigation_ui::NavigationUiState>,
     fleet_ui: Res<crate::fleet_ui::FleetUiState>,
     save_load_ui: Res<crate::save_load_ui::SaveLoadUiState>,
@@ -659,12 +737,13 @@ fn handle_craft_shortcuts(
     }
 
     if keyboard.just_pressed(KeyCode::KeyY) {
-        let opening = *open_panel != OpenPanel::Craft;
-        *open_panel = if opening {
-            OpenPanel::Craft
+        let opening = !windows.is_visible(GameWindowKind::Craft);
+        if opening {
+            windows.open(GameWindowKind::Craft);
+            *open_panel = OpenPanel::None;
         } else {
-            OpenPanel::None
-        };
+            windows.close(GameWindowKind::Craft);
+        }
         ui.feedback.clear();
         if opening {
             navigation_ui.search_open = false;
@@ -673,8 +752,8 @@ fn handle_craft_shortcuts(
         return;
     }
 
-    if *open_panel == OpenPanel::Craft && keyboard.just_pressed(KeyCode::Escape) {
-        *open_panel = OpenPanel::None;
+    if windows.topmost() == Some(GameWindowKind::Craft) && keyboard.just_pressed(KeyCode::Escape) {
+        windows.close(GameWindowKind::Craft);
     }
 }
 
@@ -682,6 +761,7 @@ fn handle_craft_buttons(
     mut simulation: ResMut<SimulationResource>,
     mut ui: ResMut<CraftUiState>,
     mut open_panel: ResMut<OpenPanel>,
+    mut windows: ResMut<OpenWindows>,
     mut navigation_ui: ResMut<super::navigation_ui::NavigationUiState>,
     interactions: CraftButtonInteractionQuery,
 ) {
@@ -695,19 +775,20 @@ fn handle_craft_buttons(
 
         match *action {
             CraftButtonAction::Toggle => {
-                let opening = *open_panel != OpenPanel::Craft;
-                *open_panel = if opening {
-                    OpenPanel::Craft
+                let opening = !windows.is_visible(GameWindowKind::Craft);
+                if opening {
+                    windows.open(GameWindowKind::Craft);
+                    *open_panel = OpenPanel::None;
                 } else {
-                    OpenPanel::None
-                };
+                    windows.close(GameWindowKind::Craft);
+                }
                 ui.feedback.clear();
                 if opening {
                     navigation_ui.search_open = false;
                     navigation_ui.filters_open = false;
                 }
             }
-            CraftButtonAction::Close => *open_panel = OpenPanel::None,
+            CraftButtonAction::Close => windows.close(GameWindowKind::Craft),
             CraftButtonAction::PreviousColony => {
                 cycle_craft_colony(&mut ui, &mut simulation, true);
             }
@@ -789,12 +870,21 @@ fn capture_craft_feedback(simulation: Res<SimulationResource>, mut ui: ResMut<Cr
     }
 }
 
+type CraftCycleButtonVisibilityQuery<'w, 's> = Query<
+    'w,
+    's,
+    (&'static CraftButtonAction, &'static mut Visibility),
+    (With<Button>, Without<CraftRoot>),
+>;
+
 fn update_craft_visibility(
-    open_panel: Res<OpenPanel>,
+    simulation: Res<SimulationResource>,
+    windows: Res<OpenWindows>,
     mut roots: Query<&mut Visibility, With<CraftRoot>>,
     mut texts: Query<(&CraftTextRole, &mut Text)>,
+    mut cycle_buttons: CraftCycleButtonVisibilityQuery,
 ) {
-    let is_open = *open_panel == OpenPanel::Craft;
+    let is_open = windows.is_visible(GameWindowKind::Craft);
     for mut visibility in &mut roots {
         let next = if is_open {
             Visibility::Visible
@@ -810,22 +900,43 @@ fn update_craft_visibility(
             let next = if is_open {
                 "Fermer chantier".to_string()
             } else {
-                format!("{}  [Y]", shipyard_building_name())
+                "Chantier  [Y]".to_string()
             };
             if text.0 != next {
                 text.0 = next;
             }
         }
     }
+
+    let cycle_buttons_visible = craft_colony_cycle_buttons_visible(&simulation);
+    for (action, mut visibility) in &mut cycle_buttons {
+        if matches!(
+            action,
+            CraftButtonAction::PreviousColony | CraftButtonAction::NextColony
+        ) {
+            let next = if cycle_buttons_visible {
+                Visibility::Inherited
+            } else {
+                Visibility::Hidden
+            };
+            if *visibility != next {
+                *visibility = next;
+            }
+        }
+    }
+}
+
+fn craft_colony_cycle_buttons_visible(simulation: &SimulationResource) -> bool {
+    simulation.simulation().state().player_colony_ids().len() > 1
 }
 
 fn update_craft_summary(
     simulation: Res<SimulationResource>,
     ui: Res<CraftUiState>,
-    open_panel: Res<OpenPanel>,
+    windows: Res<OpenWindows>,
     mut texts: Query<(&CraftTextRole, &mut Text)>,
 ) {
-    if *open_panel != OpenPanel::Craft {
+    if !windows.is_visible(GameWindowKind::Craft) {
         return;
     }
     let colony = active_colony(simulation.simulation());
@@ -864,7 +975,7 @@ fn update_craft_summary(
 fn update_craftable_buttons(
     simulation: Res<SimulationResource>,
     ui: Res<CraftUiState>,
-    open_panel: Res<OpenPanel>,
+    windows: Res<OpenWindows>,
     entity_visuals: Res<EntityVisualCatalog>,
     mut buttons: Query<(
         &CraftableButton,
@@ -875,7 +986,7 @@ fn update_craftable_buttons(
     mut labels: Query<(&CraftableButtonText, &mut Text, &mut TextColor)>,
     mut icons: Query<(&CraftableButtonIcon, &mut ImageNode)>,
 ) {
-    if *open_panel != OpenPanel::Craft {
+    if !windows.is_visible(GameWindowKind::Craft) {
         return;
     }
     let colony = active_colony(simulation.simulation());
@@ -916,12 +1027,12 @@ fn update_craftable_buttons(
 fn update_craft_detail(
     simulation: Res<SimulationResource>,
     ui: Res<CraftUiState>,
-    open_panel: Res<OpenPanel>,
+    windows: Res<OpenWindows>,
     mut texts: Query<(&CraftTextRole, &mut Text, &mut TextColor)>,
     mut button: Query<(&Interaction, &mut BackgroundColor, &mut Outline), With<QueueCraftButton>>,
     mut cancel_button: CraftCancelButtonStyleQuery,
 ) {
-    if *open_panel != OpenPanel::Craft {
+    if !windows.is_visible(GameWindowKind::Craft) {
         return;
     }
     let state = simulation.simulation().state();
@@ -992,11 +1103,11 @@ fn update_craft_detail(
 
 fn update_craft_queue(
     simulation: Res<SimulationResource>,
-    open_panel: Res<OpenPanel>,
+    windows: Res<OpenWindows>,
     mut texts: Query<(&CraftTextRole, &mut Text)>,
     mut progress: Query<&mut Node, With<CraftProgressFill>>,
 ) {
-    if *open_panel != OpenPanel::Craft {
+    if !windows.is_visible(GameWindowKind::Craft) {
         return;
     }
     let colony = active_colony(simulation.simulation());
@@ -1091,11 +1202,11 @@ fn commit_craft_quantity_edit(ui: &mut CraftUiState, simulation: &SimulationReso
 /// filtered ASCII digits).
 fn handle_craft_quantity_input(
     mut events: MessageReader<KeyboardInput>,
-    open_panel: Res<OpenPanel>,
+    windows: Res<OpenWindows>,
     simulation: Res<SimulationResource>,
     mut ui: ResMut<CraftUiState>,
 ) {
-    if *open_panel != OpenPanel::Craft || !ui.quantity_editing {
+    if !windows.is_visible(GameWindowKind::Craft) || !ui.quantity_editing {
         return;
     }
 
@@ -1651,10 +1762,13 @@ mod tests {
 
     #[test]
     fn craftable_catalog_buttons_use_ship_visuals() {
+        let mut windows = OpenWindows::default();
+        windows.open(GameWindowKind::Craft);
         let mut app = bevy::app::App::new();
         app.init_resource::<Assets<Image>>()
             .insert_resource(fresh_simulation_resource())
-            .insert_resource(OpenPanel::Craft)
+            .insert_resource(OpenPanel::None)
+            .insert_resource(windows)
             .init_resource::<CraftUiState>()
             .add_systems(bevy::app::Startup, spawn_craft_screen)
             .add_systems(bevy::app::Update, update_craftable_buttons);

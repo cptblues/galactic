@@ -26,12 +26,14 @@ pub(crate) fn handle_simulation_input(
     save_load_ui: Res<crate::save_load_ui::SaveLoadUiState>,
     craft_ui: Res<crate::craft_ui::CraftUiState>,
     combat_ui: Res<crate::combat_ui::CombatUiState>,
+    windows: Res<OpenWindows>,
 ) {
     if navigation_ui::navigation_text_or_filter_is_active(&navigation_ui)
         || crate::fleet_ui::fleet_text_input_is_active(&fleet_ui)
         || crate::save_load_ui::save_name_is_editing(&save_load_ui)
         || crate::craft_ui::craft_quantity_is_editing(&craft_ui)
         || combat_ui.current.is_some()
+        || windows.any_visible()
     {
         return;
     }
@@ -53,11 +55,13 @@ pub(crate) fn toggle_debug_overlay(
     fleet_ui: Res<crate::fleet_ui::FleetUiState>,
     save_load_ui: Res<crate::save_load_ui::SaveLoadUiState>,
     craft_ui: Res<crate::craft_ui::CraftUiState>,
+    windows: Res<OpenWindows>,
 ) {
     if navigation_ui::navigation_text_or_filter_is_active(&navigation_ui)
         || crate::fleet_ui::fleet_text_input_is_active(&fleet_ui)
         || crate::save_load_ui::save_name_is_editing(&save_load_ui)
         || crate::craft_ui::craft_quantity_is_editing(&craft_ui)
+        || windows.any_visible()
     {
         return;
     }
@@ -93,6 +97,7 @@ pub(crate) struct ViewInputState<'w> {
     management: ResMut<'w, ColonyManagementState>,
     history: ResMut<'w, NavigationHistory>,
     open_panel: ResMut<'w, OpenPanel>,
+    windows: ResMut<'w, OpenWindows>,
     combat_ui: Res<'w, crate::combat_ui::CombatUiState>,
 }
 
@@ -109,6 +114,7 @@ pub(crate) fn handle_view_input(
         mut management,
         mut history,
         mut open_panel,
+        mut windows,
         combat_ui,
     } = input;
 
@@ -116,14 +122,11 @@ pub(crate) fn handle_view_input(
         return;
     }
 
-    if matches!(
-        *open_panel,
-        OpenPanel::Research
-            | OpenPanel::Craft
-            | OpenPanel::Fleet
-            | OpenPanel::Navigation
-            | OpenPanel::Objectives
-    ) {
+    // Research/Craft/Fleet are floating `GameWindowKind` windows tracked by
+    // `OpenWindows`, not `OpenPanel` (which resets to `None` when they open) — check
+    // both so keyboard shortcuts don't leak to the background map while they're open.
+    if matches!(*open_panel, OpenPanel::Navigation | OpenPanel::Objectives) || windows.any_visible()
+    {
         return;
     }
 
@@ -131,6 +134,7 @@ pub(crate) fn handle_view_input(
         toggle_colony_management(
             &mut management,
             &mut open_panel,
+            &mut windows,
             &mut simulation,
             &mut navigation_ui,
         );
@@ -138,9 +142,11 @@ pub(crate) fn handle_view_input(
         return;
     }
 
-    if *open_panel == OpenPanel::Colony {
-        if keyboard.just_pressed(KeyCode::Escape) {
-            *open_panel = OpenPanel::None;
+    if windows.is_visible(GameWindowKind::Colony) {
+        if windows.topmost() == Some(GameWindowKind::Colony)
+            && keyboard.just_pressed(KeyCode::Escape)
+        {
+            windows.close(GameWindowKind::Colony);
         } else if keyboard.just_pressed(KeyCode::ArrowLeft) {
             cycle_management_colony(&mut management, &mut simulation, true);
         } else if keyboard.just_pressed(KeyCode::ArrowRight) {
@@ -276,6 +282,7 @@ pub(crate) fn update_pointer_candidates(
     pointer_state.candidates = candidates;
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_pointer_selection(
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     time: Res<Time>,
@@ -283,6 +290,7 @@ pub(crate) fn handle_pointer_selection(
     mut navigation: ResMut<StrategicNavigation>,
     mut rebuild: ResMut<ViewRebuildRequest>,
     mut pointer_state: ResMut<PointerSelectionState>,
+    mut inspector_panel: ResMut<InspectorPanelState>,
     targets: Query<(&SelectableVisual, &Transform)>,
 ) {
     if !mouse_buttons.just_pressed(MouseButton::Left) {
@@ -305,6 +313,13 @@ pub(crate) fn handle_pointer_selection(
     });
 
     select_pick_target(&mut simulation, primary.target);
+    // A deliberate click is a stronger "show me its panel" signal than a
+    // selection *change* — clears the inspector's close-until-reselect flag
+    // even when re-clicking the same already-selected target, so closing the
+    // panel with its X and clicking the same planet again reopens it instead
+    // of requiring a detour through a different target first (playtest
+    // feedback).
+    inspector_panel.hidden_for_selection = None;
 
     let now = time.elapsed();
     let is_double_click = pointer_state.last_click.is_some_and(|previous| {

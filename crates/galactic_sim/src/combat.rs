@@ -221,6 +221,13 @@ impl CombatRules {
             .all(|stack| stack.quantity > 0 && self.ships.contains_key(&stack.craftable))
     }
 
+    pub fn has_combat_ships(&self, fleet: &FleetState) -> bool {
+        fleet
+            .composition
+            .entries()
+            .any(|stack| stack.quantity > 0 && self.ships.contains_key(&stack.craftable))
+    }
+
     pub(crate) fn append_structure(&self, output: &mut String) {
         output.push_str("combat:");
         output.push_str(&self.version.to_string());
@@ -249,7 +256,7 @@ impl CombatRules {
         &self,
         fleet: &FleetState,
     ) -> Result<CombatFleetSnapshot, CombatSnapshotError> {
-        if !self.is_combat_fleet(fleet) {
+        if !self.has_combat_ships(fleet) {
             return Err(CombatSnapshotError::FleetNotCombatCapable(fleet.id));
         }
         let capabilities = fleet
@@ -258,11 +265,9 @@ impl CombatRules {
         let ships = fleet
             .composition
             .entries()
-            .map(|stack| {
-                let definition = self
-                    .ship(stack.craftable)
-                    .expect("a validated combat fleet has a combat definition");
-                CombatShipStack {
+            .filter_map(|stack| {
+                let definition = self.ship(stack.craftable)?;
+                Some(CombatShipStack {
                     craftable: stack.craftable,
                     quantity: stack.quantity,
                     offense: definition.offense,
@@ -270,7 +275,7 @@ impl CombatRules {
                     durability: definition.durability,
                     target_class: definition.target_class,
                     bonuses: definition.bonuses,
-                }
+                })
             })
             .collect();
         Ok(CombatFleetSnapshot {
@@ -805,16 +810,25 @@ pub(crate) fn apply_combat_resolution(
         }
     }
 
-    if resolution.attacker_survivors.is_empty() {
+    let non_combat_stacks = candidate
+        .fleet(fleet_id)
+        .expect("a finalized combat's attacker fleet still exists")
+        .composition
+        .entries()
+        .filter(|stack| !combat_rules().ships.contains_key(&stack.craftable))
+        .collect::<Vec<_>>();
+    let surviving_stacks = resolution
+        .attacker_survivors
+        .iter()
+        .map(|stack| ShipStack::new(stack.craftable, stack.quantity))
+        .chain(non_combat_stacks)
+        .collect::<Vec<_>>();
+
+    if surviving_stacks.is_empty() {
         candidate.fleets.retain(|fleet| fleet.id != fleet_id);
     } else {
-        let composition = FleetComposition::from_stacks(
-            resolution
-                .attacker_survivors
-                .iter()
-                .map(|stack| ShipStack::new(stack.craftable, stack.quantity)),
-        )
-        .map_err(|_| CombatApplicationError::InvalidSurvivingFleet(fleet_id))?;
+        let composition = FleetComposition::from_stacks(surviving_stacks)
+            .map_err(|_| CombatApplicationError::InvalidSurvivingFleet(fleet_id))?;
         let fleet = candidate
             .fleet_mut(fleet_id)
             .expect("a finalized combat's attacker fleet still exists");
@@ -851,7 +865,7 @@ pub(crate) fn apply_combat_resolution(
         target: planet_id,
         outcome: AttackMissionOutcome::Resolved(resolution.outcome),
         secured: matches!(resolution.control, CombatControlChange::Secured { .. }),
-        attackers_destroyed: resolution.attacker_survivors.is_empty(),
+        attackers_destroyed: candidate.fleet(fleet_id).is_none(),
     };
     // Finalization now happens from `apply_command`, outside
     // `advance_missions`'s generic tail that used to set `mission.result` for
@@ -885,6 +899,7 @@ fn fleet_matches_snapshot(fleet: &FleetState, snapshot: &CombatFleetSnapshot) ->
         && fleet
             .composition
             .entries()
+            .filter(|stack| combat_rules().ships.contains_key(&stack.craftable))
             .map(|stack| (stack.craftable, stack.quantity))
             .eq(snapshot
                 .ships
@@ -1112,6 +1127,21 @@ mod tests {
         assert!(rules.ship(CraftableId::FRIGATE_BULWARK).is_some());
         assert!(rules.ship(CraftableId::BASTION_CRUISER).is_some());
         assert!(rules.ship(CraftableId::LIGHT_CARGO).is_none());
+        assert!(
+            !rules.is_combat_fleet(&FleetState {
+                id: FleetId::new(9),
+                name: "Escorte mixte".to_string(),
+                owner: Owner::Faction(FactionId::new(0)),
+                location: FleetLocation::Docked(ColonyId::new(0)),
+                composition: FleetComposition::from_stacks([
+                    ShipStack::new(CraftableId::FRIGATE_BULWARK, 1),
+                    ShipStack::new(CraftableId::LIGHT_CARGO, 1),
+                ])
+                .expect("mixed fleet composition is valid"),
+                cargo: ResourceStock::ZERO,
+                assignment: crate::FleetAssignment::Idle,
+            })
+        );
         assert_eq!(
             rules
                 .ship(CraftableId::NEEDLE_INTERCEPTOR)
@@ -1120,6 +1150,120 @@ mod tests {
                 .multiplier_for(CombatTargetClass::Light),
             1_400,
         );
+    }
+
+    #[test]
+    fn mixed_fleet_snapshots_only_combat_ships() {
+        let rules = combat_rules();
+        let fleet = FleetState {
+            id: FleetId::new(9),
+            name: "Escorte mixte".to_string(),
+            owner: Owner::Faction(FactionId::new(0)),
+            location: FleetLocation::Docked(ColonyId::new(0)),
+            composition: FleetComposition::from_stacks([
+                ShipStack::new(CraftableId::LIGHT_CARGO, 2),
+                ShipStack::new(CraftableId::FRIGATE_BULWARK, 3),
+            ])
+            .expect("mixed fleet composition is valid"),
+            cargo: ResourceStock::ZERO,
+            assignment: crate::FleetAssignment::Idle,
+        };
+
+        assert!(rules.has_combat_ships(&fleet));
+        assert!(!rules.is_combat_fleet(&fleet));
+        let snapshot = rules
+            .snapshot_fleet(&fleet)
+            .expect("mixed fleet with military escort can attack");
+
+        assert_eq!(snapshot.ships.len(), 1);
+        assert_eq!(snapshot.ships[0].craftable, CraftableId::FRIGATE_BULWARK);
+        assert_eq!(snapshot.ships[0].quantity, 3);
+        assert_eq!(
+            snapshot.cargo_capacity,
+            fleet.capabilities().unwrap().cargo_capacity
+        );
+    }
+
+    #[test]
+    fn combat_resolution_preserves_non_combat_ships_when_escorts_die() {
+        let mut simulation = Simulation::new(UniverseConfig::mvp());
+        let target = simulation
+            .state()
+            .planetary_presences
+            .iter()
+            .find(|presence| !presence.forces.is_empty())
+            .expect("a defended target exists")
+            .planet_id;
+        let player_faction = simulation.state().player_faction;
+        let fleet_id = FleetId::new(0);
+        simulation.state_mut().fleets.push(FleetState {
+            id: fleet_id,
+            name: "Convoi escorté".to_string(),
+            owner: Owner::Faction(player_faction),
+            location: FleetLocation::InSystem(target.system_id()),
+            composition: FleetComposition::from_stacks([
+                ShipStack::new(CraftableId::LIGHT_CARGO, 2),
+                ShipStack::new(CraftableId::FRIGATE_BULWARK, 1),
+            ])
+            .expect("mixed fleet composition is valid"),
+            cargo: ResourceStock::ZERO,
+            assignment: crate::FleetAssignment::Mission(MissionId::new(0)),
+        });
+        simulation.state_mut().next_fleet_id = 1;
+
+        let attacker = combat_rules()
+            .snapshot_fleet(simulation.state().fleet(fleet_id).unwrap())
+            .expect("mixed fleet snapshots for combat");
+        let defender = defense(
+            target,
+            FactionId::new(2),
+            simulation
+                .state()
+                .planetary_presence(target)
+                .unwrap()
+                .forces[0]
+                .definition_id,
+            1,
+        );
+        let (_, result) = apply_combat_resolution(
+            simulation.state_mut(),
+            MissionId::new(0),
+            StrategicTick::new(10),
+            fleet_id,
+            target,
+            &attacker,
+            &defender,
+            7,
+            CombatResolution {
+                outcome: CombatOutcome::DefenderVictory,
+                rounds: 1,
+                attacker_losses: vec![CombatShipLoss {
+                    craftable: CraftableId::FRIGATE_BULWARK,
+                    quantity: 1,
+                }],
+                attacker_survivors: Vec::new(),
+                defender_losses: Vec::new(),
+                defender_survivors: defender.forces.clone(),
+                attacker_damage: 0,
+                defender_damage: 70,
+                salvage_recoverable: ResourceStock::ZERO,
+                salvage_recovered: ResourceStock::ZERO,
+                control: CombatControlChange::Unchanged,
+            },
+            Vec::new(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .expect("combat resolution applies");
+
+        let fleet = simulation
+            .state()
+            .fleet(fleet_id)
+            .expect("non-combat ships keep the fleet alive");
+        assert_eq!(fleet.composition.quantity(CraftableId::FRIGATE_BULWARK), 0);
+        assert_eq!(fleet.composition.quantity(CraftableId::LIGHT_CARGO), 2);
+        assert!(!result.attackers_destroyed);
     }
 
     #[test]

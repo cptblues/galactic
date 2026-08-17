@@ -4,7 +4,11 @@ use galactic_sim::{GameAction, GameEventKind, SelectionTarget, Simulation};
 
 use crate::presentation::components::*;
 use crate::presentation::entity_visuals::EntityVisualCatalog;
-use crate::presentation::resource_hud::*;
+use crate::presentation::resource_hud::{
+    building_management_detail_text, construction_error_text, construction_progress_ratio,
+    construction_queue_detail_label, management_building_button_color,
+    management_building_button_outline,
+};
 use crate::presentation::shortcuts::{action_active, action_available};
 use crate::presentation::strategic_navigation::*;
 use crate::*;
@@ -13,6 +17,7 @@ pub(crate) fn handle_colony_management_buttons(
     mut simulation: ResMut<SimulationResource>,
     mut management: ResMut<ColonyManagementState>,
     mut open_panel: ResMut<OpenPanel>,
+    mut windows: ResMut<OpenWindows>,
     mut navigation_ui: ResMut<navigation_ui::NavigationUiState>,
     interactions: ManagementButtonInteractionQuery,
 ) {
@@ -26,12 +31,13 @@ pub(crate) fn handle_colony_management_buttons(
                 toggle_colony_management(
                     &mut management,
                     &mut open_panel,
+                    &mut windows,
                     &mut simulation,
                     &mut navigation_ui,
                 );
             }
             ManagementButtonAction::Close => {
-                *open_panel = OpenPanel::None;
+                windows.close(GameWindowKind::Colony);
             }
             ManagementButtonAction::PreviousColony => {
                 cycle_management_colony(&mut management, &mut simulation, true);
@@ -124,7 +130,7 @@ pub(crate) fn capture_colony_management_feedback(
 pub(crate) fn update_colony_management_visibility(
     simulation: Res<SimulationResource>,
     management: Res<ColonyManagementState>,
-    open_panel: Res<OpenPanel>,
+    windows: Res<OpenWindows>,
     mut roots: Query<&mut Visibility, With<ColonyManagementRoot>>,
     mut texts: Query<(&ManagementTextRole, &mut Text)>,
     mut cycle_buttons: Query<
@@ -132,7 +138,7 @@ pub(crate) fn update_colony_management_visibility(
         (With<Button>, Without<ColonyManagementRoot>),
     >,
 ) {
-    let is_open = *open_panel == OpenPanel::Colony;
+    let is_open = windows.is_visible(GameWindowKind::Colony);
     for mut visibility in &mut roots {
         let next = if is_open {
             Visibility::Visible
@@ -172,9 +178,9 @@ pub(crate) fn update_colony_management_visibility(
     for (role, mut text) in &mut texts {
         let next = match role {
             ManagementTextRole::ToggleLabel => Some(if is_open {
-                "Fermer gestion colonie".to_string()
+                "Fermer colonie".to_string()
             } else {
-                "Gestion colonie  [C]".to_string()
+                "Colonie  [C]".to_string()
             }),
             ManagementTextRole::Title => Some(
                 colony
@@ -213,40 +219,10 @@ const fn colony_cycle_buttons_visible(colony_count: usize) -> bool {
     colony_count > 1
 }
 
-pub(crate) fn update_colony_management_resources(
-    simulation: Res<SimulationResource>,
-    open_panel: Res<OpenPanel>,
-    mut texts: Query<(&ManagementResourceCardText, &mut Text, &mut TextColor)>,
-    mut gauges: Query<(
-        &ManagementResourceGaugeFill,
-        &mut Node,
-        &mut BackgroundColor,
-    )>,
-) {
-    if *open_panel != OpenPanel::Colony {
-        return;
-    }
-    let Some(colony) = active_management_colony(simulation.simulation()) else {
-        return;
-    };
-    let production = galactic_sim::colony_production_snapshot(colony);
-
-    for (card, mut text, mut color) in &mut texts {
-        let view = resource_hud_view(card.kind, colony, production);
-        text.0 = view.text;
-        color.0 = status_text_color(card.kind, view.status);
-    }
-    for (gauge, mut node, mut color) in &mut gauges {
-        let view = resource_hud_view(gauge.kind, colony, production);
-        node.width = Val::Percent((view.fill_ratio * 100.0).clamp(0.0, 100.0));
-        color.0 = status_gauge_color(gauge.kind, view.status);
-    }
-}
-
 pub(crate) fn update_colony_management_buildings(
     simulation: Res<SimulationResource>,
     management: Res<ColonyManagementState>,
-    open_panel: Res<OpenPanel>,
+    windows: Res<OpenWindows>,
     entity_visuals: Res<EntityVisualCatalog>,
     mut buttons: Query<(
         &ManagementBuildingButton,
@@ -257,7 +233,7 @@ pub(crate) fn update_colony_management_buildings(
     mut labels: Query<(&ManagementBuildingButtonText, &mut Text, &mut TextColor)>,
     mut icons: Query<(&ManagementBuildingButtonIcon, &mut ImageNode)>,
 ) {
-    if *open_panel != OpenPanel::Colony {
+    if !windows.is_visible(GameWindowKind::Colony) {
         return;
     }
     let Some(colony) = active_management_colony(simulation.simulation()) else {
@@ -277,13 +253,13 @@ pub(crate) fn update_colony_management_buildings(
         let active_level = colony.buildings.level(label.kind);
         let projected_level = projected.level(label.kind);
         let queue_suffix = if projected_level > active_level {
-            format!("  -> {} en file", projected_level)
+            format!(" -> {projected_level}")
         } else {
             String::new()
         };
         text.0 = format!(
             "{}
-Niveau {}{}",
+Niv. {}{}",
             definition.name, active_level, queue_suffix,
         );
         color.0 = if label.kind == management.selected_building {
@@ -307,7 +283,7 @@ Niveau {}{}",
 pub(crate) fn update_colony_management_detail(
     simulation: Res<SimulationResource>,
     management: Res<ColonyManagementState>,
-    open_panel: Res<OpenPanel>,
+    windows: Res<OpenWindows>,
     entity_visuals: Res<EntityVisualCatalog>,
     mut texts: Query<(&ManagementTextRole, &mut Text, &mut TextColor)>,
     mut icons: Query<&mut ImageNode, With<ManagementBuildingDetailIcon>>,
@@ -316,7 +292,7 @@ pub(crate) fn update_colony_management_detail(
         With<ManagementUpgradeButton>,
     >,
 ) {
-    if *open_panel != OpenPanel::Colony {
+    if !windows.is_visible(GameWindowKind::Colony) {
         return;
     }
     let Some(colony) = active_management_colony(simulation.simulation()) else {
@@ -364,7 +340,7 @@ pub(crate) fn update_colony_management_detail(
 
 pub(crate) fn update_colony_management_queue(
     simulation: Res<SimulationResource>,
-    open_panel: Res<OpenPanel>,
+    windows: Res<OpenWindows>,
     mut texts: Query<(&ManagementTextRole, &mut Text)>,
     mut progress: Query<&mut Node, With<ManagementQueueProgressFill>>,
     mut cancel_button: Query<
@@ -372,7 +348,7 @@ pub(crate) fn update_colony_management_queue(
         With<CancelConstructionButton>,
     >,
 ) {
-    if *open_panel != OpenPanel::Colony {
+    if !windows.is_visible(GameWindowKind::Colony) {
         return;
     }
     let Some(colony) = active_management_colony(simulation.simulation()) else {
@@ -401,15 +377,17 @@ pub(crate) fn update_colony_management_queue(
 pub(crate) fn toggle_colony_management(
     management: &mut ColonyManagementState,
     open_panel: &mut OpenPanel,
+    windows: &mut OpenWindows,
     simulation: &mut SimulationResource,
     navigation_ui: &mut navigation_ui::NavigationUiState,
 ) {
-    let opening = *open_panel != OpenPanel::Colony;
-    *open_panel = if opening {
-        OpenPanel::Colony
+    let opening = !windows.is_visible(GameWindowKind::Colony);
+    if opening {
+        windows.open(GameWindowKind::Colony);
+        *open_panel = OpenPanel::None;
     } else {
-        OpenPanel::None
-    };
+        windows.close(GameWindowKind::Colony);
+    }
     management.feedback.clear();
     if opening {
         navigation_ui.search_open = false;

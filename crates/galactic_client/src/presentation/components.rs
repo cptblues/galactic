@@ -7,8 +7,6 @@ use bevy::prelude::{
 use galactic_domain::{PlanetId, SectorId, SystemId, WorldPosition};
 use galactic_sim::{KnowledgeLevel, SystemVisibility, TimeSpeed};
 
-use crate::UniverseSystemTier;
-
 #[derive(Resource, Default)]
 pub(crate) struct SelectedMission(pub(crate) Option<galactic_domain::MissionId>);
 
@@ -29,6 +27,163 @@ pub(crate) enum OpenPanel {
     Settings,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GameWindowKind {
+    Colony,
+    Research,
+    Craft,
+    Fleet,
+}
+
+impl GameWindowKind {
+    pub(crate) const ALL: [Self; 4] = [Self::Colony, Self::Research, Self::Craft, Self::Fleet];
+
+    pub(crate) const fn default_position(self) -> Vec2 {
+        match self {
+            Self::Colony => Vec2::new(42.0, 60.0),
+            Self::Research => Vec2::new(86.0, 134.0),
+            Self::Craft => Vec2::new(122.0, 82.0),
+            Self::Fleet => Vec2::new(64.0, 64.0),
+        }
+    }
+
+    pub(crate) const fn default_size(self) -> Vec2 {
+        match self {
+            Self::Colony => Vec2::new(1120.0, 650.0),
+            Self::Research => Vec2::new(900.0, 560.0),
+            Self::Craft => Vec2::new(980.0, 620.0),
+            Self::Fleet => Vec2::new(1160.0, 650.0),
+        }
+    }
+
+    pub(crate) const fn from_panel(panel: OpenPanel) -> Option<Self> {
+        match panel {
+            OpenPanel::Colony => Some(Self::Colony),
+            OpenPanel::Research => Some(Self::Research),
+            OpenPanel::Craft => Some(Self::Craft),
+            OpenPanel::Fleet => Some(Self::Fleet),
+            OpenPanel::None
+            | OpenPanel::Navigation
+            | OpenPanel::Objectives
+            | OpenPanel::SaveLoad
+            | OpenPanel::Settings => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct GameWindowState {
+    pub(crate) visible: bool,
+    pub(crate) position: Vec2,
+    pub(crate) size: Vec2,
+    pub(crate) z_index: i32,
+}
+
+impl GameWindowState {
+    pub(crate) const fn new(kind: GameWindowKind, z_index: i32) -> Self {
+        Self {
+            visible: false,
+            position: kind.default_position(),
+            size: kind.default_size(),
+            z_index,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct GameWindowDrag {
+    pub(crate) kind: GameWindowKind,
+    pub(crate) cursor_offset: Vec2,
+}
+
+#[derive(Resource, Debug, Clone, PartialEq)]
+pub(crate) struct OpenWindows {
+    colony: GameWindowState,
+    research: GameWindowState,
+    craft: GameWindowState,
+    fleet: GameWindowState,
+    next_z_index: i32,
+    pub(crate) dragging: Option<GameWindowDrag>,
+}
+
+impl Default for OpenWindows {
+    fn default() -> Self {
+        Self {
+            colony: GameWindowState::new(GameWindowKind::Colony, 140),
+            research: GameWindowState::new(GameWindowKind::Research, 141),
+            craft: GameWindowState::new(GameWindowKind::Craft, 142),
+            fleet: GameWindowState::new(GameWindowKind::Fleet, 143),
+            next_z_index: 144,
+            dragging: None,
+        }
+    }
+}
+
+impl OpenWindows {
+    pub(crate) const fn state(&self, kind: GameWindowKind) -> &GameWindowState {
+        match kind {
+            GameWindowKind::Colony => &self.colony,
+            GameWindowKind::Research => &self.research,
+            GameWindowKind::Craft => &self.craft,
+            GameWindowKind::Fleet => &self.fleet,
+        }
+    }
+
+    pub(crate) fn state_mut(&mut self, kind: GameWindowKind) -> &mut GameWindowState {
+        match kind {
+            GameWindowKind::Colony => &mut self.colony,
+            GameWindowKind::Research => &mut self.research,
+            GameWindowKind::Craft => &mut self.craft,
+            GameWindowKind::Fleet => &mut self.fleet,
+        }
+    }
+
+    pub(crate) fn is_visible(&self, kind: GameWindowKind) -> bool {
+        self.state(kind).visible
+    }
+
+    pub(crate) fn any_visible(&self) -> bool {
+        GameWindowKind::ALL
+            .into_iter()
+            .any(|kind| self.is_visible(kind))
+    }
+
+    pub(crate) fn open(&mut self, kind: GameWindowKind) {
+        self.state_mut(kind).visible = true;
+        self.bring_to_front(kind);
+    }
+
+    pub(crate) fn close(&mut self, kind: GameWindowKind) {
+        self.state_mut(kind).visible = false;
+        if self.dragging.is_some_and(|drag| drag.kind == kind) {
+            self.dragging = None;
+        }
+    }
+
+    pub(crate) fn bring_to_front(&mut self, kind: GameWindowKind) {
+        let z_index = self.next_z_index;
+        self.next_z_index = self.next_z_index.saturating_add(1);
+        self.state_mut(kind).z_index = z_index;
+    }
+
+    pub(crate) fn topmost(&self) -> Option<GameWindowKind> {
+        GameWindowKind::ALL
+            .into_iter()
+            .filter(|kind| self.is_visible(*kind))
+            .max_by_key(|kind| self.state(*kind).z_index)
+    }
+}
+
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GameWindowRoot {
+    pub(crate) kind: GameWindowKind,
+}
+
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GameWindowTitleBar {
+    pub(crate) kind: GameWindowKind,
+}
+
 #[derive(Component)]
 pub(crate) struct StrategicViewEntity;
 
@@ -44,7 +199,6 @@ pub(crate) struct StrategicSunLight;
 #[derive(Component)]
 pub(crate) struct SystemVisual {
     pub(crate) id: SystemId,
-    pub(crate) tier: UniverseSystemTier,
     pub(crate) base_scale: Vec3,
 }
 
@@ -142,8 +296,38 @@ pub(crate) struct VictoryUiState {
 pub(crate) struct ResourceBarRoot;
 
 #[derive(Component)]
+pub(crate) struct ResourceBarCard {
+    pub(crate) kind: ResourceHudKind,
+}
+
+#[derive(Component)]
 pub(crate) struct ResourceBarCardText {
     pub(crate) kind: ResourceHudKind,
+}
+
+#[derive(Component)]
+pub(crate) struct ResourceBarCardFill {
+    pub(crate) kind: ResourceHudKind,
+}
+
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CommandDockButton {
+    pub(crate) target: CommandDockTarget,
+    pub(crate) group: CommandDockGroup,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CommandDockTarget {
+    Galaxy,
+    Panel(OpenPanel),
+    Help,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CommandDockGroup {
+    Navigation,
+    Operations,
+    Meta,
 }
 
 #[derive(Component)]
@@ -173,8 +357,15 @@ pub(crate) enum ScrollIndicatorId {
     MissionReportList,
     MissionReportDetail,
     SaveSlotList,
-    CombatAlliedColumn,
-    CombatEnemyColumn,
+    CombatForcesColumn,
+    CombatParametersColumn,
+    CraftableList,
+    CraftableDetail,
+    CraftQueue,
+    FleetList,
+    FleetComposer,
+    WizardStepsColumn,
+    WizardStepPanel,
 }
 
 #[derive(Component, Debug, Clone, Copy)]
@@ -216,6 +407,23 @@ pub(crate) enum InspectorTextRole {
 /// open, shows it otherwise.
 #[derive(Component)]
 pub(crate) struct InspectorPanelRoot;
+
+#[derive(Resource, Default)]
+pub(crate) struct InspectorPanelState {
+    pub(crate) hidden_for_selection: Option<galactic_sim::SelectionTarget>,
+}
+
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InspectorButtonAction {
+    Close,
+}
+
+pub(crate) type InspectorButtonInteractionQuery<'w, 's> = Query<
+    'w,
+    's,
+    (&'static Interaction, &'static InspectorButtonAction),
+    (Changed<Interaction>, With<Button>),
+>;
 
 /// Wraps the fixed pool of inspector tab buttons so the whole row can be hidden when the
 /// current selection only has a single section (no tabs needed).
@@ -354,16 +562,6 @@ pub(crate) enum ManagementTextRole {
     BuildingDetail,
     UpgradeLabel,
     Queue,
-}
-
-#[derive(Component)]
-pub(crate) struct ManagementResourceCardText {
-    pub(crate) kind: ResourceHudKind,
-}
-
-#[derive(Component)]
-pub(crate) struct ManagementResourceGaugeFill {
-    pub(crate) kind: ResourceHudKind,
 }
 
 #[derive(Component)]

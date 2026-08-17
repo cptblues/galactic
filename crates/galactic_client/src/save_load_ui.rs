@@ -7,8 +7,9 @@ use bevy::prelude::*;
 use bevy::ui::RelativeCursorPosition;
 use galactic_domain::SystemId;
 use galactic_persistence::{
-    SaveFileError, SaveFileHeader, SaveSlotMetadata, default_save_directory, delete_save,
-    list_save_slots, load_from_path, restore_from_snapshot, save_to_path, snapshot_from_simulation,
+    SAVE_VERSION, SaveError, SaveFileError, SaveFileHeader, SaveSlotMetadata,
+    default_save_directory, delete_save, list_save_slots, load_from_path, restore_from_snapshot,
+    save_to_path, snapshot_from_simulation,
 };
 
 use crate::presentation::{
@@ -18,8 +19,9 @@ use crate::presentation::{
 };
 
 use super::{
-    OpenPanel, PresentationUpdateSet, SimulationResource, UiPointerBlocker, panel_background,
-    panel_outline, replace_simulation, ui_text_font,
+    CommandDockButton, CommandDockGroup, CommandDockTarget, OpenPanel, PresentationUpdateSet,
+    SimulationResource, UiPointerBlocker, panel_background, panel_outline, replace_simulation,
+    ui_text_font,
 };
 
 const SAVE_LOAD_Z_INDEX: i32 = 120;
@@ -121,7 +123,7 @@ pub(crate) fn spawn_save_load_toggle(parent: &mut ChildSpawnerCommands) {
             Button,
             Node {
                 width: Val::Percent(100.0),
-                min_height: Val::Px(36.0),
+                min_height: Val::Px(42.0),
                 padding: UiRect::axes(Val::Px(10.0), Val::Px(7.0)),
                 border: UiRect::all(Val::Px(1.0)),
                 border_radius: BorderRadius::all(Val::Px(5.0)),
@@ -136,12 +138,16 @@ pub(crate) fn spawn_save_load_toggle(parent: &mut ChildSpawnerCommands) {
                 Color::srgba(0.70, 0.62, 0.90, 0.55),
             ),
             SaveLoadButtonAction::Toggle,
+            CommandDockButton {
+                target: CommandDockTarget::Panel(OpenPanel::SaveLoad),
+                group: CommandDockGroup::Meta,
+            },
             UiPointerBlocker,
         ))
         .with_children(|button| {
             button.spawn((
-                Text::new("Sauvegardes  [J]"),
-                ui_text_font(12.0),
+                Text::new("Save  [J]"),
+                ui_text_font(12.5),
                 TextColor(Color::srgb(0.88, 0.84, 0.98)),
                 SaveLoadTextRole::Toggle,
             ));
@@ -185,6 +191,7 @@ fn spawn_save_load_screen(mut commands: Commands) {
                 ui_text_font(11.0),
                 TextColor(Color::srgb(0.90, 0.70, 0.70)),
                 Node {
+                    width: Val::Percent(100.0),
                     min_height: Val::Px(18.0),
                     ..default()
                 },
@@ -635,11 +642,50 @@ fn delete_selected_slot(ui: &mut SaveLoadUiState, now: Duration) {
 
 fn save_file_error_message(error: &SaveFileError) -> String {
     match error {
-        SaveFileError::Incompatible(_) => {
-            "Cette sauvegarde n’est plus compatible avec la partie actuelle.".to_string()
-        }
+        SaveFileError::Incompatible(error) => incompatible_save_error_message(error),
         SaveFileError::Corrupted { .. } | SaveFileError::Io { .. } => {
             "Fichier de sauvegarde illisible ou corrompu.".to_string()
+        }
+    }
+}
+
+fn incompatible_save_error_message(error: &SaveError) -> String {
+    match error {
+        SaveError::UnsupportedVersion(found) => {
+            format!("Sauvegarde incompatible : version {found}, jeu actuel {SAVE_VERSION}.")
+        }
+        SaveError::RulesetIdMismatch => {
+            "Sauvegarde incompatible : identifiant de règles différent.".to_string()
+        }
+        SaveError::RulesetSchemaVersionMismatch { expected, found } => {
+            format!("Sauvegarde incompatible : schéma de règles {found}, attendu {expected}.")
+        }
+        SaveError::RulesetStructureMismatch { expected, found } => format!(
+            "Sauvegarde incompatible : contenu de règles différent (attendu {expected:016x}, trouvé {found:016x})."
+        ),
+        SaveError::UniverseIdMismatch { expected, found } => {
+            format!("Sauvegarde incompatible : univers {found}, attendu {expected}.")
+        }
+        SaveError::GenerationVersionMismatch { expected, found } => {
+            format!("Sauvegarde incompatible : version de génération {found}, attendue {expected}.")
+        }
+        SaveError::GenerationFingerprintMismatch { expected, found } => format!(
+            "Sauvegarde incompatible : génération différente (attendu {expected:016x}, trouvé {found:016x})."
+        ),
+        SaveError::InvalidClock(error) => {
+            format!("Sauvegarde incompatible : horloge invalide ({error:?}).")
+        }
+        SaveError::InvalidResourceLedger { colony_id, error } => format!(
+            "Sauvegarde incompatible : ressources invalides pour la colonie {colony_id} ({error:?})."
+        ),
+        SaveError::InvalidProductionRemainder { colony_id, error } => format!(
+            "Sauvegarde incompatible : reste de production invalide pour la colonie {colony_id} ({error:?})."
+        ),
+        SaveError::InvalidPendingProductionTicks { colony_id, found } => format!(
+            "Sauvegarde incompatible : ticks de production invalides pour la colonie {colony_id} ({found})."
+        ),
+        SaveError::InvalidState(error) => {
+            format!("Sauvegarde incompatible : état de partie invalide ({error:?}).")
         }
     }
 }
@@ -924,11 +970,7 @@ fn update_save_load_visibility(
     for (role, mut text) in &mut texts {
         match role {
             SaveLoadTextRole::Toggle => {
-                let next = if is_open {
-                    "Fermer sauvegardes"
-                } else {
-                    "Sauvegardes  [J]"
-                };
+                let next = if is_open { "Fermer save" } else { "Save  [J]" };
                 if text.0 != next {
                     text.0 = next.to_string();
                 }
@@ -1244,6 +1286,28 @@ mod tests {
 
         assert!(!rebuild.0);
         assert_eq!(ui.feedback, "Ce fichier de sauvegarde est corrompu.");
+    }
+
+    #[test]
+    fn incompatible_save_feedback_reports_the_exact_root_cause() {
+        let message = save_file_error_message(&SaveFileError::Incompatible(
+            SaveError::UnsupportedVersion(SAVE_VERSION + 1),
+        ));
+
+        assert!(message.contains("version"));
+        assert!(message.contains(&(SAVE_VERSION + 1).to_string()));
+        assert!(message.contains(&SAVE_VERSION.to_string()));
+    }
+
+    #[test]
+    fn ruleset_fingerprint_feedback_includes_expected_and_found_values() {
+        let message = incompatible_save_error_message(&SaveError::RulesetStructureMismatch {
+            expected: 0x1234,
+            found: 0xabcd,
+        });
+
+        assert!(message.contains("0000000000001234"));
+        assert!(message.contains("000000000000abcd"));
     }
 
     #[test]

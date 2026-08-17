@@ -688,7 +688,7 @@ pub fn fleet_supports_mission_kind(fleet: &FleetState, kind: MissionKind) -> boo
                     .composition
                     .quantity(CraftableId::CARTOGRAPHER_SATELLITE)
         }
-        MissionKind::Attack => combat_rules().is_combat_fleet(fleet),
+        MissionKind::Attack => combat_rules().has_combat_ships(fleet),
         MissionKind::Colonize => {
             let colony_ship = planetary_analysis_rules().colony_ship();
             fleet.composition.total_ships() == 1 && fleet.composition.quantity(colony_ship) == 1
@@ -2805,6 +2805,58 @@ mod tests {
                 .filter(|report| report.mission_id == mission_id)
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn mixed_transport_and_military_fleet_is_eligible_for_attack() {
+        let (mut simulation, target) = simulation_with_attack_target();
+        let actor = simulation.state().player_faction;
+        let colony_id = simulation.state().colonies[0].id;
+        let origin = simulation.state().colonies[0].system_id;
+        let repository = simulation.universe_repository().clone();
+        simulation.state_mut().colonies[0]
+            .inventory
+            .add(CraftableId::LIGHT_CARGO, 1);
+        let composition = FleetComposition::from_stacks([
+            ShipStack::new(CraftableId::LIGHT_CARGO, 1),
+            ShipStack::new(CraftableId::FRIGATE_BULWARK, 1),
+        ])
+        .expect("mixed fleet composition is valid");
+        let created = form_fleet(simulation.state_mut(), actor, colony_id, composition)
+            .expect("mixed fleet can be formed");
+        let target = MissionTarget::Planet {
+            system_id: target.system_id(),
+            planet_id: target,
+        };
+
+        let fleet = simulation.state().fleet(created.fleet_id).unwrap();
+        assert!(fleet_supports_mission_kind(fleet, MissionKind::Attack));
+        assert_eq!(
+            eligible_fleets_for_mission(
+                simulation.state(),
+                &repository,
+                actor,
+                colony_id,
+                target,
+                MissionKind::Attack,
+            ),
+            vec![created.fleet_id],
+        );
+        assert!(
+            plan_mission(
+                simulation.state(),
+                &repository,
+                actor,
+                MissionOrder {
+                    fleet_id: created.fleet_id,
+                    origin,
+                    target,
+                    kind: MissionKind::Attack,
+                    departure_at: simulation.state().clock.current_tick(),
+                },
+            )
+            .is_ok()
         );
     }
 

@@ -1,4 +1,5 @@
 // MVP-016: dedicated research screen kept outside the main client module.
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use galactic_sim::{
     BuildingKind, GameAction, GameEventKind, ResearchError, ResearchQuote,
@@ -9,10 +10,11 @@ use galactic_sim::{
 };
 
 use super::{
-    OpenPanel, PresentationUpdateSet, SimulationResource, UiPointerBlocker, accent_research_violet,
-    action_button_color, action_button_outline, apply_simulation_command,
-    collect_presentation_events, format_strategic_duration, panel_background, panel_outline,
-    ui_text_font,
+    CommandDockButton, CommandDockGroup, CommandDockTarget, GameWindowKind, GameWindowRoot,
+    GameWindowTitleBar, OpenPanel, OpenWindows, PresentationUpdateSet, SimulationResource,
+    UiPointerBlocker, accent_research_violet, action_button_color, action_button_outline,
+    apply_simulation_command, collect_presentation_events, format_strategic_duration,
+    panel_background, panel_outline, ui_text_font,
 };
 
 const RESEARCH_Z_INDEX: i32 = 110;
@@ -84,6 +86,17 @@ type ResearchButtonInteractionQuery<'w, 's> = Query<
     (Changed<Interaction>, With<Button>),
 >;
 
+#[derive(SystemParam)]
+struct ResearchShortcutState<'w> {
+    ui: ResMut<'w, ResearchUiState>,
+    open_panel: ResMut<'w, OpenPanel>,
+    windows: ResMut<'w, OpenWindows>,
+    navigation_ui: ResMut<'w, super::navigation_ui::NavigationUiState>,
+    fleet_ui: Res<'w, crate::fleet_ui::FleetUiState>,
+    save_load_ui: Res<'w, crate::save_load_ui::SaveLoadUiState>,
+    craft_ui: Res<'w, crate::craft_ui::CraftUiState>,
+}
+
 #[derive(Component)]
 struct ResearchRoot;
 
@@ -123,7 +136,7 @@ pub(crate) fn spawn_research_toggle(parent: &mut ChildSpawnerCommands) {
             Button,
             Node {
                 width: Val::Percent(100.0),
-                min_height: Val::Px(36.0),
+                min_height: Val::Px(42.0),
                 padding: UiRect::axes(Val::Px(10.0), Val::Px(7.0)),
                 border: UiRect::all(Val::Px(1.0)),
                 border_radius: BorderRadius::all(Val::Px(5.0)),
@@ -134,12 +147,16 @@ pub(crate) fn spawn_research_toggle(parent: &mut ChildSpawnerCommands) {
             BackgroundColor(Color::srgba(0.11, 0.13, 0.24, 0.96)),
             Outline::new(Val::Px(1.0), Val::ZERO, accent_research_violet()),
             ResearchButtonAction::Toggle,
+            CommandDockButton {
+                target: CommandDockTarget::Panel(OpenPanel::Research),
+                group: CommandDockGroup::Operations,
+            },
             UiPointerBlocker,
         ))
         .with_children(|button| {
             button.spawn((
-                Text::new("Recherche techno  [T]"),
-                ui_text_font(12.0),
+                Text::new("Recherche  [T]"),
+                ui_text_font(12.5),
                 TextColor(Color::srgb(0.84, 0.86, 1.0)),
                 ResearchTextRole::Toggle,
             ));
@@ -173,6 +190,9 @@ fn spawn_research_screen(mut commands: Commands) {
             Interaction::None,
             UiPointerBlocker,
             ResearchRoot,
+            GameWindowRoot {
+                kind: GameWindowKind::Research,
+            },
         ))
         .with_children(|root| {
             spawn_research_header(root);
@@ -192,6 +212,7 @@ fn spawn_research_screen(mut commands: Commands) {
                 ui_text_font(11.0),
                 TextColor(Color::srgb(0.94, 0.72, 0.44)),
                 Node {
+                    width: Val::Percent(100.0),
                     min_height: Val::Px(18.0),
                     ..default()
                 },
@@ -201,32 +222,42 @@ fn spawn_research_screen(mut commands: Commands) {
 }
 
 fn spawn_research_header(root: &mut ChildSpawnerCommands) {
-    root.spawn((Node {
-        width: Val::Percent(100.0),
-        min_height: Val::Px(42.0),
-        flex_direction: FlexDirection::Row,
-        align_items: AlignItems::Center,
-        column_gap: Val::Px(8.0),
-        ..default()
-    },))
-        .with_children(|header| {
-            header.spawn((
-                Text::new("RECHERCHE TECHNO"),
-                ui_text_font(18.0),
-                TextColor(Color::srgb(0.86, 0.88, 1.0)),
-                Node {
-                    flex_grow: 1.0,
-                    ..default()
-                },
-                ResearchTextRole::Title,
-            ));
-            spawn_research_small_button(
-                header,
-                "Fermer  [T / Échap]",
-                ResearchButtonAction::Close,
-                160.0,
-            );
-        });
+    root.spawn((
+        Node {
+            width: Val::Percent(100.0),
+            min_height: Val::Px(42.0),
+            padding: UiRect::axes(Val::Px(8.0), Val::Px(0.0)),
+            border_radius: BorderRadius::all(Val::Px(5.0)),
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            column_gap: Val::Px(8.0),
+            ..default()
+        },
+        BackgroundColor(Color::srgba(0.19, 0.21, 0.38, 0.55)),
+        Interaction::None,
+        GameWindowTitleBar {
+            kind: GameWindowKind::Research,
+        },
+        UiPointerBlocker,
+    ))
+    .with_children(|header| {
+        header.spawn((
+            Text::new("RECHERCHE TECHNO"),
+            ui_text_font(18.0),
+            TextColor(Color::srgb(0.86, 0.88, 1.0)),
+            Node {
+                flex_grow: 1.0,
+                ..default()
+            },
+            ResearchTextRole::Title,
+        ));
+        spawn_research_small_button(
+            header,
+            "Fermer  [T / Échap]",
+            ResearchButtonAction::Close,
+            160.0,
+        );
+    });
 }
 
 fn spawn_research_small_button(
@@ -477,15 +508,17 @@ fn spawn_research_queue(row: &mut ChildSpawnerCommands) {
     });
 }
 
-fn handle_research_shortcuts(
-    keyboard: Res<ButtonInput<KeyCode>>,
-    mut ui: ResMut<ResearchUiState>,
-    mut open_panel: ResMut<OpenPanel>,
-    mut navigation_ui: ResMut<super::navigation_ui::NavigationUiState>,
-    fleet_ui: Res<crate::fleet_ui::FleetUiState>,
-    save_load_ui: Res<crate::save_load_ui::SaveLoadUiState>,
-    craft_ui: Res<crate::craft_ui::CraftUiState>,
-) {
+fn handle_research_shortcuts(keyboard: Res<ButtonInput<KeyCode>>, state: ResearchShortcutState) {
+    let ResearchShortcutState {
+        mut ui,
+        mut open_panel,
+        mut windows,
+        mut navigation_ui,
+        fleet_ui,
+        save_load_ui,
+        craft_ui,
+    } = state;
+
     if super::navigation_ui::navigation_text_or_filter_is_active(&navigation_ui)
         || crate::fleet_ui::fleet_text_input_is_active(&fleet_ui)
         || crate::save_load_ui::save_name_is_editing(&save_load_ui)
@@ -495,12 +528,13 @@ fn handle_research_shortcuts(
     }
 
     if keyboard.just_pressed(KeyCode::KeyT) {
-        let opening = *open_panel != OpenPanel::Research;
-        *open_panel = if opening {
-            OpenPanel::Research
+        let opening = !windows.is_visible(GameWindowKind::Research);
+        if opening {
+            windows.open(GameWindowKind::Research);
+            *open_panel = OpenPanel::None;
         } else {
-            OpenPanel::None
-        };
+            windows.close(GameWindowKind::Research);
+        }
         ui.feedback.clear();
         if opening {
             navigation_ui.search_open = false;
@@ -509,8 +543,9 @@ fn handle_research_shortcuts(
         return;
     }
 
-    if *open_panel == OpenPanel::Research && keyboard.just_pressed(KeyCode::Escape) {
-        *open_panel = OpenPanel::None;
+    if windows.topmost() == Some(GameWindowKind::Research) && keyboard.just_pressed(KeyCode::Escape)
+    {
+        windows.close(GameWindowKind::Research);
     }
 }
 
@@ -518,6 +553,7 @@ fn handle_research_buttons(
     mut simulation: ResMut<SimulationResource>,
     mut ui: ResMut<ResearchUiState>,
     mut open_panel: ResMut<OpenPanel>,
+    mut windows: ResMut<OpenWindows>,
     mut navigation_ui: ResMut<super::navigation_ui::NavigationUiState>,
     interactions: ResearchButtonInteractionQuery,
 ) {
@@ -528,12 +564,13 @@ fn handle_research_buttons(
 
         match *action {
             ResearchButtonAction::Toggle => {
-                let opening = *open_panel != OpenPanel::Research;
-                *open_panel = if opening {
-                    OpenPanel::Research
+                let opening = !windows.is_visible(GameWindowKind::Research);
+                if opening {
+                    windows.open(GameWindowKind::Research);
+                    *open_panel = OpenPanel::None;
                 } else {
-                    OpenPanel::None
-                };
+                    windows.close(GameWindowKind::Research);
+                }
                 ui.feedback.clear();
                 if opening {
                     navigation_ui.search_open = false;
@@ -541,7 +578,7 @@ fn handle_research_buttons(
                 }
             }
             ResearchButtonAction::Close => {
-                *open_panel = OpenPanel::None;
+                windows.close(GameWindowKind::Research);
             }
             ResearchButtonAction::Select(technology) => {
                 ui.selected = technology;
@@ -597,11 +634,11 @@ fn capture_research_feedback(simulation: Res<SimulationResource>, mut ui: ResMut
 }
 
 fn update_research_visibility(
-    open_panel: Res<OpenPanel>,
+    windows: Res<OpenWindows>,
     mut roots: Query<&mut Visibility, With<ResearchRoot>>,
     mut texts: Query<(&ResearchTextRole, &mut Text)>,
 ) {
-    let is_open = *open_panel == OpenPanel::Research;
+    let is_open = windows.is_visible(GameWindowKind::Research);
     for mut visibility in &mut roots {
         let next = if is_open {
             Visibility::Visible
@@ -617,7 +654,7 @@ fn update_research_visibility(
             let next = if is_open {
                 "Fermer recherche".to_string()
             } else {
-                "Recherche techno  [T]".to_string()
+                "Recherche  [T]".to_string()
             };
             if text.0 != next {
                 text.0 = next;
@@ -629,10 +666,10 @@ fn update_research_visibility(
 fn update_research_summary(
     simulation: Res<SimulationResource>,
     ui: Res<ResearchUiState>,
-    open_panel: Res<OpenPanel>,
+    windows: Res<OpenWindows>,
     mut texts: Query<(&ResearchTextRole, &mut Text)>,
 ) {
-    if *open_panel != OpenPanel::Research {
+    if !windows.is_visible(GameWindowKind::Research) {
         return;
     }
     let state = simulation.simulation().state();
@@ -669,7 +706,7 @@ fn update_research_summary(
 fn update_research_technology_buttons(
     simulation: Res<SimulationResource>,
     ui: Res<ResearchUiState>,
-    open_panel: Res<OpenPanel>,
+    windows: Res<OpenWindows>,
     mut buttons: Query<(
         &TechnologyButton,
         &Interaction,
@@ -678,7 +715,7 @@ fn update_research_technology_buttons(
     )>,
     mut labels: Query<(&TechnologyButtonText, &mut Text, &mut TextColor)>,
 ) {
-    if *open_panel != OpenPanel::Research {
+    if !windows.is_visible(GameWindowKind::Research) {
         return;
     }
     let state = simulation.simulation().state();
@@ -706,14 +743,14 @@ fn update_research_technology_buttons(
 fn update_research_detail(
     simulation: Res<SimulationResource>,
     ui: Res<ResearchUiState>,
-    open_panel: Res<OpenPanel>,
+    windows: Res<OpenWindows>,
     mut texts: Query<(&ResearchTextRole, &mut Text, &mut TextColor)>,
     mut button: Query<
         (&Interaction, &mut BackgroundColor, &mut Outline),
         With<QueueResearchButton>,
     >,
 ) {
-    if *open_panel != OpenPanel::Research {
+    if !windows.is_visible(GameWindowKind::Research) {
         return;
     }
     let state = simulation.simulation().state();
@@ -751,7 +788,7 @@ fn update_research_detail(
 
 fn update_research_queue(
     simulation: Res<SimulationResource>,
-    open_panel: Res<OpenPanel>,
+    windows: Res<OpenWindows>,
     mut texts: Query<(&ResearchTextRole, &mut Text)>,
     mut progress: Query<&mut Node, With<ResearchProgressFill>>,
     mut cancel_button: Query<
@@ -759,7 +796,7 @@ fn update_research_queue(
         With<CancelResearchButton>,
     >,
 ) {
-    if *open_panel != OpenPanel::Research {
+    if !windows.is_visible(GameWindowKind::Research) {
         return;
     }
     let state = simulation.simulation().state();
@@ -1116,6 +1153,7 @@ mod tests {
     fn research_shortcut_ignores_navigation_text_input() {
         let mut world = World::new();
         world.insert_resource(OpenPanel::Navigation);
+        world.insert_resource(OpenWindows::default());
         world.insert_resource(ResearchUiState::default());
         let mut navigation_ui = super::super::navigation_ui::NavigationUiState::default();
         navigation_ui.search_open = true;

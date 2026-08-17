@@ -9,22 +9,14 @@ use crate::{
     SimulationResource,
     presentation::{
         components::UiPointerBlocker,
-        scene::{
-            action_button_color, action_button_outline, panel_background, panel_outline,
-            ui_text_font,
-        },
+        scene::{action_button_color, action_button_outline, panel_outline, ui_text_font},
         shortcuts::apply_simulation_command,
     },
 };
 
-use super::{CombatPreReportControls, CombatUiPhase, CombatUiState, combat_unit_name};
+use super::{CombatUiPhase, CombatUiState, combat_unit_name};
 
-const MAX_DRAFT_STACK_ROWS: usize = 8;
-pub(super) const COMBAT_PLAN_PANEL_HEIGHT_PX: f32 = 136.0;
-pub(super) const COMBAT_PLAN_CONTENT_COLUMN_GAP_PX: f32 = 8.0;
-pub(super) const STACK_ASSIGNMENT_WIDTH_PERCENT: f32 = 36.0;
-pub(super) const GROUP_CARDS_WIDTH_PERCENT: f32 = 60.0;
-pub(super) const DRAFT_GROUP_CARD_WIDTH_PERCENT: f32 = 32.0;
+pub(super) const MAX_DRAFT_STACK_ROWS: usize = 8;
 pub(super) const DRAFT_GROUP_CARD_GAP_PX: f32 = 6.0;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -209,6 +201,11 @@ impl CombatPlanDraftState {
     pub(super) fn synced_round_for_tests(&self) -> Option<u16> {
         self.synced_round
     }
+
+    #[cfg(test)]
+    pub(super) fn selected_stack_for_tests(&self) -> Option<CombatStackId> {
+        self.selected_stack
+    }
 }
 
 #[derive(Component)]
@@ -239,120 +236,82 @@ pub(super) enum DraftAction {
 #[derive(Component, Clone, Copy)]
 pub(super) struct DraftActionButton(pub(super) DraftAction);
 
-pub(super) fn spawn_group_panel(root: &mut ChildSpawnerCommands) {
-    root.spawn((
-        Node {
-            width: Val::Percent(100.0),
-            height: Val::Px(COMBAT_PLAN_PANEL_HEIGHT_PX),
-            flex_direction: FlexDirection::Column,
-            row_gap: Val::Px(5.0),
-            padding: UiRect::all(Val::Px(7.0)),
-            border: UiRect::all(Val::Px(1.0)),
-            border_radius: BorderRadius::all(Val::Px(6.0)),
-            ..default()
-        },
-        BackgroundColor(panel_background()),
-        Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
-        CombatPlanPanelRoot,
-        CombatPreReportControls,
-    ))
-    .with_children(|panel| {
-        panel
-            .spawn(Node {
-                width: Val::Percent(100.0),
-                flex_direction: FlexDirection::Row,
-                justify_content: JustifyContent::SpaceBetween,
-                align_items: AlignItems::Center,
-                column_gap: Val::Px(8.0),
-                ..default()
-            })
-            .with_children(|heading| {
-                heading.spawn((
-                    Text::new("PLAN DE BATAILLE"),
-                    ui_text_font(12.0),
-                    TextColor(Color::srgba(0.78, 0.86, 1.0, 0.88)),
-                    DraftHeadingText,
-                ));
-                heading
-                    .spawn(Node {
-                        flex_direction: FlexDirection::Row,
-                        column_gap: Val::Px(6.0),
-                        ..default()
-                    })
-                    .with_children(|actions| {
-                        spawn_draft_button(actions, DraftAction::Reset, "Réinitialiser");
-                        spawn_draft_button(actions, DraftAction::Confirm, "Confirmer le plan");
-                    });
-            });
-
-        panel
-            .spawn(Node {
-                width: Val::Percent(100.0),
-                flex_grow: 1.0,
-                min_height: Val::Px(0.0),
-                flex_direction: FlexDirection::Row,
-                column_gap: Val::Px(COMBAT_PLAN_CONTENT_COLUMN_GAP_PX),
-                ..default()
-            })
-            .with_children(|content| {
-                spawn_stack_assignment_list(content);
-                spawn_group_cards(content);
-            });
-    });
-}
-
-fn spawn_stack_assignment_list(parent: &mut ChildSpawnerCommands) {
+/// The "PARAMÈTRES SÉLECTIONNÉS" column heading — plan-wide Reset/Confirm
+/// actions, not per-stack, so it lives at the top of the parameters column
+/// rather than the "VOS FORCES" stack list (see `spawn_stack_row`).
+pub(super) fn spawn_plan_heading(parent: &mut ChildSpawnerCommands) {
     parent
         .spawn(Node {
-            width: Val::Percent(STACK_ASSIGNMENT_WIDTH_PERCENT),
-            height: Val::Percent(100.0),
-            min_height: Val::Px(0.0),
-            flex_direction: FlexDirection::Column,
-            row_gap: Val::Px(3.0),
-            overflow: Overflow::clip_y(),
+            width: Val::Percent(100.0),
+            flex_direction: FlexDirection::Row,
+            justify_content: JustifyContent::SpaceBetween,
+            align_items: AlignItems::Center,
+            column_gap: Val::Px(8.0),
             ..default()
         })
-        .with_children(|list| {
-            for slot in 0..MAX_DRAFT_STACK_ROWS {
-                list.spawn((
-                    Button,
-                    Node {
-                        width: Val::Percent(100.0),
-                        padding: UiRect::axes(Val::Px(6.0), Val::Px(3.0)),
-                        border: UiRect::all(Val::Px(1.0)),
-                        border_radius: BorderRadius::all(Val::Px(4.0)),
-                        ..default()
-                    },
-                    BackgroundColor(action_button_color(true, false, &Interaction::None)),
-                    Outline::new(
-                        Val::Px(1.0),
-                        Val::ZERO,
-                        action_button_outline(true, false, &Interaction::None),
-                    ),
-                    Visibility::Hidden,
-                    DraftActionButton(DraftAction::SelectStack(slot)),
-                    DraftStackRow(slot),
-                    UiPointerBlocker,
-                ))
-                .with_children(|row| {
-                    row.spawn((
-                        Text::new(""),
-                        ui_text_font(10.0),
-                        TextColor(Color::srgb(0.82, 0.92, 0.88)),
-                        DraftStackText(slot),
-                    ));
+        .with_children(|heading| {
+            heading.spawn((
+                Text::new("PARAMÈTRES SÉLECTIONNÉS"),
+                ui_text_font(12.0),
+                TextColor(Color::srgba(0.78, 0.86, 1.0, 0.88)),
+                DraftHeadingText,
+            ));
+            heading
+                .spawn(Node {
+                    flex_direction: FlexDirection::Row,
+                    column_gap: Val::Px(6.0),
+                    ..default()
+                })
+                .with_children(|actions| {
+                    spawn_draft_button(actions, DraftAction::Reset, "Réinitialiser");
+                    spawn_draft_button(actions, DraftAction::Confirm, "Confirmer le plan");
                 });
-            }
         });
 }
 
-fn spawn_group_cards(parent: &mut ChildSpawnerCommands) {
+/// One row of the "VOS FORCES" stack-assignment list — a plain function
+/// (not a closure) so it can be passed directly as `spawn_column_frame`'s
+/// `spawn_row` callback from `combat_ui.rs`.
+pub(super) fn spawn_stack_row(list: &mut ChildSpawnerCommands, slot: usize) {
+    list.spawn((
+        Button,
+        Node {
+            width: Val::Percent(100.0),
+            padding: UiRect::axes(Val::Px(6.0), Val::Px(3.0)),
+            border: UiRect::all(Val::Px(1.0)),
+            border_radius: BorderRadius::all(Val::Px(4.0)),
+            ..default()
+        },
+        BackgroundColor(action_button_color(true, false, &Interaction::None)),
+        Outline::new(
+            Val::Px(1.0),
+            Val::ZERO,
+            action_button_outline(true, false, &Interaction::None),
+        ),
+        Visibility::Hidden,
+        DraftActionButton(DraftAction::SelectStack(slot)),
+        DraftStackRow(slot),
+        UiPointerBlocker,
+    ))
+    .with_children(|row| {
+        row.spawn((
+            Text::new(""),
+            ui_text_font(10.0),
+            TextColor(Color::srgb(0.82, 0.92, 0.88)),
+            DraftStackText(slot),
+        ));
+    });
+}
+
+/// The 3 group cards, stacked vertically to fit the narrow "PARAMÈTRES
+/// SÉLECTIONNÉS" column (COMBAT-UX-001-C's mockup keeps role/priority
+/// controls in that same right-hand panel rather than a wide row).
+pub(super) fn spawn_group_cards(parent: &mut ChildSpawnerCommands) {
     parent
         .spawn(Node {
-            width: Val::Percent(GROUP_CARDS_WIDTH_PERCENT),
-            height: Val::Percent(100.0),
-            flex_direction: FlexDirection::Row,
-            column_gap: Val::Px(DRAFT_GROUP_CARD_GAP_PX),
+            width: Val::Percent(100.0),
+            flex_direction: FlexDirection::Column,
+            row_gap: Val::Px(DRAFT_GROUP_CARD_GAP_PX),
             ..default()
         })
         .with_children(|groups| {
@@ -360,8 +319,7 @@ fn spawn_group_cards(parent: &mut ChildSpawnerCommands) {
                 groups
                     .spawn((
                         Node {
-                            width: Val::Percent(DRAFT_GROUP_CARD_WIDTH_PERCENT),
-                            height: Val::Percent(100.0),
+                            width: Val::Percent(100.0),
                             flex_direction: FlexDirection::Column,
                             row_gap: Val::Px(4.0),
                             padding: UiRect::all(Val::Px(6.0)),
@@ -670,9 +628,9 @@ pub(super) fn update_combat_plan_panel(
 
     for mut text in &mut heading_texts {
         text.0 = if locked {
-            "PLAN ACTIF — VERROUILLÉ".to_string()
+            "PARAMÈTRES — VERROUILLÉ".to_string()
         } else {
-            "PLAN DE BATAILLE".to_string()
+            "PARAMÈTRES SÉLECTIONNÉS".to_string()
         };
     }
 

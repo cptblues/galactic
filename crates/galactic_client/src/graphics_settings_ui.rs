@@ -8,8 +8,8 @@ use galactic_persistence::{default_settings_path, save_settings};
 use crate::presentation::graphics_settings::{GraphicsPreset, GraphicsSettings};
 
 use super::{
-    OpenPanel, PresentationUpdateSet, UiPointerBlocker, panel_background, panel_outline,
-    ui_text_font,
+    CommandDockButton, CommandDockGroup, CommandDockTarget, OpenPanel, PresentationUpdateSet,
+    UiPointerBlocker, panel_background, panel_outline, ui_text_font,
 };
 
 const GRAPHICS_SETTINGS_Z_INDEX: i32 = 120;
@@ -77,7 +77,7 @@ pub(crate) fn spawn_graphics_settings_toggle(parent: &mut ChildSpawnerCommands) 
             Button,
             Node {
                 width: Val::Percent(100.0),
-                min_height: Val::Px(36.0),
+                min_height: Val::Px(42.0),
                 padding: UiRect::axes(Val::Px(10.0), Val::Px(7.0)),
                 border: UiRect::all(Val::Px(1.0)),
                 border_radius: BorderRadius::all(Val::Px(5.0)),
@@ -92,12 +92,16 @@ pub(crate) fn spawn_graphics_settings_toggle(parent: &mut ChildSpawnerCommands) 
                 Color::srgba(0.56, 0.78, 0.62, 0.55),
             ),
             GraphicsSettingsButtonAction::Toggle,
+            CommandDockButton {
+                target: CommandDockTarget::Panel(OpenPanel::Settings),
+                group: CommandDockGroup::Meta,
+            },
             UiPointerBlocker,
         ))
         .with_children(|button| {
             button.spawn((
-                Text::new("Réglages  [K]"),
-                ui_text_font(12.0),
+                Text::new("Options  [K]"),
+                ui_text_font(12.5),
                 TextColor(Color::srgb(0.84, 0.96, 0.88)),
                 GraphicsSettingsTextRole::Toggle,
             ));
@@ -149,6 +153,7 @@ preset choisi. Faible et Élevé redimensionnent aussi la fenêtre \
                 ui_text_font(11.0),
                 TextColor(Color::srgb(0.78, 0.90, 0.82)),
                 Node {
+                    width: Val::Percent(100.0),
                     min_height: Val::Px(18.0),
                     ..default()
                 },
@@ -370,9 +375,9 @@ fn update_graphics_settings_visibility(
         match role {
             GraphicsSettingsTextRole::Toggle => {
                 let next = if is_open {
-                    "Fermer réglages"
+                    "Fermer options"
                 } else {
-                    "Réglages  [K]"
+                    "Options  [K]"
                 };
                 if text.0 != next {
                     text.0 = next.to_string();

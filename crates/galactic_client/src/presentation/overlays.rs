@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use crate::presentation::components::*;
 use crate::presentation::graphics_settings::{GraphicsPreset, GraphicsSettings};
-use crate::presentation::scene::planet_orbit;
+use crate::presentation::scene::{galaxy_star_visual_profile, planet_orbit};
 use crate::presentation::shortcuts::selected_system;
 use crate::presentation::strategic_navigation::*;
 use crate::presentation::universe_labels::*;
@@ -67,14 +67,7 @@ pub(crate) fn update_system_visuals(
             UniverseLod::Regional => 0.92,
             UniverseLod::Local => 1.08,
         };
-        let visibility_multiplier = match visual.tier {
-            UniverseSystemTier::Known => 1.0,
-            UniverseSystemTier::Detected => 0.84,
-            UniverseSystemTier::Observed => 0.72,
-        };
-
-        let next_scale =
-            visual.base_scale * selected_multiplier * lod_multiplier * visibility_multiplier;
+        let next_scale = visual.base_scale * selected_multiplier * lod_multiplier;
         if transform.scale != next_scale {
             transform.scale = next_scale;
         }
@@ -234,8 +227,19 @@ pub(crate) fn update_system_labels(
 
     for (label, mut transform, mut visibility) in &mut query {
         if let Some(system) = simulation.simulation().universe().system(label.id) {
+            let tier = state
+                .system_visibility(label.id)
+                .map(UniverseSystemTier::from_visibility)
+                .unwrap_or(UniverseSystemTier::Observed);
+            let profile = galaxy_star_visual_profile(
+                system.id,
+                system.star.class,
+                system.star.luminosity,
+                tier,
+                system.position,
+            );
             let next = projected_universe_position(system.position, navigation.projection_mix)
-                + Vec3::new(0.0, 1.8, 0.0);
+                + Vec3::new(0.0, profile.label_offset_y, 0.0);
             if transform.translation != next {
                 transform.translation = next;
             }
