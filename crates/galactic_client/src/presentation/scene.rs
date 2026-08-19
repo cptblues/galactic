@@ -1546,16 +1546,19 @@ pub(crate) fn spawn_scroll_indicator(parent: &mut ChildSpawnerCommands, id: Scro
 
 fn spawn_tab_bar(commands: &mut Commands) {
     commands
-        .spawn((Node {
-            position_type: PositionType::Absolute,
-            left: Val::Px(0.0),
-            right: Val::Px(0.0),
-            bottom: Val::Px(14.0),
-            height: Val::Px(66.0),
-            align_items: AlignItems::Center,
-            justify_content: JustifyContent::Center,
-            ..default()
-        },))
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(0.0),
+                right: Val::Px(0.0),
+                bottom: Val::Px(14.0),
+                height: Val::Px(66.0),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            TabBarRoot,
+        ))
         .with_children(|root| {
             root.spawn((
                 Node {
@@ -2743,12 +2746,52 @@ fn spawn_resource_bar_card(
         });
 }
 
-fn resource_bar_icon_path(kind: ResourceHudKind) -> &'static str {
+pub(crate) fn resource_bar_icon_path(kind: ResourceHudKind) -> &'static str {
     match kind {
         ResourceHudKind::Metal => "images/resources/metal.png",
         ResourceHudKind::Crystal => "images/resources/crystal.png",
         ResourceHudKind::Fuel => "images/resources/fuel.png",
         ResourceHudKind::Energy => "images/resources/energy.png",
+    }
+}
+
+/// Real per-resource art (`images/resources/*.png`, same files the
+/// always-visible resource bar uses), pre-loaded once so spawn-time code
+/// elsewhere (e.g. the combat Résultat screen's loot cards) can take this
+/// resource instead of a raw `AssetServer` — mirrors `IconAssets`'s own
+/// "cache real handles once, hand out clones" shape, which is what keeps
+/// spawn systems trivially testable without a real asset IO backend.
+#[derive(Resource)]
+pub(crate) struct ResourceIconAssets {
+    textures: HashMap<ResourceHudKind, Handle<Image>>,
+}
+
+impl ResourceIconAssets {
+    pub(crate) fn handle(&self, kind: ResourceHudKind) -> Handle<Image> {
+        self.textures
+            .get(&kind)
+            .cloned()
+            .expect("resource icon registered for every ResourceHudKind")
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_tests(images: &mut Assets<Image>) -> Self {
+        let textures = ResourceHudKind::ALL
+            .into_iter()
+            .map(|kind| (kind, images.add(Image::default())))
+            .collect();
+        Self { textures }
+    }
+}
+
+impl FromWorld for ResourceIconAssets {
+    fn from_world(world: &mut World) -> Self {
+        let asset_server = world.resource::<AssetServer>().clone();
+        let textures = ResourceHudKind::ALL
+            .into_iter()
+            .map(|kind| (kind, asset_server.load(resource_bar_icon_path(kind))))
+            .collect();
+        Self { textures }
     }
 }
 

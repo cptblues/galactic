@@ -295,6 +295,17 @@ pub(crate) struct VictoryUiState {
 #[derive(Component)]
 pub(crate) struct ResourceBarRoot;
 
+/// The bottom command dock (`spawn_tab_bar`) — hidden while a full-screen
+/// combat is on screen (COMBAT-UX-001-J §9), same treatment as
+/// `ResourceBarRoot`.
+#[derive(Component)]
+pub(crate) struct TabBarRoot;
+
+/// The breadcrumb bar (`navigation_ui::spawn_navigation_panels`) — same
+/// combat-hiding treatment as `ResourceBarRoot`/`TabBarRoot`.
+#[derive(Component)]
+pub(crate) struct BreadcrumbBarRoot;
+
 #[derive(Component)]
 pub(crate) struct ResourceBarCard {
     pub(crate) kind: ResourceHudKind,
@@ -359,6 +370,8 @@ pub(crate) enum ScrollIndicatorId {
     SaveSlotList,
     CombatForcesColumn,
     CombatParametersColumn,
+    CombatResult,
+    CombatBriefing,
     CraftableList,
     CraftableDetail,
     CraftQueue,
@@ -502,7 +515,7 @@ impl Default for ColonyManagementState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum ResourceHudKind {
     Metal,
     Crystal,

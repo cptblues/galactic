@@ -13,13 +13,14 @@ use galactic_domain::MissionId;
 use galactic_sim::{
     AuthorizationError, CombatAutoResolveRejected, CombatCommandError, CombatCompleted,
     CombatDecisionRequired, CombatDoctrineId, CombatDoctrineRejected, CombatGroupPlanId,
-    CombatGroupRole, CombatIntervention, CombatInterventionError, CombatPlanConfirmed,
-    CombatPlanRejected, CombatPlanValidationError, CombatReport, CombatReportStatus,
-    CombatRetreatRejected, CombatRoundEvent, CombatRoundRecord, CombatRoundResolved, CombatSide,
-    CombatTargetClass, CombatTargetPriority, CombatUnitRef, DoctrineOverview, EnemyIntelView,
-    GameAction, GameEventKind, IntegrityBand, IntegrityReveal, MissionTarget, PendingCombat,
-    QualitativePrediction, QuantityBand, QuantityReveal, ThreatLevel, allied_stacks, combat_rules,
-    craftable_definition, default_ruleset, doctrine_overview, enemy_intel, qualitative_prediction,
+    CombatGroupRole, CombatIntervention, CombatInterventionError, CombatOutcome,
+    CombatPlanConfirmed, CombatPlanRejected, CombatPlanValidationError, CombatReport,
+    CombatReportStatus, CombatResolution, CombatRetreatRejected, CombatRoundEvent,
+    CombatRoundRecord, CombatRoundResolved, CombatSide, CombatTargetClass, CombatTargetPriority,
+    CombatUnitRef, DoctrineOverview, EnemyIntelView, GameAction, GameEventKind, IntegrityBand,
+    IntegrityReveal, MissionTarget, PendingCombat, QualitativePrediction, QuantityBand,
+    QuantityReveal, RetreatingSide, ThreatLevel, allied_stacks, combat_rules, craftable_definition,
+    default_ruleset, doctrine_overview, enemy_intel, qualitative_prediction,
     repetition_penalty_preview, round_history,
 };
 
@@ -29,15 +30,17 @@ mod group_panel;
 use super::{
     PresentationUpdateSet, SimulationResource, UiPointerBlocker, action_button_color,
     action_button_outline, apply_simulation_command, collect_presentation_events,
-    combat_outcome_label, combat_report_statistics_text, combat_report_summary_text,
-    combat_report_timeline_text, combat_report_units_text, mission_target_label, panel_background,
-    panel_outline, ui_text_font,
+    combat_report_statistics_text, combat_report_summary_text, combat_report_timeline_text,
+    combat_report_units_text, mission_target_label, panel_background, panel_outline, ui_text_font,
 };
 use crate::presentation::{
-    components::{ScrollIndicatorArea, ScrollIndicatorId},
+    components::{
+        BreadcrumbBarRoot, ResourceBarRoot, ResourceHudKind, ScrollIndicatorArea,
+        ScrollIndicatorId, TabBarRoot,
+    },
     entity_visuals::EntityVisualCatalog,
     icons::{IconAssets, IconKind},
-    scene::spawn_scroll_indicator,
+    scene::{ResourceIconAssets, spawn_scroll_indicator},
 };
 use battlefield::{spawn_battlefield_panel, update_battlefield_panel};
 use group_panel::{
@@ -46,6 +49,10 @@ use group_panel::{
 };
 
 const MAX_ALLIED_ROWS: usize = 8;
+/// Covers the 3 current combat-capable ship types with headroom, mirroring
+/// `MAX_BATTLEFIELD_CONTACTS`/`group_panel::MAX_DRAFT_STACK_ROWS`'s fixed
+/// slot count.
+const MAX_COMBAT_LOSS_CARDS: usize = 6;
 
 /// Between navigation (140) and the intro-pitch modal (220) — must surface
 /// above any open gameplay panel, but stay below the two true end-to-end
@@ -53,14 +60,33 @@ const MAX_ALLIED_ROWS: usize = 8;
 const COMBAT_UI_Z_INDEX: i32 = 200;
 const COMBAT_ROOT_PADDING_PX: f32 = 12.0;
 const COMBAT_ROOT_ROW_GAP_PX: f32 = 8.0;
+/// COMBAT-UX-001-J §5: the content column occupies most of the window
+/// (90-96% width, 82-90% height) rather than the previous full-bleed
+/// edge-to-edge layout — leaves visible breathing room around the screen.
+const COMBAT_CONTENT_WIDTH_PERCENT: f32 = 94.0;
+const COMBAT_CONTENT_HEIGHT_PERCENT: f32 = 88.0;
+/// §5.1: capped so ultrawide monitors get more breathing room and a bigger
+/// tactical map, not giant stretched side columns.
+const COMBAT_CONTENT_MAX_WIDTH_PX: f32 = 2400.0;
 const COMBAT_BODY_COLUMN_GAP_PX: f32 = 10.0;
-/// COMBAT-UX-001-C: "VOS FORCES" — left column of the 3-column
-/// Planification layout (doc §5.1).
-const COMBAT_FORCES_COLUMN_WIDTH_PERCENT: f32 = 20.0;
-/// "PARAMÈTRES SÉLECTIONNÉS" — right column of the same layout.
-const COMBAT_PARAMETERS_COLUMN_WIDTH_PERCENT: f32 = 26.0;
+/// COMBAT-UX-001-C/J: "VOS FORCES" — left column of the 3-column
+/// Planification layout (doc §13 target: 18-22%).
+const COMBAT_FORCES_COLUMN_WIDTH_PERCENT: f32 = 18.0;
+/// "PARAMÈTRES SÉLECTIONNÉS" — right column of the same layout (doc §13
+/// target: 20-24%).
+const COMBAT_PARAMETERS_COLUMN_WIDTH_PERCENT: f32 = 20.0;
 const COMBAT_DOCTRINE_CARD_MIN_WIDTH_PX: f32 = 176.0;
 const COMBAT_DOCTRINE_CARD_GAP_PX: f32 = 8.0;
+/// COMBAT-UX-001-J §7.2 typography scale — replaces ~7 ad hoc font sizes
+/// (9/10/11/12/13/16/20px, scattered with no shared meaning) with 5 named
+/// tiers. Screen/important titles bumped slightly to the doc's target
+/// ranges; the 3 smallest prior sizes (9/10/11) collapse into one secondary
+/// tier at the top of the doc's stated 11-12px floor for readability.
+const FONT_SCREEN_TITLE_PX: f32 = 22.0;
+const FONT_IMPORTANT_TITLE_PX: f32 = 17.0;
+const FONT_SECTION_TITLE_PX: f32 = 14.0;
+const FONT_INFO_PX: f32 = 13.0;
+const FONT_SECONDARY_PX: f32 = 12.0;
 /// COMBAT-UX-001-D: the 3 doctrines shown directly (doc §6 — "PRUDENT /
 /// ÉQUILIBRÉ / AGRESSIF"), each mapped to one existing engine doctrine.
 /// Purely a client-side grouping — `galactic_sim` has no tier/category
@@ -138,6 +164,7 @@ impl Plugin for CombatUiPlugin {
                     update_reserve_intervention_visibility,
                     update_combat_feedback,
                     update_final_report,
+                    update_final_report_cards,
                     update_final_report_visibility,
                     update_combat_planning_controls_visibility,
                     update_advanced_doctrines_visibility,
@@ -252,16 +279,79 @@ struct CombatIntelBarText;
 #[derive(Component)]
 struct CombatRoundLogText;
 
-/// The concise victory/defeat/retreat summary shown by default in
-/// `CombatUiPhase::FinalReport` — see `combat_result_summary_text`.
+/// Wraps `CombatRoundLogText` — visible during `AwaitingDoctrine`,
+/// `RoundPause`, and `FinalReport` (unlike `CombatHiddenDuringBriefing`,
+/// which also hides for `FinalReport`), since this entity doubles as the
+/// `FinalReport` detailed-report dump. See `update_combat_briefing_visibility`.
 #[derive(Component)]
-struct CombatResultSummaryText;
+struct CombatRoundLogPanelRoot;
+
+/// COMBAT-UX-001-J §33: the Résultat screen's planet image, banner, and
+/// two-column fleet/enemy summary — see `update_final_report`.
+#[derive(Component)]
+struct CombatResultPlanetIcon;
+
+#[derive(Component)]
+struct CombatResultBannerText;
+
+/// Planet name + `combat_outcome_flavor_line`, below the banner.
+#[derive(Component)]
+struct CombatResultSubtitleText;
+
+#[derive(Component)]
+struct CombatFleetSummaryText;
+
+#[derive(Component)]
+struct CombatEnemySummaryText;
+
+/// Doc §35 "avec assets" — up to `MAX_COMBAT_LOSS_CARDS` fixed slots, hidden
+/// individually when there's no corresponding loss (mirrors the established
+/// fixed-slot pattern, e.g. `group_panel::spawn_stack_row`).
+#[derive(Component, Clone, Copy)]
+struct CombatLossCardRow(usize);
+
+#[derive(Component, Clone, Copy)]
+struct CombatLossCardIcon(usize);
+
+#[derive(Component, Clone, Copy)]
+struct CombatLossCardText(usize);
+
+/// Doc §36 — 3 fixed resource cards, the whole block hidden when
+/// `salvage_recovered.is_zero()` in favor of `CombatLootEmptyText`.
+#[derive(Component)]
+struct CombatLootCardsRoot;
+
+#[derive(Component, Clone, Copy, PartialEq, Eq)]
+struct CombatLootCardText(ResourceHudKind);
+
+#[derive(Component)]
+struct CombatLootEmptyText;
+
+/// Doc §37 — hidden (not just empty) when `combat_decisive_moment_line`
+/// finds nothing notable.
+#[derive(Component)]
+struct CombatDecisiveMomentText;
 
 #[derive(Component)]
 struct CombatFeedbackText;
 
+/// COMBAT-UX-001-J §29: the command-points widget is its own visual unit
+/// (header + meter + count), visible from round 1 onward regardless of
+/// phase — not tied to `CombatPlanningControls`, since watching PC while a
+/// round resolves is meaningful even though there's nothing left to plan.
 #[derive(Component)]
-struct CombatCommandText;
+struct CombatCommandPointsRoot;
+
+#[derive(Component)]
+struct CombatCommandPointsMeterText;
+
+#[derive(Component)]
+struct CombatCommandPointsAvailableText;
+
+/// The "next order" preview — only meaningful while planning, so still
+/// gated by `CombatPlanningControls` unlike the PC widget itself.
+#[derive(Component)]
+struct CombatPreparedOrderText;
 
 /// The feedback line and Retreat/AutoResolve/Validate row — hidden during
 /// `CombatUiPhase::FinalReport`, replaced by `CombatReturnRow`.
@@ -302,6 +392,9 @@ struct CombatHiddenDuringBriefing;
 struct BriefingTitleText;
 
 #[derive(Component)]
+struct BriefingPlanetIcon;
+
+#[derive(Component)]
 struct BriefingObjectiveText;
 
 #[derive(Component)]
@@ -319,62 +412,11 @@ struct BriefingIntelText;
 #[derive(Component)]
 struct BriefingEstimateText;
 
-fn spawn_column_frame(
-    parent: &mut ChildSpawnerCommands,
-    width_percent: f32,
-    header: &str,
-    scroll_id: ScrollIndicatorId,
-    row_count: usize,
-    spawn_row: impl Fn(&mut ChildSpawnerCommands, usize),
+fn spawn_combat_screen(
+    mut commands: Commands,
+    icon_assets: Res<IconAssets>,
+    resource_icons: Res<ResourceIconAssets>,
 ) {
-    parent
-        .spawn((
-            Node {
-                width: Val::Percent(width_percent),
-                height: Val::Percent(100.0),
-                min_height: Val::Px(0.0),
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(8.0),
-                padding: UiRect::all(Val::Px(9.0)),
-                border: UiRect::all(Val::Px(1.0)),
-                border_radius: BorderRadius::all(Val::Px(6.0)),
-                ..default()
-            },
-            BackgroundColor(panel_background()),
-            Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
-            group_panel::CombatPlanPanelRoot,
-        ))
-        .with_children(|panel| {
-            panel.spawn((
-                Text::new(header),
-                ui_text_font(12.0),
-                TextColor(Color::srgba(0.78, 0.86, 1.0, 0.88)),
-            ));
-            panel
-                .spawn((
-                    Node {
-                        width: Val::Percent(100.0),
-                        flex_grow: 1.0,
-                        min_height: Val::Px(0.0),
-                        flex_direction: FlexDirection::Column,
-                        row_gap: Val::Px(4.0),
-                        overflow: Overflow::scroll_y(),
-                        ..default()
-                    },
-                    ScrollPosition::default(),
-                    RelativeCursorPosition::default(),
-                    ScrollIndicatorArea { id: scroll_id },
-                ))
-                .with_children(|list| {
-                    for slot in 0..row_count {
-                        spawn_row(list, slot);
-                    }
-                });
-            spawn_scroll_indicator(panel, scroll_id);
-        });
-}
-
-fn spawn_combat_screen(mut commands: Commands, icon_assets: Res<IconAssets>) {
     commands
         .spawn((
             Node {
@@ -383,324 +425,639 @@ fn spawn_combat_screen(mut commands: Commands, icon_assets: Res<IconAssets>) {
                 right: Val::Px(0.0),
                 top: Val::Px(0.0),
                 bottom: Val::Px(0.0),
-                padding: UiRect::all(Val::Px(COMBAT_ROOT_PADDING_PX)),
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(COMBAT_ROOT_ROW_GAP_PX),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
                 ..default()
             },
-            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.72)),
+            // COMBAT-UX-001-J §9.1: the strategic scene stays as a faint
+            // depth cue, not a semi-legible "ghost" competing with combat's
+            // own content — 0.72 alpha let orbit rings/planets from the
+            // scene behind read as a confusing, unintentional overlap.
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.94)),
             GlobalZIndex(COMBAT_UI_Z_INDEX),
             Interaction::None,
             UiPointerBlocker,
             Visibility::Hidden,
             CombatUiRoot,
         ))
-        .with_children(|root| {
-            root.spawn((
-                Node {
-                    width: Val::Percent(100.0),
-                    flex_direction: FlexDirection::Row,
-                    align_items: AlignItems::Center,
-                    column_gap: Val::Px(8.0),
-                    padding: UiRect::axes(Val::Px(8.0), Val::Px(6.0)),
-                    border: UiRect::all(Val::Px(1.0)),
-                    border_radius: BorderRadius::all(Val::Px(6.0)),
+        .with_children(|backdrop| {
+            // COMBAT-UX-001-J §5: the backdrop always covers the full
+            // window, but the actual content is a centered column capped at
+            // `COMBAT_CONTENT_MAX_WIDTH_PX` so it doesn't stretch into
+            // absurdly wide side columns on ultrawide monitors (§5.1).
+            backdrop
+                .spawn(Node {
+                    width: Val::Percent(COMBAT_CONTENT_WIDTH_PERCENT),
+                    max_width: Val::Px(COMBAT_CONTENT_MAX_WIDTH_PX),
+                    height: Val::Percent(COMBAT_CONTENT_HEIGHT_PERCENT),
+                    padding: UiRect::all(Val::Px(COMBAT_ROOT_PADDING_PX)),
+                    flex_direction: FlexDirection::Column,
+                    row_gap: Val::Px(COMBAT_ROOT_ROW_GAP_PX),
+                    overflow: Overflow::clip_y(),
                     ..default()
-                },
-                // Opaque panel, not just the 0.72-alpha root's translucent
-                // backdrop — the header sits in the same screen band as the
-                // always-visible resource bar (`presentation/scene.rs`'s
-                // `spawn_resource_bar`, never hidden by any modal), so a
-                // see-through background here doubles up its text with
-                // combat's own header text underneath.
-                BackgroundColor(panel_background()),
-                Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
-                CombatQueueNavRow,
-            ))
-            .with_children(|header| {
-                spawn_action_button(header, CombatUiAction::PreviousCombat, "◀");
-                header.spawn((
-                    Text::new(""),
-                    ui_text_font(16.0),
-                    TextColor(Color::srgb(0.92, 0.96, 1.0)),
-                    CombatHeaderText,
-                ));
-                spawn_action_button(header, CombatUiAction::NextCombat, "▶");
-            });
+                })
+                .with_children(|root| {
+                    root.spawn((
+                        Node {
+                            width: Val::Percent(100.0),
+                            flex_direction: FlexDirection::Row,
+                            align_items: AlignItems::Center,
+                            column_gap: Val::Px(8.0),
+                            padding: UiRect::axes(Val::Px(8.0), Val::Px(6.0)),
+                            border: UiRect::all(Val::Px(1.0)),
+                            border_radius: BorderRadius::all(Val::Px(6.0)),
+                            ..default()
+                        },
+                        // Opaque panel, not just the 0.72-alpha root's translucent
+                        // backdrop — the header sits in the same screen band as the
+                        // always-visible resource bar (`presentation/scene.rs`'s
+                        // `spawn_resource_bar`, never hidden by any modal), so a
+                        // see-through background here doubles up its text with
+                        // combat's own header text underneath.
+                        BackgroundColor(panel_background()),
+                        Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
+                        CombatQueueNavRow,
+                    ))
+                    .with_children(|header| {
+                        spawn_action_button(header, CombatUiAction::PreviousCombat, "<");
+                        header.spawn((
+                            Text::new(""),
+                            ui_text_font(FONT_IMPORTANT_TITLE_PX),
+                            TextColor(Color::srgb(0.92, 0.96, 1.0)),
+                            CombatHeaderText,
+                        ));
+                        spawn_action_button(header, CombatUiAction::NextCombat, ">");
+                    });
 
-            spawn_combat_briefing(root, &icon_assets);
+                    spawn_combat_briefing(root, &icon_assets);
 
-            root.spawn((
-                Node {
-                    width: Val::Percent(100.0),
-                    flex_grow: 1.0,
-                    min_height: Val::Px(0.0),
-                    flex_direction: FlexDirection::Row,
-                    column_gap: Val::Px(COMBAT_BODY_COLUMN_GAP_PX),
-                    ..default()
-                },
-                CombatHiddenDuringBriefing,
-            ))
-            .with_children(|body| {
-                spawn_column_frame(
-                    body,
-                    COMBAT_FORCES_COLUMN_WIDTH_PERCENT,
-                    "VOS FORCES",
-                    ScrollIndicatorId::CombatForcesColumn,
-                    group_panel::MAX_DRAFT_STACK_ROWS,
-                    group_panel::spawn_stack_row,
-                );
-
-                spawn_battlefield_panel(body, &icon_assets);
-
-                body.spawn((
-                    Node {
-                        width: Val::Percent(COMBAT_PARAMETERS_COLUMN_WIDTH_PERCENT),
-                        height: Val::Percent(100.0),
-                        min_height: Val::Px(0.0),
-                        flex_direction: FlexDirection::Column,
-                        padding: UiRect::all(Val::Px(9.0)),
-                        border: UiRect::all(Val::Px(1.0)),
-                        border_radius: BorderRadius::all(Val::Px(6.0)),
-                        ..default()
-                    },
-                    BackgroundColor(panel_background()),
-                    Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
-                    group_panel::CombatPlanPanelRoot,
-                ))
-                .with_children(|panel| {
-                    panel
-                        .spawn((
+                    root.spawn((
+                        Node {
+                            width: Val::Percent(100.0),
+                            flex_grow: 1.0,
+                            min_height: Val::Px(0.0),
+                            flex_direction: FlexDirection::Row,
+                            column_gap: Val::Px(COMBAT_BODY_COLUMN_GAP_PX),
+                            ..default()
+                        },
+                        CombatHiddenDuringBriefing,
+                    ))
+                    .with_children(|body| {
+                        let forces_placeholder = icon_assets.handle(IconKind::CombatUnit);
+                        body.spawn((
                             Node {
-                                width: Val::Percent(100.0),
-                                flex_grow: 1.0,
+                                width: Val::Percent(COMBAT_FORCES_COLUMN_WIDTH_PERCENT),
+                                height: Val::Percent(100.0),
                                 min_height: Val::Px(0.0),
                                 flex_direction: FlexDirection::Column,
                                 row_gap: Val::Px(8.0),
-                                overflow: Overflow::scroll_y(),
+                                padding: UiRect::all(Val::Px(9.0)),
+                                border: UiRect::all(Val::Px(1.0)),
+                                border_radius: BorderRadius::all(Val::Px(6.0)),
                                 ..default()
                             },
-                            ScrollPosition::default(),
-                            RelativeCursorPosition::default(),
-                            ScrollIndicatorArea {
-                                id: ScrollIndicatorId::CombatParametersColumn,
-                            },
+                            BackgroundColor(panel_background()),
+                            Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
+                            group_panel::CombatPlanPanelRoot,
                         ))
-                        .with_children(|content| {
-                            group_panel::spawn_plan_heading(content);
-                            group_panel::spawn_group_cards(content);
-
-                            content.spawn((
-                                Text::new("CHOISIR UNE DOCTRINE"),
-                                ui_text_font(12.0),
-                                TextColor(Color::srgba(0.78, 0.86, 1.0, 0.80)),
-                                CombatPlanningControls,
+                        .with_children(|panel| {
+                            panel.spawn((
+                                Text::new("VOS FORCES"),
+                                ui_text_font(FONT_SECTION_TITLE_PX),
+                                TextColor(Color::srgba(0.78, 0.86, 1.0, 0.88)),
                             ));
-
-                            content
+                            panel
                                 .spawn((
                                     Node {
                                         width: Val::Percent(100.0),
-                                        flex_wrap: FlexWrap::Wrap,
-                                        column_gap: Val::Px(COMBAT_DOCTRINE_CARD_GAP_PX),
-                                        row_gap: Val::Px(8.0),
+                                        flex_grow: 1.0,
+                                        min_height: Val::Px(0.0),
+                                        flex_direction: FlexDirection::Column,
+                                        row_gap: Val::Px(group_panel::DRAFT_GROUP_CARD_GAP_PX),
+                                        overflow: Overflow::scroll_y(),
                                         ..default()
                                     },
-                                    CombatPlanningControls,
+                                    ScrollPosition::default(),
+                                    RelativeCursorPosition::default(),
+                                    ScrollIndicatorArea {
+                                        id: ScrollIndicatorId::CombatForcesColumn,
+                                    },
                                 ))
-                                .with_children(|row| {
-                                    for (doctrine, label) in SIMPLE_DOCTRINES {
-                                        spawn_action_button(
-                                            row,
-                                            CombatUiAction::SelectDoctrine(doctrine),
-                                            &format!(
-                                                "{label} [{}]",
-                                                doctrine_shortcut_digit(doctrine)
-                                            ),
-                                        );
+                                .with_children(|content| {
+                                    // Reads top-to-bottom in the same order
+                                    // as the actual interaction: pick a unit
+                                    // here first, then click a group card
+                                    // below to assign it — the reverse
+                                    // spawn order (groups above units) had
+                                    // the player working bottom-to-top.
+                                    content.spawn((
+                                        Text::new("UNITÉS"),
+                                        ui_text_font(FONT_SECONDARY_PX),
+                                        TextColor(Color::srgba(0.78, 0.86, 1.0, 0.72)),
+                                    ));
+                                    for slot in 0..group_panel::MAX_DRAFT_STACK_ROWS {
+                                        group_panel::spawn_stack_row(content, slot);
                                     }
+                                    content.spawn((
+                                        Text::new("GROUPES"),
+                                        ui_text_font(FONT_SECONDARY_PX),
+                                        TextColor(Color::srgba(0.78, 0.86, 1.0, 0.72)),
+                                    ));
+                                    group_panel::spawn_forces_group_cards(
+                                        content,
+                                        forces_placeholder,
+                                    );
                                 });
+                            spawn_scroll_indicator(panel, ScrollIndicatorId::CombatForcesColumn);
+                        });
 
-                            content
-                                .spawn((Node::default(), CombatPlanningControls))
-                                .with_children(|row| {
-                                    spawn_action_button(
-                                        row,
-                                        CombatUiAction::ToggleAdvancedDoctrines,
-                                        "Tactiques avancées ▼",
+                        spawn_battlefield_panel(body, &icon_assets);
+
+                        body.spawn((
+                            Node {
+                                width: Val::Percent(COMBAT_PARAMETERS_COLUMN_WIDTH_PERCENT),
+                                height: Val::Percent(100.0),
+                                min_height: Val::Px(0.0),
+                                flex_direction: FlexDirection::Column,
+                                padding: UiRect::all(Val::Px(9.0)),
+                                border: UiRect::all(Val::Px(1.0)),
+                                border_radius: BorderRadius::all(Val::Px(6.0)),
+                                ..default()
+                            },
+                            BackgroundColor(panel_background()),
+                            Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
+                            group_panel::CombatPlanPanelRoot,
+                        ))
+                        .with_children(|panel| {
+                            panel
+                                .spawn((
+                                    Node {
+                                        width: Val::Percent(100.0),
+                                        flex_grow: 1.0,
+                                        min_height: Val::Px(0.0),
+                                        flex_direction: FlexDirection::Column,
+                                        row_gap: Val::Px(8.0),
+                                        overflow: Overflow::scroll_y(),
+                                        ..default()
+                                    },
+                                    ScrollPosition::default(),
+                                    RelativeCursorPosition::default(),
+                                    ScrollIndicatorArea {
+                                        id: ScrollIndicatorId::CombatParametersColumn,
+                                    },
+                                ))
+                                .with_children(|content| {
+                                    group_panel::spawn_plan_heading(content);
+                                    group_panel::spawn_selected_group_params(content);
+
+                                    content.spawn((
+                                        Text::new("CHOISIR UNE DOCTRINE"),
+                                        ui_text_font(FONT_SECTION_TITLE_PX),
+                                        TextColor(Color::srgba(0.78, 0.86, 1.0, 0.80)),
+                                        CombatPlanningControls,
+                                    ));
+
+                                    content
+                                        .spawn((
+                                            Node {
+                                                width: Val::Percent(100.0),
+                                                flex_wrap: FlexWrap::Wrap,
+                                                column_gap: Val::Px(COMBAT_DOCTRINE_CARD_GAP_PX),
+                                                row_gap: Val::Px(8.0),
+                                                ..default()
+                                            },
+                                            CombatPlanningControls,
+                                        ))
+                                        .with_children(|row| {
+                                            for (doctrine, label) in SIMPLE_DOCTRINES {
+                                                spawn_simple_doctrine_card(row, doctrine, label);
+                                            }
+                                        });
+
+                                    content
+                                        .spawn((Node::default(), CombatPlanningControls))
+                                        .with_children(|row| {
+                                            spawn_action_button(
+                                                row,
+                                                CombatUiAction::ToggleAdvancedDoctrines,
+                                                "Tactiques avancées [+]",
+                                            );
+                                        });
+
+                                    content
+                                        .spawn((
+                                            Node {
+                                                width: Val::Percent(100.0),
+                                                flex_wrap: FlexWrap::Wrap,
+                                                column_gap: Val::Px(COMBAT_DOCTRINE_CARD_GAP_PX),
+                                                row_gap: Val::Px(8.0),
+                                                ..default()
+                                            },
+                                            Visibility::Hidden,
+                                            AdvancedDoctrinesRow,
+                                        ))
+                                        .with_children(|cards| {
+                                            for doctrine in ADVANCED_DOCTRINES {
+                                                spawn_doctrine_card(cards, doctrine);
+                                            }
+                                        });
+
+                                    content
+                                        .spawn((
+                                            Node {
+                                                width: Val::Percent(100.0),
+                                                flex_direction: FlexDirection::Column,
+                                                row_gap: Val::Px(2.0),
+                                                padding: UiRect::axes(Val::Px(10.0), Val::Px(8.0)),
+                                                border: UiRect::all(Val::Px(1.0)),
+                                                border_radius: BorderRadius::all(Val::Px(5.0)),
+                                                ..default()
+                                            },
+                                            BackgroundColor(panel_background()),
+                                            Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
+                                            Visibility::Hidden,
+                                            CombatCommandPointsRoot,
+                                        ))
+                                        .with_children(|widget| {
+                                            widget.spawn((
+                                                Text::new("POINTS DE COMMANDEMENT"),
+                                                ui_text_font(FONT_SECONDARY_PX),
+                                                TextColor(Color::srgb(0.6, 0.68, 0.76)),
+                                            ));
+                                            widget.spawn((
+                                                Text::new(""),
+                                                ui_text_font(FONT_IMPORTANT_TITLE_PX),
+                                                TextColor(Color::srgb(0.78, 0.86, 1.0)),
+                                                CombatCommandPointsMeterText,
+                                            ));
+                                            widget.spawn((
+                                                Text::new(""),
+                                                ui_text_font(FONT_SECONDARY_PX),
+                                                TextColor(Color::srgb(0.78, 0.86, 1.0)),
+                                                CombatCommandPointsAvailableText,
+                                            ));
+                                        });
+
+                                    content.spawn((
+                                        Text::new(""),
+                                        ui_text_font(FONT_SECONDARY_PX),
+                                        TextColor(Color::srgb(0.7, 0.78, 0.86)),
+                                        CombatPreparedOrderText,
+                                        CombatPlanningControls,
+                                    ));
+
+                                    content
+                                        .spawn((
+                                            Node {
+                                                width: Val::Percent(100.0),
+                                                flex_wrap: FlexWrap::Wrap,
+                                                column_gap: Val::Px(8.0),
+                                                row_gap: Val::Px(8.0),
+                                                ..default()
+                                            },
+                                            CombatPlanningControls,
+                                        ))
+                                        .with_children(|interventions| {
+                                            for priority in FOCUS_FIRE_PRIORITIES {
+                                                spawn_intervention_button(
+                                                    interventions,
+                                                    CombatUiAction::SelectFocusPriority(priority),
+                                                    focus_fire_button_label(priority),
+                                                    intervention_command_cost(
+                                                        CombatIntervention::FocusFire { priority },
+                                                    ),
+                                                );
+                                            }
+                                            for group_id in CombatGroupPlanId::ALL {
+                                                spawn_intervention_button(
+                                                    interventions,
+                                                    CombatUiAction::CommitReserve(group_id),
+                                                    reserve_button_label(group_id),
+                                                    intervention_command_cost(
+                                                        CombatIntervention::CommitReserve {
+                                                            group_id,
+                                                        },
+                                                    ),
+                                                );
+                                            }
+                                        });
+                                });
+                            group_panel::spawn_plan_footer(panel);
+                            spawn_scroll_indicator(
+                                panel,
+                                ScrollIndicatorId::CombatParametersColumn,
+                            );
+                        });
+                    });
+
+                    // COMBAT-UX-001-J §28: framed like every other panel in
+                    // this screen, not a caption crammed into "CARTE
+                    // TACTIQUE"'s header row. This entity is reused for 3
+                    // different contents depending on phase (default "Zone
+                    // orbitale" caption, the post-round summary, and the
+                    // `FinalReport` detailed-report dump — see
+                    // `update_combat_feedback`/`update_final_report`), so it
+                    // needs its own visibility rule: unlike the tactical body
+                    // row it must stay visible during `FinalReport` (that's
+                    // exactly when the detailed-report dump is shown), only
+                    // hidden during `Briefing` — see
+                    // `update_combat_briefing_visibility`.
+                    root.spawn((
+                        Node {
+                            width: Val::Percent(100.0),
+                            padding: UiRect::axes(Val::Px(9.0), Val::Px(6.0)),
+                            border: UiRect::all(Val::Px(1.0)),
+                            border_radius: BorderRadius::all(Val::Px(5.0)),
+                            ..default()
+                        },
+                        BackgroundColor(panel_background()),
+                        Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
+                        CombatRoundLogPanelRoot,
+                    ))
+                    .with_children(|panel| {
+                        panel.spawn((
+                            Text::new("Zone orbitale"),
+                            ui_text_font(FONT_SECONDARY_PX),
+                            TextColor(Color::srgb(0.80, 0.88, 0.94)),
+                            CombatRoundLogText,
+                        ));
+                    });
+
+                    root.spawn((
+                        Text::new(""),
+                        ui_text_font(FONT_SECTION_TITLE_PX),
+                        TextColor(Color::srgb(0.78, 0.86, 1.0)),
+                        CombatIntelBarText,
+                        CombatHiddenDuringBriefing,
+                    ));
+
+                    root.spawn((
+                        Text::new(""),
+                        ui_text_font(FONT_SECONDARY_PX),
+                        TextColor(Color::srgb(0.92, 0.62, 0.56)),
+                        CombatFeedbackText,
+                        CombatPreReportControls,
+                    ));
+
+                    root.spawn((
+                        Node {
+                            width: Val::Percent(100.0),
+                            flex_direction: FlexDirection::Row,
+                            justify_content: JustifyContent::SpaceBetween,
+                            column_gap: Val::Px(8.0),
+                            ..default()
+                        },
+                        CombatPreReportControls,
+                    ))
+                    .with_children(|actions| {
+                        spawn_action_button(actions, CombatUiAction::Retreat, "Retraite [R]");
+                        actions
+                            .spawn(Node {
+                                flex_direction: FlexDirection::Row,
+                                column_gap: Val::Px(8.0),
+                                ..default()
+                            })
+                            .with_children(|right| {
+                                spawn_action_button(
+                                    right,
+                                    CombatUiAction::AutoResolve,
+                                    "Résolution auto [A]",
+                                );
+                                spawn_action_button(
+                                    right,
+                                    CombatUiAction::Validate,
+                                    "Continuer / valider [Entrée]",
+                                );
+                            });
+                    });
+
+                    root.spawn((
+                        Node {
+                            width: Val::Percent(100.0),
+                            flex_direction: FlexDirection::Column,
+                            flex_grow: 1.0,
+                            min_height: Val::Px(0.0),
+                            padding: UiRect::all(Val::Px(9.0)),
+                            border: UiRect::all(Val::Px(1.0)),
+                            border_radius: BorderRadius::all(Val::Px(6.0)),
+                            ..default()
+                        },
+                        // Opaque, like every other panel in this screen —
+                        // without it, the 3D strategic scene's own star
+                        // glow bleeds through right behind the flotte/
+                        // ennemi cards (found from a playtest screenshot,
+                        // reads as a rendering glitch, not intentional).
+                        BackgroundColor(panel_background()),
+                        Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
+                        Visibility::Hidden,
+                        CombatReturnRow,
+                    ))
+                    .with_children(|outer| {
+                        outer
+                            .spawn((
+                                Node {
+                                    width: Val::Percent(100.0),
+                                    flex_direction: FlexDirection::Column,
+                                    align_items: AlignItems::Center,
+                                    row_gap: Val::Px(10.0),
+                                    flex_grow: 1.0,
+                                    min_height: Val::Px(0.0),
+                                    overflow: Overflow::scroll_y(),
+                                    ..default()
+                                },
+                                ScrollPosition::default(),
+                                RelativeCursorPosition::default(),
+                                ScrollIndicatorArea {
+                                    id: ScrollIndicatorId::CombatResult,
+                                },
+                            ))
+                            .with_children(|row| {
+                                let planet_placeholder = icon_assets.handle(IconKind::CombatUnit);
+                                row.spawn((
+                                    Node {
+                                        width: Val::Px(150.0),
+                                        height: Val::Px(150.0),
+                                        // Without this, a Column flex item
+                                        // with insufficient vertical room
+                                        // shrinks along the main axis only —
+                                        // squeezing a fixed-width circle
+                                        // into an oval/pill shape instead of
+                                        // clipping or scrolling. Confirmed
+                                        // via playtest screenshot.
+                                        flex_shrink: 0.0,
+                                        border: UiRect::all(Val::Px(2.0)),
+                                        border_radius: BorderRadius::all(Val::Percent(50.0)),
+                                        overflow: Overflow::clip(),
+                                        ..default()
+                                    },
+                                    BackgroundColor(Color::srgba(0.06, 0.08, 0.09, 0.82)),
+                                    Outline::new(
+                                        Val::Px(1.0),
+                                        Val::Px(3.0),
+                                        Color::srgba(0.42, 0.70, 0.86, 0.38),
+                                    ),
+                                ))
+                                .with_children(|circle| {
+                                    circle.spawn((
+                                        ImageNode {
+                                            image: planet_placeholder,
+                                            color: Color::WHITE,
+                                            ..default()
+                                        },
+                                        Node {
+                                            width: Val::Percent(115.0),
+                                            height: Val::Percent(115.0),
+                                            position_type: PositionType::Absolute,
+                                            // See battlefield.rs's spawn_orbit_lane: center
+                                            // the oversized image instead of the top-left
+                                            // default, or the circular clip crops the
+                                            // top-left arc.
+                                            left: Val::Percent(-7.5),
+                                            top: Val::Percent(-7.5),
+                                            // `Overflow::clip()` on the parent
+                                            // only clips to its rectangular
+                                            // bounding box, not a circle — the
+                                            // image needs its own
+                                            // border_radius to actually render
+                                            // round instead of square-cornered.
+                                            border_radius: BorderRadius::all(Val::Percent(50.0)),
+                                            ..default()
+                                        },
+                                        CombatResultPlanetIcon,
+                                    ));
+                                });
+                                row.spawn((
+                                    Text::new(""),
+                                    ui_text_font(FONT_SCREEN_TITLE_PX),
+                                    TextColor(Color::WHITE),
+                                    CombatResultBannerText,
+                                ));
+                                row.spawn((
+                                    Text::new(""),
+                                    ui_text_font(FONT_INFO_PX),
+                                    TextColor(Color::srgb(0.80, 0.86, 0.92)),
+                                    Node {
+                                        width: Val::Percent(100.0),
+                                        ..default()
+                                    },
+                                    CombatResultSubtitleText,
+                                ));
+
+                                row.spawn(Node {
+                                    flex_direction: FlexDirection::Row,
+                                    column_gap: Val::Px(16.0),
+                                    ..default()
+                                })
+                                .with_children(|columns| {
+                                    spawn_result_summary_column(
+                                        columns,
+                                        "VOTRE FLOTTE",
+                                        CombatFleetSummaryText,
+                                    );
+                                    spawn_result_summary_column(
+                                        columns,
+                                        "ENNEMI",
+                                        CombatEnemySummaryText,
                                     );
                                 });
 
-                            content
-                                .spawn((
+                                row.spawn(Node {
+                                    width: Val::Percent(100.0),
+                                    flex_direction: FlexDirection::Row,
+                                    justify_content: JustifyContent::Center,
+                                    flex_wrap: FlexWrap::Wrap,
+                                    column_gap: Val::Px(8.0),
+                                    row_gap: Val::Px(8.0),
+                                    ..default()
+                                })
+                                .with_children(|losses| {
+                                    let loss_placeholder = icon_assets.handle(IconKind::CombatUnit);
+                                    for slot in 0..MAX_COMBAT_LOSS_CARDS {
+                                        spawn_loss_card(losses, slot, loss_placeholder.clone());
+                                    }
+                                });
+
+                                row.spawn((
                                     Node {
                                         width: Val::Percent(100.0),
-                                        flex_wrap: FlexWrap::Wrap,
-                                        column_gap: Val::Px(COMBAT_DOCTRINE_CARD_GAP_PX),
-                                        row_gap: Val::Px(8.0),
+                                        flex_direction: FlexDirection::Row,
+                                        justify_content: JustifyContent::Center,
+                                        column_gap: Val::Px(10.0),
                                         ..default()
                                     },
                                     Visibility::Hidden,
-                                    AdvancedDoctrinesRow,
+                                    CombatLootCardsRoot,
                                 ))
-                                .with_children(|cards| {
-                                    for doctrine in ADVANCED_DOCTRINES {
-                                        spawn_doctrine_card(cards, doctrine);
+                                .with_children(|loot| {
+                                    for kind in [
+                                        ResourceHudKind::Metal,
+                                        ResourceHudKind::Crystal,
+                                        ResourceHudKind::Fuel,
+                                    ] {
+                                        spawn_loot_card(loot, kind, &resource_icons);
                                     }
                                 });
+                                row.spawn((
+                                    Text::new("Aucun butin récupéré."),
+                                    ui_text_font(FONT_SECONDARY_PX),
+                                    TextColor(Color::srgba(0.72, 0.78, 0.84, 0.80)),
+                                    CombatLootEmptyText,
+                                ));
 
-                            content.spawn((
-                                Text::new(""),
-                                ui_text_font(12.0),
-                                TextColor(Color::srgb(0.78, 0.86, 1.0)),
-                                CombatCommandText,
-                                CombatPlanningControls,
-                            ));
+                                row.spawn((
+                                    Text::new(""),
+                                    ui_text_font(FONT_SECONDARY_PX),
+                                    TextColor(Color::srgb(0.86, 0.80, 0.60)),
+                                    CombatDecisiveMomentText,
+                                ));
 
-                            content
-                                .spawn((
+                                spawn_action_button(
+                                    row,
+                                    CombatUiAction::ToggleDetailedReport,
+                                    "Rapport détaillé",
+                                );
+                                row.spawn((
                                     Node {
-                                        width: Val::Percent(100.0),
-                                        flex_wrap: FlexWrap::Wrap,
-                                        column_gap: Val::Px(8.0),
-                                        row_gap: Val::Px(8.0),
+                                        flex_direction: FlexDirection::Row,
+                                        column_gap: Val::Px(6.0),
                                         ..default()
                                     },
-                                    CombatPlanningControls,
+                                    Visibility::Hidden,
+                                    ReportTabBar,
                                 ))
-                                .with_children(|interventions| {
-                                    for priority in FOCUS_FIRE_PRIORITIES {
-                                        spawn_action_button(
-                                            interventions,
-                                            CombatUiAction::SelectFocusPriority(priority),
-                                            focus_fire_button_label(priority),
-                                        );
-                                    }
-                                    for group_id in CombatGroupPlanId::ALL {
-                                        spawn_action_button(
-                                            interventions,
-                                            CombatUiAction::CommitReserve(group_id),
-                                            reserve_button_label(group_id),
-                                        );
-                                    }
+                                .with_children(|tabs| {
+                                    spawn_action_button(
+                                        tabs,
+                                        CombatUiAction::SelectReportTab(CombatReportTab::Summary),
+                                        "RÉSUMÉ",
+                                    );
+                                    spawn_action_button(
+                                        tabs,
+                                        CombatUiAction::SelectReportTab(CombatReportTab::Timeline),
+                                        "DÉROULEMENT",
+                                    );
+                                    spawn_action_button(
+                                        tabs,
+                                        CombatUiAction::SelectReportTab(
+                                            CombatReportTab::Statistics,
+                                        ),
+                                        "STATISTIQUES",
+                                    );
+                                    spawn_action_button(
+                                        tabs,
+                                        CombatUiAction::SelectReportTab(CombatReportTab::Units),
+                                        "UNITÉS",
+                                    );
                                 });
-                        });
-                    spawn_scroll_indicator(panel, ScrollIndicatorId::CombatParametersColumn);
-                });
-            });
-
-            root.spawn((
-                Text::new(""),
-                ui_text_font(12.0),
-                TextColor(Color::srgb(0.78, 0.86, 1.0)),
-                CombatIntelBarText,
-                CombatHiddenDuringBriefing,
-            ));
-
-            root.spawn((
-                Text::new(""),
-                ui_text_font(11.0),
-                TextColor(Color::srgb(0.92, 0.62, 0.56)),
-                CombatFeedbackText,
-                CombatPreReportControls,
-            ));
-
-            root.spawn((
-                Node {
-                    width: Val::Percent(100.0),
-                    flex_direction: FlexDirection::Row,
-                    justify_content: JustifyContent::SpaceBetween,
-                    column_gap: Val::Px(8.0),
-                    ..default()
-                },
-                CombatPreReportControls,
-            ))
-            .with_children(|actions| {
-                spawn_action_button(actions, CombatUiAction::Retreat, "Retraite [R]");
-                actions
-                    .spawn(Node {
-                        flex_direction: FlexDirection::Row,
-                        column_gap: Val::Px(8.0),
-                        ..default()
-                    })
-                    .with_children(|right| {
-                        spawn_action_button(
-                            right,
-                            CombatUiAction::AutoResolve,
-                            "Résolution auto [A]",
-                        );
-                        spawn_action_button(
-                            right,
-                            CombatUiAction::Validate,
-                            "Continuer / valider [Entrée]",
-                        );
+                                spawn_action_button(
+                                    row,
+                                    CombatUiAction::ReturnToGalaxy,
+                                    "Retour galaxie [Entrée]",
+                                );
+                            });
+                        spawn_scroll_indicator(outer, ScrollIndicatorId::CombatResult);
                     });
-            });
-
-            root.spawn((
-                Node {
-                    width: Val::Percent(100.0),
-                    flex_direction: FlexDirection::Column,
-                    align_items: AlignItems::Center,
-                    row_gap: Val::Px(10.0),
-                    ..default()
-                },
-                Visibility::Hidden,
-                CombatReturnRow,
-            ))
-            .with_children(|row| {
-                row.spawn((
-                    Text::new(""),
-                    ui_text_font(12.0),
-                    TextColor(Color::srgb(0.86, 0.92, 0.98)),
-                    Node {
-                        width: Val::Percent(100.0),
-                        ..default()
-                    },
-                    CombatResultSummaryText,
-                ));
-                spawn_action_button(
-                    row,
-                    CombatUiAction::ToggleDetailedReport,
-                    "Rapport détaillé",
-                );
-                row.spawn((
-                    Node {
-                        flex_direction: FlexDirection::Row,
-                        column_gap: Val::Px(6.0),
-                        ..default()
-                    },
-                    Visibility::Hidden,
-                    ReportTabBar,
-                ))
-                .with_children(|tabs| {
-                    spawn_action_button(
-                        tabs,
-                        CombatUiAction::SelectReportTab(CombatReportTab::Summary),
-                        "RÉSUMÉ",
-                    );
-                    spawn_action_button(
-                        tabs,
-                        CombatUiAction::SelectReportTab(CombatReportTab::Timeline),
-                        "DÉROULEMENT",
-                    );
-                    spawn_action_button(
-                        tabs,
-                        CombatUiAction::SelectReportTab(CombatReportTab::Statistics),
-                        "STATISTIQUES",
-                    );
-                    spawn_action_button(
-                        tabs,
-                        CombatUiAction::SelectReportTab(CombatReportTab::Units),
-                        "UNITÉS",
-                    );
                 });
-                spawn_action_button(
-                    row,
-                    CombatUiAction::ReturnToGalaxy,
-                    "Retour galaxie [Entrée]",
-                );
-            });
         });
 }
 
@@ -717,8 +1074,6 @@ fn spawn_combat_briefing(root: &mut ChildSpawnerCommands, icon_assets: &IconAsse
             min_height: Val::Px(0.0),
             align_self: AlignSelf::Center,
             flex_direction: FlexDirection::Column,
-            row_gap: Val::Px(8.0),
-            padding: UiRect::all(Val::Px(18.0)),
             border: UiRect::all(Val::Px(1.0)),
             border_radius: BorderRadius::all(Val::Px(8.0)),
             ..default()
@@ -728,81 +1083,179 @@ fn spawn_combat_briefing(root: &mut ChildSpawnerCommands, icon_assets: &IconAsse
         Visibility::Hidden,
         CombatBriefingControls,
     ))
-    .with_children(|card| {
-        card.spawn((
-            Text::new(""),
-            ui_text_font(20.0),
-            TextColor(Color::srgb(0.92, 0.96, 1.0)),
-            BriefingTitleText,
-        ));
-        card.spawn((
-            Text::new("OBJECTIF"),
-            ui_text_font(11.0),
-            TextColor(Color::srgba(0.78, 0.86, 1.0, 0.72)),
-        ));
-        card.spawn((
-            Text::new(""),
-            ui_text_font(13.0),
-            TextColor(Color::srgb(0.86, 0.92, 0.98)),
-            BriefingObjectiveText,
-        ));
-        card.spawn((
-            Text::new("VOTRE FLOTTE"),
-            ui_text_font(11.0),
-            TextColor(Color::srgba(0.78, 0.86, 1.0, 0.72)),
-        ));
-        for slot in 0..MAX_ALLIED_ROWS {
-            card.spawn((
+    .with_children(|outer| {
+        outer
+            .spawn((
                 Node {
                     width: Val::Percent(100.0),
-                    flex_direction: FlexDirection::Row,
-                    align_items: AlignItems::Center,
-                    column_gap: Val::Px(8.0),
+                    flex_grow: 1.0,
+                    min_height: Val::Px(0.0),
+                    flex_direction: FlexDirection::Column,
+                    overflow: Overflow::scroll_y(),
                     ..default()
                 },
-                Visibility::Hidden,
-                BriefingFleetRow(slot),
+                ScrollPosition::default(),
+                RelativeCursorPosition::default(),
+                ScrollIndicatorArea {
+                    id: ScrollIndicatorId::CombatBriefing,
+                },
             ))
-            .with_children(|row| {
-                row.spawn((
-                    ImageNode {
-                        image: icon_assets.handle(IconKind::CombatUnit),
-                        color: Color::WHITE,
+            .with_children(|scroll_area| {
+                // `margin: auto` (not `justify_content: Center`, which would
+                // center the content past *both* edges when it overflows —
+                // a real regression caught via screenshot) centers the card
+                // vertically only when there's spare room; CSS auto-margins
+                // collapse to zero once content is taller than the viewport,
+                // so it safely falls back to top-aligned + scrollable.
+                scroll_area
+                    .spawn(Node {
+                        width: Val::Percent(100.0),
+                        flex_direction: FlexDirection::Column,
+                        row_gap: Val::Px(8.0),
+                        padding: UiRect::all(Val::Px(18.0)),
+                        margin: UiRect::vertical(Val::Auto),
                         ..default()
-                    },
-                    Node {
-                        width: Val::Px(20.0),
-                        height: Val::Px(20.0),
-                        flex_shrink: 0.0,
-                        ..default()
-                    },
-                    BriefingFleetIcon(slot),
-                ));
-                row.spawn((
-                    Text::new(""),
-                    ui_text_font(13.0),
-                    TextColor(Color::srgb(0.86, 0.92, 0.98)),
-                    BriefingFleetText(slot),
-                ));
+                    })
+                    .with_children(|card| {
+                        let planet_placeholder = icon_assets.handle(IconKind::CombatUnit);
+                        card.spawn(Node {
+                            width: Val::Percent(100.0),
+                            flex_direction: FlexDirection::Row,
+                            align_items: AlignItems::Center,
+                            column_gap: Val::Px(14.0),
+                            ..default()
+                        })
+                        .with_children(|heading| {
+                            heading
+                                .spawn((
+                                    Node {
+                                        width: Val::Px(96.0),
+                                        height: Val::Px(96.0),
+                                        flex_shrink: 0.0,
+                                        border: UiRect::all(Val::Px(2.0)),
+                                        border_radius: BorderRadius::all(Val::Percent(50.0)),
+                                        overflow: Overflow::clip(),
+                                        ..default()
+                                    },
+                                    BackgroundColor(Color::srgba(0.06, 0.08, 0.09, 0.82)),
+                                    Outline::new(
+                                        Val::Px(1.0),
+                                        Val::Px(3.0),
+                                        Color::srgba(0.42, 0.70, 0.86, 0.38),
+                                    ),
+                                ))
+                                .with_children(|circle| {
+                                    circle.spawn((
+                                        ImageNode {
+                                            image: planet_placeholder,
+                                            color: Color::WHITE,
+                                            ..default()
+                                        },
+                                        Node {
+                                            width: Val::Percent(115.0),
+                                            height: Val::Percent(115.0),
+                                            position_type: PositionType::Absolute,
+                                            left: Val::Percent(-7.5),
+                                            top: Val::Percent(-7.5),
+                                            // `Overflow::clip()` on the parent only
+                                            // clips to its rectangular bounding box
+                                            // — border_radius doesn't affect clip
+                                            // shape, only how *this node's own*
+                                            // background/image is drawn. Without
+                                            // its own border_radius, the image
+                                            // renders as a square whose corners
+                                            // just happen to sit inside the round
+                                            // frame, not an actual circle.
+                                            border_radius: BorderRadius::all(Val::Percent(50.0)),
+                                            ..default()
+                                        },
+                                        BriefingPlanetIcon,
+                                    ));
+                                });
+                            heading.spawn((
+                                Text::new(""),
+                                ui_text_font(FONT_SCREEN_TITLE_PX),
+                                TextColor(Color::srgb(0.92, 0.96, 1.0)),
+                                BriefingTitleText,
+                            ));
+                        });
+                        card.spawn((
+                            Text::new("OBJECTIF"),
+                            ui_text_font(FONT_SECONDARY_PX),
+                            TextColor(Color::srgba(0.78, 0.86, 1.0, 0.72)),
+                        ));
+                        card.spawn((
+                            Text::new(""),
+                            ui_text_font(FONT_INFO_PX),
+                            TextColor(Color::srgb(0.86, 0.92, 0.98)),
+                            BriefingObjectiveText,
+                        ));
+                        card.spawn((
+                            Text::new("VOTRE FLOTTE"),
+                            ui_text_font(FONT_SECONDARY_PX),
+                            TextColor(Color::srgba(0.78, 0.86, 1.0, 0.72)),
+                        ));
+                        for slot in 0..MAX_ALLIED_ROWS {
+                            card.spawn((
+                                Node {
+                                    width: Val::Percent(100.0),
+                                    flex_direction: FlexDirection::Row,
+                                    align_items: AlignItems::Center,
+                                    column_gap: Val::Px(8.0),
+                                    ..default()
+                                },
+                                Visibility::Hidden,
+                                BriefingFleetRow(slot),
+                            ))
+                            .with_children(|row| {
+                                row.spawn((
+                                    ImageNode {
+                                        image: icon_assets.handle(IconKind::CombatUnit),
+                                        color: Color::WHITE,
+                                        ..default()
+                                    },
+                                    Node {
+                                        width: Val::Px(32.0),
+                                        height: Val::Px(32.0),
+                                        flex_shrink: 0.0,
+                                        ..default()
+                                    },
+                                    BriefingFleetIcon(slot),
+                                ));
+                                row.spawn((
+                                    Text::new(""),
+                                    ui_text_font(FONT_INFO_PX),
+                                    TextColor(Color::srgb(0.86, 0.92, 0.98)),
+                                    BriefingFleetText(slot),
+                                ));
+                            });
+                        }
+                        card.spawn((
+                            Text::new(""),
+                            ui_text_font(FONT_INFO_PX),
+                            TextColor(Color::srgb(0.78, 0.86, 1.0)),
+                            BriefingIntelText,
+                        ));
+                        card.spawn((
+                            Text::new(""),
+                            ui_text_font(FONT_INFO_PX),
+                            TextColor(Color::srgb(0.92, 0.80, 0.80)),
+                            BriefingEstimateText,
+                        ));
+                        card.spawn(Node {
+                            margin: UiRect::top(Val::Px(10.0)),
+                            ..default()
+                        })
+                        .with_children(|footer| {
+                            spawn_action_button(
+                                footer,
+                                CombatUiAction::StartPlanning,
+                                "PRÉPARER L'ASSAUT [Entrée]",
+                            );
+                        });
+                    });
             });
-        }
-        card.spawn((
-            Text::new(""),
-            ui_text_font(13.0),
-            TextColor(Color::srgb(0.78, 0.86, 1.0)),
-            BriefingIntelText,
-        ));
-        card.spawn((
-            Text::new(""),
-            ui_text_font(13.0),
-            TextColor(Color::srgb(0.92, 0.80, 0.80)),
-            BriefingEstimateText,
-        ));
-        spawn_action_button(
-            card,
-            CombatUiAction::StartPlanning,
-            "PRÉPARER L'ASSAUT [Entrée]",
-        );
+        spawn_scroll_indicator(outer, ScrollIndicatorId::CombatBriefing);
     });
 }
 
@@ -911,18 +1364,27 @@ fn per_mille_multiplier_text(value: u32) -> String {
     format!("×{:.2}", f64::from(value) / 1000.0)
 }
 
-/// Doc §14.6 card body — the real per-mille multipliers straight from the
-/// ruleset (`combat_rules()`, read once at spawn time since the ruleset
-/// never changes mid-session), plus the one doctrine-specific mechanical
-/// line above and the counter relationship with its real multiplier.
+/// The core offense/damage-taken tradeoff, straight from the ruleset
+/// (`combat_rules()`, read once at spawn time since the ruleset never
+/// changes mid-session) — real numbers, not invented flavor text. Shared by
+/// both the simple doctrine cards (this line alone) and the advanced ones
+/// (`doctrine_card_text`, this line plus mechanic/counter detail).
+fn doctrine_offense_defense_line(doctrine: CombatDoctrineId) -> String {
+    let overview: DoctrineOverview = doctrine_overview(doctrine, combat_rules());
+    format!(
+        "Offense {} · Dégâts reçus {}",
+        per_mille_multiplier_text(overview.offense_multiplier_per_mille),
+        per_mille_multiplier_text(overview.damage_taken_multiplier_per_mille),
+    )
+}
+
+/// Doc §14.6 card body — `doctrine_offense_defense_line` plus the one
+/// doctrine-specific mechanical line and the counter relationship with its
+/// real multiplier.
 fn doctrine_card_text(doctrine: CombatDoctrineId) -> String {
     let overview: DoctrineOverview = doctrine_overview(doctrine, combat_rules());
     let mut lines = vec![
-        format!(
-            "Offense {} · Dégâts reçus {}",
-            per_mille_multiplier_text(overview.offense_multiplier_per_mille),
-            per_mille_multiplier_text(overview.damage_taken_multiplier_per_mille),
-        ),
+        doctrine_offense_defense_line(doctrine),
         doctrine_mechanic_line(doctrine).to_string(),
     ];
     if overview.repetition_exempt {
@@ -987,19 +1449,65 @@ fn spawn_doctrine_card(parent: &mut ChildSpawnerCommands, doctrine: CombatDoctri
                     doctrine_name(doctrine),
                     doctrine_shortcut_digit(doctrine)
                 )),
-                ui_text_font(11.0),
+                ui_text_font(FONT_SECONDARY_PX),
                 TextColor(Color::srgb(0.92, 0.96, 1.0)),
             ));
             card.spawn((
                 Text::new(doctrine_card_text(doctrine)),
-                ui_text_font(9.0),
+                ui_text_font(FONT_SECONDARY_PX),
                 TextColor(Color::srgba(0.80, 0.86, 0.90, 0.90)),
             ));
             card.spawn((
                 Text::new(""),
-                ui_text_font(9.0),
+                ui_text_font(FONT_SECONDARY_PX),
                 TextColor(Color::srgb(0.94, 0.72, 0.42)),
                 DoctrineExtraText(doctrine),
+            ));
+        });
+}
+
+/// Playtest feedback: "Doctrine équilibré, prudent ou agressif, je ne sais
+/// pas ce que ça fait" — the simple doctrine picker was a bare label with
+/// no indication of effect. Same 2-line card shape as
+/// `spawn_intervention_button`, but with `doctrine_offense_defense_line`'s
+/// real ruleset numbers instead of a cost — the core stance tradeoff, not
+/// the full advanced-card breakdown (mechanic/counter detail stays
+/// exclusive to "Tactiques avancées", keeping the simple picker simple).
+fn spawn_simple_doctrine_card(
+    parent: &mut ChildSpawnerCommands,
+    doctrine: CombatDoctrineId,
+    label: &str,
+) {
+    parent
+        .spawn((
+            Button,
+            Node {
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(3.0),
+                padding: UiRect::all(Val::Px(6.0)),
+                border: UiRect::all(Val::Px(1.0)),
+                border_radius: BorderRadius::all(Val::Px(6.0)),
+                ..default()
+            },
+            BackgroundColor(action_button_color(true, false, &Interaction::None)),
+            Outline::new(
+                Val::Px(1.0),
+                Val::ZERO,
+                action_button_outline(true, false, &Interaction::None),
+            ),
+            CombatActionButton(CombatUiAction::SelectDoctrine(doctrine)),
+            UiPointerBlocker,
+        ))
+        .with_children(|card| {
+            card.spawn((
+                Text::new(format!("{label} [{}]", doctrine_shortcut_digit(doctrine))),
+                ui_text_font(FONT_SECONDARY_PX),
+                TextColor(Color::WHITE),
+            ));
+            card.spawn((
+                Text::new(doctrine_offense_defense_line(doctrine)),
+                ui_text_font(FONT_SECONDARY_PX),
+                TextColor(Color::srgba(0.80, 0.86, 0.90, 0.90)),
             ));
         });
 }
@@ -1025,7 +1533,7 @@ fn spawn_action_button(parent: &mut ChildSpawnerCommands, action: CombatUiAction
     entity.with_children(|button| {
         let mut text = button.spawn((
             Text::new(label),
-            ui_text_font(12.0),
+            ui_text_font(FONT_SECTION_TITLE_PX),
             TextColor(Color::WHITE),
         ));
         if action == CombatUiAction::Retreat {
@@ -1038,6 +1546,182 @@ fn spawn_action_button(parent: &mut ChildSpawnerCommands, action: CombatUiAction
             text.insert(AdvancedDoctrinesToggleLabel);
         }
     });
+}
+
+/// COMBAT-UX-001-J §30: each intervention is a 2-line card (name, then its
+/// PC cost) instead of a bare label — availability/greying is unaffected,
+/// `update_action_buttons`/`update_reserve_intervention_visibility` key off
+/// `CombatActionButton` on the button entity itself, not its children.
+fn spawn_intervention_button(
+    parent: &mut ChildSpawnerCommands,
+    action: CombatUiAction,
+    name: &str,
+    cost: u8,
+) {
+    parent
+        .spawn((
+            Button,
+            Node {
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                row_gap: Val::Px(2.0),
+                padding: UiRect::axes(Val::Px(12.0), Val::Px(8.0)),
+                border: UiRect::all(Val::Px(1.0)),
+                border_radius: BorderRadius::all(Val::Px(5.0)),
+                ..default()
+            },
+            BackgroundColor(action_button_color(true, false, &Interaction::None)),
+            Outline::new(
+                Val::Px(1.0),
+                Val::ZERO,
+                action_button_outline(true, false, &Interaction::None),
+            ),
+            CombatActionButton(action),
+            UiPointerBlocker,
+        ))
+        .with_children(|button| {
+            button.spawn((
+                Text::new(name),
+                ui_text_font(FONT_INFO_PX),
+                TextColor(Color::WHITE),
+            ));
+            let cost_label = if cost == 0 {
+                "Gratuit".to_string()
+            } else {
+                format!("{cost} PC")
+            };
+            button.spawn((
+                Text::new(cost_label),
+                ui_text_font(FONT_SECONDARY_PX),
+                TextColor(Color::srgb(0.7, 0.78, 0.86)),
+            ));
+        });
+}
+
+/// COMBAT-UX-001-J §33's "VOTRE FLOTTE"/"ENNEMI" columns.
+fn spawn_result_summary_column(
+    parent: &mut ChildSpawnerCommands,
+    title: &str,
+    marker: impl Component,
+) {
+    parent
+        .spawn((
+            Node {
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                row_gap: Val::Px(4.0),
+                padding: UiRect::axes(Val::Px(14.0), Val::Px(10.0)),
+                border: UiRect::all(Val::Px(1.0)),
+                border_radius: BorderRadius::all(Val::Px(6.0)),
+                ..default()
+            },
+            BackgroundColor(panel_background()),
+            Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
+        ))
+        .with_children(|column| {
+            column.spawn((
+                Text::new(title),
+                ui_text_font(FONT_SECTION_TITLE_PX),
+                TextColor(Color::srgba(0.78, 0.86, 1.0, 0.88)),
+            ));
+            column.spawn((
+                Text::new(""),
+                ui_text_font(FONT_INFO_PX),
+                TextColor(Color::srgb(0.88, 0.92, 0.96)),
+                marker,
+            ));
+        });
+}
+
+/// Doc §35 — one fixed slot; hidden by default, shown/populated by
+/// `update_final_report` for each real `CombatShipLoss`.
+fn spawn_loss_card(parent: &mut ChildSpawnerCommands, slot: usize, placeholder: Handle<Image>) {
+    parent
+        .spawn((
+            Node {
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                column_gap: Val::Px(6.0),
+                padding: UiRect::axes(Val::Px(8.0), Val::Px(5.0)),
+                border: UiRect::all(Val::Px(1.0)),
+                border_radius: BorderRadius::all(Val::Px(5.0)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.20, 0.06, 0.05, 0.55)),
+            Outline::new(Val::Px(1.0), Val::ZERO, Color::srgba(1.0, 0.42, 0.36, 0.42)),
+            Visibility::Hidden,
+            CombatLossCardRow(slot),
+        ))
+        .with_children(|card| {
+            card.spawn((
+                ImageNode {
+                    image: placeholder,
+                    color: Color::WHITE,
+                    ..default()
+                },
+                Node {
+                    width: Val::Px(24.0),
+                    height: Val::Px(24.0),
+                    flex_shrink: 0.0,
+                    ..default()
+                },
+                CombatLossCardIcon(slot),
+            ));
+            card.spawn((
+                Text::new(""),
+                ui_text_font(FONT_SECONDARY_PX),
+                TextColor(Color::srgb(0.94, 0.86, 0.84)),
+                CombatLossCardText(slot),
+            ));
+        });
+}
+
+/// Doc §36 — one of the 3 fixed loot cards; the icon never changes per
+/// frame (kind-determined at spawn), only the value text does. Uses the
+/// same real resource art the always-visible resource bar shows
+/// (`ResourceIconAssets`, pre-loaded from `resource_bar_icon_path`), not
+/// `IconKind`'s procedural masks — those were defined for
+/// `IconKind::Metal/Crystal/Fuel` but never actually consumed anywhere in
+/// the client, real per-resource art already existed.
+fn spawn_loot_card(
+    parent: &mut ChildSpawnerCommands,
+    kind: ResourceHudKind,
+    resource_icons: &ResourceIconAssets,
+) {
+    parent
+        .spawn((
+            Node {
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                row_gap: Val::Px(4.0),
+                padding: UiRect::axes(Val::Px(10.0), Val::Px(8.0)),
+                border: UiRect::all(Val::Px(1.0)),
+                border_radius: BorderRadius::all(Val::Px(6.0)),
+                ..default()
+            },
+            BackgroundColor(panel_background()),
+            Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
+        ))
+        .with_children(|card| {
+            card.spawn((
+                ImageNode {
+                    image: resource_icons.handle(kind),
+                    color: Color::WHITE,
+                    ..default()
+                },
+                Node {
+                    width: Val::Px(28.0),
+                    height: Val::Px(28.0),
+                    ..default()
+                },
+            ));
+            card.spawn((
+                Text::new(""),
+                ui_text_font(FONT_INFO_PX),
+                TextColor(Color::srgb(0.90, 0.94, 0.98)),
+                CombatLootCardText(kind),
+            ));
+        });
 }
 
 /// Doc §14.7/§18-E "prévision qualitative" — five-tier reading only, never a
@@ -1122,9 +1806,17 @@ type CombatHeaderTextQuery<'w, 's> = Query<
         Without<CombatIntelBarText>,
         Without<CombatRoundLogText>,
         Without<CombatFeedbackText>,
-        Without<CombatCommandText>,
+        Without<CombatCommandPointsMeterText>,
+        Without<CombatCommandPointsAvailableText>,
+        Without<CombatPreparedOrderText>,
         Without<CombatValidateButtonLabel>,
-        Without<CombatResultSummaryText>,
+        Without<CombatResultBannerText>,
+        Without<CombatResultSubtitleText>,
+        Without<CombatFleetSummaryText>,
+        Without<CombatEnemySummaryText>,
+        Without<CombatDecisiveMomentText>,
+        Without<CombatLossCardText>,
+        Without<CombatLootCardText>,
     ),
 >;
 
@@ -1137,7 +1829,9 @@ type CombatIntelBarTextQuery<'w, 's> = Query<
         Without<CombatHeaderText>,
         Without<CombatRoundLogText>,
         Without<CombatFeedbackText>,
-        Without<CombatCommandText>,
+        Without<CombatCommandPointsMeterText>,
+        Without<CombatCommandPointsAvailableText>,
+        Without<CombatPreparedOrderText>,
         Without<CombatValidateButtonLabel>,
     ),
 >;
@@ -1170,10 +1864,9 @@ fn update_combat_columns(
     };
     if let Ok(mut text) = header_texts.single_mut() {
         text.0 = format!(
-            "ASSAUT ORBITAL — {target_label}      ROUND {}/{}      {phase_label}      File : {}",
+            "ASSAUT ORBITAL — {target_label}\nRound {}/{} · {phase_label}",
             pending.round() + 1,
             pending.maximum_rounds(),
-            ui.queue.len(),
         );
     }
 
@@ -1186,8 +1879,16 @@ fn update_combat_columns(
             "Certaines unités et capacités restent inconnues."
         };
         let prediction = qualitative_prediction_label(qualitative_prediction(&allied, &enemy));
+        // Playtest feedback: no visible way to improve enemy intel — this
+        // describes the real, already-implemented mechanic
+        // (`apply_round_intel_gain`, +5%/round), not a new one.
+        let progression = if enemy.intel_percent < 95 {
+            "\nS'améliore automatiquement à chaque round."
+        } else {
+            ""
+        };
         text.0 = format!(
-            "RENSEIGNEMENT : {} %\n{note}\nPrévision : {prediction}",
+            "RENSEIGNEMENT : {} %\n{note}\nPrévision : {prediction}{progression}",
             enemy.intel_percent
         );
     }
@@ -1219,11 +1920,25 @@ type BriefingObjectiveTextQuery<'w, 's> = Query<
     ),
 >;
 
-type BriefingFleetRowQuery<'w, 's> =
-    Query<'w, 's, (&'static BriefingFleetRow, &'static mut Visibility)>;
+type BriefingFleetRowQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static BriefingFleetRow,
+        &'static mut Visibility,
+        &'static mut Node,
+    ),
+>;
 
-type BriefingFleetIconQuery<'w, 's> =
-    Query<'w, 's, (&'static BriefingFleetIcon, &'static mut ImageNode)>;
+type BriefingFleetIconQuery<'w, 's> = Query<
+    'w,
+    's,
+    (&'static BriefingFleetIcon, &'static mut ImageNode),
+    Without<BriefingPlanetIcon>,
+>;
+
+type BriefingPlanetIconQuery<'w, 's> =
+    Query<'w, 's, &'static mut ImageNode, (With<BriefingPlanetIcon>, Without<BriefingFleetIcon>)>;
 
 type BriefingFleetTextQuery<'w, 's> = Query<
     'w,
@@ -1269,6 +1984,7 @@ fn update_combat_briefing(
     simulation: Res<SimulationResource>,
     entity_visuals: Res<EntityVisualCatalog>,
     mut title_text: BriefingTitleTextQuery,
+    mut planet_icon: BriefingPlanetIconQuery,
     mut objective_text: BriefingObjectiveTextQuery,
     mut fleet_rows: BriefingFleetRowQuery,
     mut fleet_icons: BriefingFleetIconQuery,
@@ -1296,19 +2012,41 @@ fn update_combat_briefing(
     if let Ok(mut text) = title_text.single_mut() {
         text.0 = format!("ASSAUT ORBITAL\n{target_label}");
     }
+    if let Ok(mut icon) = planet_icon.single_mut()
+        && let Some(planet) = simulation
+            .simulation()
+            .universe_repository()
+            .planet(pending.planet_id)
+    {
+        icon.image = entity_visuals.planet(pending.planet_id, planet.kind);
+        icon.color = Color::WHITE;
+    }
     if let Ok(mut text) = objective_text.single_mut() {
         text.0 = "Neutraliser les défenses orbitales de la planète.".to_string();
     }
 
     let allied = allied_stacks(pending);
-    for (row, mut visibility) in &mut fleet_rows {
-        let next = if allied.get(row.0).is_some() {
+    for (row, mut visibility, mut node) in &mut fleet_rows {
+        let present = allied.get(row.0).is_some();
+        // Unpopulated slots need `Display::None`, not just
+        // `Visibility::Hidden` — otherwise up to 5 empty rows still reserve
+        // their layout space, pushing the intel/estimate text and the CTA
+        // button below the card's clipped bottom edge.
+        let next_visibility = if present {
             Visibility::Inherited
         } else {
             Visibility::Hidden
         };
-        if *visibility != next {
-            *visibility = next;
+        let next_display = if present {
+            Display::Flex
+        } else {
+            Display::None
+        };
+        if *visibility != next_visibility {
+            *visibility = next_visibility;
+        }
+        if node.display != next_display {
+            node.display = next_display;
         }
     }
     for (marker, mut icon) in &mut fleet_icons {
@@ -1332,7 +2070,14 @@ fn update_combat_briefing(
 
     let enemy = enemy_intel(pending);
     if let Ok(mut text) = intel_text.single_mut() {
-        text.0 = format!("RENSEIGNEMENT : {} %", enemy.intel_percent);
+        text.0 = if enemy.intel_percent < 95 {
+            format!(
+                "RENSEIGNEMENT : {} %\nS'améliorera automatiquement une fois le combat engagé.",
+                enemy.intel_percent
+            )
+        } else {
+            format!("RENSEIGNEMENT : {} %", enemy.intel_percent)
+        };
     }
     if let Ok(mut text) = estimate_text.single_mut() {
         text.0 = format!(
@@ -1352,18 +2097,98 @@ fn threat_level_label(level: ThreatLevel) -> &'static str {
     }
 }
 
+type CombatUiRootQuery<'w, 's> = Query<
+    'w,
+    's,
+    &'static mut Visibility,
+    (
+        With<CombatUiRoot>,
+        Without<TabBarRoot>,
+        Without<ResourceBarRoot>,
+        Without<BreadcrumbBarRoot>,
+    ),
+>;
+
+type TabBarRootQuery<'w, 's> = Query<
+    'w,
+    's,
+    &'static mut Visibility,
+    (
+        With<TabBarRoot>,
+        Without<CombatUiRoot>,
+        Without<ResourceBarRoot>,
+        Without<BreadcrumbBarRoot>,
+    ),
+>;
+
+type ResourceBarRootQuery<'w, 's> = Query<
+    'w,
+    's,
+    &'static mut Visibility,
+    (
+        With<ResourceBarRoot>,
+        Without<CombatUiRoot>,
+        Without<TabBarRoot>,
+        Without<BreadcrumbBarRoot>,
+    ),
+>;
+
+type BreadcrumbBarRootQuery<'w, 's> = Query<
+    'w,
+    's,
+    &'static mut Visibility,
+    (
+        With<BreadcrumbBarRoot>,
+        Without<CombatUiRoot>,
+        Without<TabBarRoot>,
+        Without<ResourceBarRoot>,
+    ),
+>;
+
+/// COMBAT-UX-001-J §9: the strategic chrome behind combat (bottom command
+/// dock, resource bar, breadcrumb) must be masked, not just visually covered
+/// by the backdrop — none of these had any visibility gate before (confirmed:
+/// no existing system toggled any of them). The inspector panel gets the
+/// same treatment directly in `update_info_panel` instead, since it already
+/// owns a more nuanced visibility condition and a second system fighting
+/// over the same `Visibility` component would race depending on system
+/// order.
 fn update_combat_visibility(
     ui: Res<CombatUiState>,
-    mut roots: Query<&mut Visibility, With<CombatUiRoot>>,
+    mut roots: CombatUiRootQuery,
+    mut tab_bar: TabBarRootQuery,
+    mut resource_bar: ResourceBarRootQuery,
+    mut breadcrumb_bar: BreadcrumbBarRootQuery,
 ) {
-    let visibility = if ui.current.is_some() {
+    let combat_visible = if ui.current.is_some() {
         Visibility::Inherited
     } else {
         Visibility::Hidden
     };
     for mut root in &mut roots {
-        if *root != visibility {
-            *root = visibility;
+        if *root != combat_visible {
+            *root = combat_visible;
+        }
+    }
+
+    let strategic_chrome_visible = if ui.current.is_some() {
+        Visibility::Hidden
+    } else {
+        Visibility::Inherited
+    };
+    for mut visibility in &mut tab_bar {
+        if *visibility != strategic_chrome_visible {
+            *visibility = strategic_chrome_visible;
+        }
+    }
+    for mut visibility in &mut resource_bar {
+        if *visibility != strategic_chrome_visible {
+            *visibility = strategic_chrome_visible;
+        }
+    }
+    for mut visibility in &mut breadcrumb_bar {
+        if *visibility != strategic_chrome_visible {
+            *visibility = strategic_chrome_visible;
         }
     }
 }
@@ -2151,7 +2976,9 @@ type DoctrineExtraTextQuery<'w, 's> = Query<
         Without<CombatIntelBarText>,
         Without<CombatRoundLogText>,
         Without<CombatFeedbackText>,
-        Without<CombatCommandText>,
+        Without<CombatCommandPointsMeterText>,
+        Without<CombatCommandPointsAvailableText>,
+        Without<CombatPreparedOrderText>,
         Without<RetreatButtonLabel>,
         Without<CombatValidateButtonLabel>,
     ),
@@ -2210,12 +3037,12 @@ fn update_doctrine_cards(
     }
 }
 
-type CombatCommandTextQuery<'w, 's> = Query<
+type CombatCommandPointsMeterTextQuery<'w, 's> = Query<
     'w,
     's,
     &'static mut Text,
     (
-        With<CombatCommandText>,
+        With<CombatCommandPointsMeterText>,
         Without<CombatHeaderText>,
         Without<CombatIntelBarText>,
         Without<CombatRoundLogText>,
@@ -2223,6 +3050,44 @@ type CombatCommandTextQuery<'w, 's> = Query<
         Without<DoctrineExtraText>,
         Without<RetreatButtonLabel>,
         Without<CombatValidateButtonLabel>,
+        Without<CombatCommandPointsAvailableText>,
+        Without<CombatPreparedOrderText>,
+    ),
+>;
+
+type CombatCommandPointsAvailableTextQuery<'w, 's> = Query<
+    'w,
+    's,
+    &'static mut Text,
+    (
+        With<CombatCommandPointsAvailableText>,
+        Without<CombatHeaderText>,
+        Without<CombatIntelBarText>,
+        Without<CombatRoundLogText>,
+        Without<CombatFeedbackText>,
+        Without<DoctrineExtraText>,
+        Without<RetreatButtonLabel>,
+        Without<CombatValidateButtonLabel>,
+        Without<CombatCommandPointsMeterText>,
+        Without<CombatPreparedOrderText>,
+    ),
+>;
+
+type CombatPreparedOrderTextQuery<'w, 's> = Query<
+    'w,
+    's,
+    &'static mut Text,
+    (
+        With<CombatPreparedOrderText>,
+        Without<CombatHeaderText>,
+        Without<CombatIntelBarText>,
+        Without<CombatRoundLogText>,
+        Without<CombatFeedbackText>,
+        Without<DoctrineExtraText>,
+        Without<RetreatButtonLabel>,
+        Without<CombatValidateButtonLabel>,
+        Without<CombatCommandPointsMeterText>,
+        Without<CombatCommandPointsAvailableText>,
     ),
 >;
 
@@ -2236,7 +3101,9 @@ type CombatValidateButtonLabelQuery<'w, 's> = Query<
         Without<CombatIntelBarText>,
         Without<CombatRoundLogText>,
         Without<CombatFeedbackText>,
-        Without<CombatCommandText>,
+        Without<CombatCommandPointsMeterText>,
+        Without<CombatCommandPointsAvailableText>,
+        Without<CombatPreparedOrderText>,
         Without<DoctrineExtraText>,
         Without<RetreatButtonLabel>,
     ),
@@ -2248,7 +3115,7 @@ fn command_points_meter(available: u8, maximum: u8) -> String {
         if index > 0 {
             meter.push(' ');
         }
-        meter.push(if index < available { '●' } else { '○' });
+        meter.push(if index < available { '#' } else { '.' });
     }
     meter
 }
@@ -2302,18 +3169,25 @@ fn prepared_order_label(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn update_command_panel(
     ui: Res<CombatUiState>,
     simulation: Res<SimulationResource>,
     draft: Res<CombatPlanDraftState>,
-    mut command_texts: CombatCommandTextQuery,
+    mut command_points_root: Query<&mut Visibility, With<CombatCommandPointsRoot>>,
+    mut meter_texts: CombatCommandPointsMeterTextQuery,
+    mut available_texts: CombatCommandPointsAvailableTextQuery,
+    mut prepared_texts: CombatPreparedOrderTextQuery,
     mut validate_labels: CombatValidateButtonLabelQuery,
 ) {
     let pending = ui
         .current
         .and_then(|mission_id| simulation.simulation().state().pending_combat(mission_id));
     let Some(pending) = pending else {
-        if let Ok(mut text) = command_texts.single_mut() {
+        for mut visibility in &mut command_points_root {
+            *visibility = Visibility::Hidden;
+        }
+        if let Ok(mut text) = prepared_texts.single_mut() {
             text.0.clear();
         }
         return;
@@ -2321,14 +3195,30 @@ fn update_command_panel(
 
     let cost = round_command_cost(pending, ui.chosen_doctrine, ui.selected_intervention);
     let initial_plan_dirty = pending.round() == 0 && draft.is_dirty();
-    if let Ok(mut text) = command_texts.single_mut() {
+
+    // COMBAT-UX-001-J §29: "visible uniquement après le premier round."
+    let pc_widget_visible = pending.round() > 0;
+    for mut visibility in &mut command_points_root {
+        *visibility = if pc_widget_visible {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+    }
+    if pc_widget_visible {
         let maximum = pending.command_points_maximum();
         let available = pending.command_points_remaining();
-        let meter = command_points_meter(available, maximum);
-        if pending.round() == 0 {
-            text.0 = format!(
-                "COMMANDEMENT : {meter}  {available}/{maximum} PC\nDisponible après le premier engagement."
-            );
+        if let Ok(mut text) = meter_texts.single_mut() {
+            text.0 = command_points_meter(available, maximum);
+        }
+        if let Ok(mut text) = available_texts.single_mut() {
+            text.0 = format!("{available} disponible(s)");
+        }
+    }
+
+    if let Ok(mut text) = prepared_texts.single_mut() {
+        text.0 = if pending.round() == 0 {
+            String::new()
         } else {
             let prepared =
                 prepared_order_label(pending, ui.chosen_doctrine, ui.selected_intervention);
@@ -2337,10 +3227,8 @@ fn update_command_panel(
             } else {
                 format!("-{cost} PC")
             };
-            text.0 = format!(
-                "COMMANDEMENT : {meter}  {available}/{maximum} PC\nOrdre : {prepared} ({cost_label})"
-            );
-        }
+            format!("Prochaine action : {prepared} ({cost_label})")
+        };
     }
 
     if let Ok(mut text) = validate_labels.single_mut() {
@@ -2378,7 +3266,9 @@ type RetreatButtonLabelQuery<'w, 's> = Query<
         Without<CombatRoundLogText>,
         Without<CombatFeedbackText>,
         Without<DoctrineExtraText>,
-        Without<CombatCommandText>,
+        Without<CombatCommandPointsMeterText>,
+        Without<CombatCommandPointsAvailableText>,
+        Without<CombatPreparedOrderText>,
         Without<CombatValidateButtonLabel>,
     ),
 >;
@@ -2435,10 +3325,15 @@ fn update_action_buttons(
                 ui.phase == CombatUiPhase::FinalReport,
                 ui.showing_detailed_report,
             ),
-            CombatUiAction::PreviousCombat | CombatUiAction::NextCombat => (
-                ui.phase == CombatUiPhase::AwaitingDoctrine && ui.queue.len() > 1,
-                false,
-            ),
+            // Not restricted to `AwaitingDoctrine` — the queue nav row is
+            // visible in every phase, so its buttons should reflect whether
+            // there's actually another combat to cycle to, not which phase
+            // the current one happens to be in (playtest feedback: the
+            // arrows looked clickable but did nothing during Briefing even
+            // when they'd have worked seconds later).
+            CombatUiAction::PreviousCombat | CombatUiAction::NextCombat => {
+                (ui.queue.len() > 1, false)
+            }
             CombatUiAction::StartPlanning => (ui.phase == CombatUiPhase::Briefing, true),
             CombatUiAction::ToggleAdvancedDoctrines => (
                 ui.phase == CombatUiPhase::AwaitingDoctrine,
@@ -2462,6 +3357,8 @@ fn update_action_buttons(
     }
 }
 
+// Bevy's `QueryFilter` tuple impl tops out at 15 elements, so the tail is
+// nested one level down (a tuple of filters is itself a valid filter).
 type CombatRoundLogTextQuery<'w, 's> = Query<
     'w,
     's,
@@ -2471,23 +3368,195 @@ type CombatRoundLogTextQuery<'w, 's> = Query<
         Without<CombatFeedbackText>,
         Without<CombatHeaderText>,
         Without<CombatIntelBarText>,
-        Without<CombatCommandText>,
+        Without<CombatCommandPointsMeterText>,
+        Without<CombatCommandPointsAvailableText>,
+        Without<CombatPreparedOrderText>,
         Without<DoctrineExtraText>,
-        Without<RetreatButtonLabel>,
-        Without<CombatValidateButtonLabel>,
-        Without<CombatResultSummaryText>,
+        (
+            Without<RetreatButtonLabel>,
+            Without<CombatValidateButtonLabel>,
+            Without<CombatResultBannerText>,
+            Without<CombatResultSubtitleText>,
+            Without<CombatFleetSummaryText>,
+            Without<CombatEnemySummaryText>,
+            Without<CombatDecisiveMomentText>,
+            Without<CombatLossCardText>,
+            Without<CombatLootCardText>,
+        ),
     ),
 >;
 
-type CombatResultSummaryTextQuery<'w, 's> = Query<
+// COMBAT-UX-001-J §33: the Résultat screen's own Text/Visibility/ImageNode
+// marker set — same B0001-avoidance discipline as the header/round-log
+// aliases above (see that module comment), scoped to the markers this
+// screen's own `update_final_report` combines in one system.
+type CombatResultBannerTextQuery<'w, 's> = Query<
+    'w,
+    's,
+    (&'static mut Text, &'static mut TextColor),
+    (
+        With<CombatResultBannerText>,
+        Without<CombatHeaderText>,
+        Without<CombatRoundLogText>,
+        Without<CombatResultSubtitleText>,
+        Without<CombatFleetSummaryText>,
+        Without<CombatEnemySummaryText>,
+        Without<CombatDecisiveMomentText>,
+        Without<CombatLossCardText>,
+        Without<CombatLootCardText>,
+    ),
+>;
+
+type CombatResultSubtitleTextQuery<'w, 's> = Query<
     'w,
     's,
     &'static mut Text,
     (
-        With<CombatResultSummaryText>,
+        With<CombatResultSubtitleText>,
         Without<CombatHeaderText>,
         Without<CombatRoundLogText>,
+        Without<CombatResultBannerText>,
+        Without<CombatFleetSummaryText>,
+        Without<CombatEnemySummaryText>,
+        Without<CombatDecisiveMomentText>,
+        Without<CombatLossCardText>,
+        Without<CombatLootCardText>,
     ),
+>;
+
+type CombatFleetSummaryTextQuery<'w, 's> = Query<
+    'w,
+    's,
+    &'static mut Text,
+    (
+        With<CombatFleetSummaryText>,
+        Without<CombatHeaderText>,
+        Without<CombatRoundLogText>,
+        Without<CombatResultBannerText>,
+        Without<CombatResultSubtitleText>,
+        Without<CombatEnemySummaryText>,
+        Without<CombatDecisiveMomentText>,
+        Without<CombatLossCardText>,
+        Without<CombatLootCardText>,
+    ),
+>;
+
+type CombatEnemySummaryTextQuery<'w, 's> = Query<
+    'w,
+    's,
+    &'static mut Text,
+    (
+        With<CombatEnemySummaryText>,
+        Without<CombatHeaderText>,
+        Without<CombatRoundLogText>,
+        Without<CombatResultBannerText>,
+        Without<CombatResultSubtitleText>,
+        Without<CombatFleetSummaryText>,
+        Without<CombatDecisiveMomentText>,
+        Without<CombatLossCardText>,
+        Without<CombatLootCardText>,
+    ),
+>;
+
+type CombatDecisiveMomentTextQuery<'w, 's> = Query<
+    'w,
+    's,
+    (&'static mut Text, &'static mut Visibility),
+    (
+        With<CombatDecisiveMomentText>,
+        Without<CombatHeaderText>,
+        Without<CombatRoundLogText>,
+        Without<CombatResultBannerText>,
+        Without<CombatResultSubtitleText>,
+        Without<CombatFleetSummaryText>,
+        Without<CombatEnemySummaryText>,
+        Without<CombatLossCardText>,
+        Without<CombatLootCardText>,
+        Without<CombatLossCardRow>,
+        Without<CombatLootCardsRoot>,
+        Without<CombatLootEmptyText>,
+    ),
+>;
+
+type CombatLossCardRowQuery<'w, 's> = Query<
+    'w,
+    's,
+    (&'static CombatLossCardRow, &'static mut Visibility),
+    (
+        Without<CombatDecisiveMomentText>,
+        Without<CombatLootCardsRoot>,
+        Without<CombatLootEmptyText>,
+    ),
+>;
+
+type CombatLossCardIconQuery<'w, 's> = Query<
+    'w,
+    's,
+    (&'static CombatLossCardIcon, &'static mut ImageNode),
+    Without<CombatResultPlanetIcon>,
+>;
+
+type CombatLossCardTextQuery<'w, 's> = Query<
+    'w,
+    's,
+    (&'static CombatLossCardText, &'static mut Text),
+    (
+        Without<CombatHeaderText>,
+        Without<CombatRoundLogText>,
+        Without<CombatResultBannerText>,
+        Without<CombatResultSubtitleText>,
+        Without<CombatFleetSummaryText>,
+        Without<CombatEnemySummaryText>,
+        Without<CombatDecisiveMomentText>,
+        Without<CombatLootCardText>,
+    ),
+>;
+
+type CombatLootCardsRootQuery<'w, 's> = Query<
+    'w,
+    's,
+    &'static mut Visibility,
+    (
+        With<CombatLootCardsRoot>,
+        Without<CombatDecisiveMomentText>,
+        Without<CombatLossCardRow>,
+        Without<CombatLootEmptyText>,
+    ),
+>;
+
+type CombatLootEmptyTextQuery<'w, 's> = Query<
+    'w,
+    's,
+    &'static mut Visibility,
+    (
+        With<CombatLootEmptyText>,
+        Without<CombatDecisiveMomentText>,
+        Without<CombatLossCardRow>,
+        Without<CombatLootCardsRoot>,
+    ),
+>;
+
+type CombatLootCardTextQuery<'w, 's> = Query<
+    'w,
+    's,
+    (&'static CombatLootCardText, &'static mut Text),
+    (
+        Without<CombatHeaderText>,
+        Without<CombatRoundLogText>,
+        Without<CombatResultBannerText>,
+        Without<CombatResultSubtitleText>,
+        Without<CombatFleetSummaryText>,
+        Without<CombatEnemySummaryText>,
+        Without<CombatDecisiveMomentText>,
+        Without<CombatLossCardText>,
+    ),
+>;
+
+type CombatResultPlanetIconQuery<'w, 's> = Query<
+    'w,
+    's,
+    &'static mut ImageNode,
+    (With<CombatResultPlanetIcon>, Without<CombatLossCardIcon>),
 >;
 
 type CombatFeedbackTextQuery<'w, 's> = Query<
@@ -2499,7 +3568,9 @@ type CombatFeedbackTextQuery<'w, 's> = Query<
         Without<CombatRoundLogText>,
         Without<CombatHeaderText>,
         Without<CombatIntelBarText>,
-        Without<CombatCommandText>,
+        Without<CombatCommandPointsMeterText>,
+        Without<CombatCommandPointsAvailableText>,
+        Without<CombatPreparedOrderText>,
         Without<DoctrineExtraText>,
         Without<RetreatButtonLabel>,
         Without<CombatValidateButtonLabel>,
@@ -2528,12 +3599,19 @@ fn update_combat_feedback(
 /// `ui.report_tab`, each tab reusing an `inspector_panel.rs` function that
 /// also backs `combat_report_text` (the un-tabbed full dump `fleet_ui.rs`'s
 /// mission-reports viewer still renders) — no duplicated formatting logic.
+#[allow(clippy::too_many_arguments)]
 fn update_final_report(
     ui: Res<CombatUiState>,
     simulation: Res<SimulationResource>,
+    entity_visuals: Res<EntityVisualCatalog>,
     mut header_texts: CombatHeaderTextQuery,
     mut round_log: CombatRoundLogTextQuery,
-    mut result_summary: CombatResultSummaryTextQuery,
+    mut planet_icon: CombatResultPlanetIconQuery,
+    mut banner: CombatResultBannerTextQuery,
+    mut subtitle: CombatResultSubtitleTextQuery,
+    mut fleet: CombatFleetSummaryTextQuery,
+    mut enemy: CombatEnemySummaryTextQuery,
+    mut decisive_moment: CombatDecisiveMomentTextQuery,
 ) {
     if ui.phase != CombatUiPhase::FinalReport {
         return;
@@ -2552,13 +3630,7 @@ fn update_final_report(
         },
     );
     if let Ok(mut text) = header_texts.single_mut() {
-        text.0 = format!(
-            "ASSAUT ORBITAL — {target_label}      COMBAT TERMINÉ      File : {}",
-            ui.queue.len(),
-        );
-    }
-    if let Ok(mut text) = result_summary.single_mut() {
-        text.0 = combat_result_summary_text(report, &target_label);
+        text.0 = format!("ASSAUT ORBITAL — {target_label}\nCombat terminé");
     }
     if let Ok(mut text) = round_log.single_mut() {
         text.0 = if ui.showing_detailed_report {
@@ -2572,67 +3644,243 @@ fn update_final_report(
             String::new()
         };
     }
+    if let Ok(mut icon) = planet_icon.single_mut()
+        && let Some(planet) = simulation
+            .simulation()
+            .universe_repository()
+            .planet(report.planet_id)
+    {
+        icon.image = entity_visuals.planet(report.planet_id, planet.kind);
+        icon.color = Color::WHITE;
+    }
+
+    let CombatReportStatus::Resolved(resolution) = &report.status else {
+        if let Ok((mut text, mut color)) = banner.single_mut() {
+            text.0 = "COMBAT ANNULÉ".to_string();
+            color.0 = Color::srgb(0.78, 0.82, 0.86);
+        }
+        if let Ok(mut text) = subtitle.single_mut() {
+            text.0 = format!("{target_label}\nLa cible n'était plus valide.");
+        }
+        if let Ok(mut text) = fleet.single_mut() {
+            text.0.clear();
+        }
+        if let Ok(mut text) = enemy.single_mut() {
+            text.0.clear();
+        }
+        if let Ok((mut text, mut visibility)) = decisive_moment.single_mut() {
+            text.0.clear();
+            *visibility = Visibility::Hidden;
+        }
+        return;
+    };
+
+    if let Ok((mut text, mut color)) = banner.single_mut() {
+        text.0 = combat_outcome_banner_label(resolution.outcome).to_string();
+        color.0 = combat_outcome_banner_color(resolution.outcome);
+    }
+    if let Ok(mut text) = subtitle.single_mut() {
+        text.0 = format!(
+            "{target_label}\n{}",
+            combat_outcome_flavor_line(resolution.outcome)
+        );
+    }
+    if let Ok(mut text) = fleet.single_mut() {
+        text.0 = combat_fleet_summary_lines(report, resolution);
+    }
+    if let Ok(mut text) = enemy.single_mut() {
+        text.0 = combat_enemy_summary_lines(report, resolution);
+    }
+
+    let moment_line = combat_decisive_moment_line(&report.round_history)
+        .trim_start()
+        .to_string();
+    if let Ok((mut text, mut visibility)) = decisive_moment.single_mut() {
+        *visibility = if moment_line.is_empty() {
+            Visibility::Hidden
+        } else {
+            Visibility::Inherited
+        };
+        text.0 = moment_line;
+    }
 }
 
-/// COMBAT-UX-001 §12/§32 priority 2: the concise victory/defeat/retreat
-/// summary shown by default in `CombatUiPhase::FinalReport`, ahead of the
-/// pre-existing technical `combat_report_text` dump (now gated behind the
-/// "Rapport détaillé" toggle). Every figure comes straight from
-/// `CombatResolution` — nothing here is invented (doc §25).
-fn combat_result_summary_text(report: &CombatReport, target_label: &str) -> String {
-    let CombatReportStatus::Resolved(resolution) = &report.status else {
-        return format!("{target_label}\nCombat annulé : la cible n'était plus valide.");
+/// Doc §35/§36 — split out of `update_final_report` purely because Bevy
+/// caps a system function at 16 parameters; same `FinalReport`-only gating,
+/// same data source (`CombatResolution`).
+#[allow(clippy::too_many_arguments)]
+fn update_final_report_cards(
+    ui: Res<CombatUiState>,
+    simulation: Res<SimulationResource>,
+    entity_visuals: Res<EntityVisualCatalog>,
+    mut loss_rows: CombatLossCardRowQuery,
+    mut loss_icons: CombatLossCardIconQuery,
+    mut loss_texts: CombatLossCardTextQuery,
+    mut loot_root: CombatLootCardsRootQuery,
+    mut loot_empty: CombatLootEmptyTextQuery,
+    mut loot_texts: CombatLootCardTextQuery,
+) {
+    if ui.phase != CombatUiPhase::FinalReport {
+        return;
+    }
+    let Some(mission_id) = ui.current else {
+        return;
     };
-    let banner = combat_outcome_label(resolution.outcome).to_uppercase();
-    let attacker_engaged: u64 = report
+    let Some(report) = simulation.simulation().state().combat_report(mission_id) else {
+        return;
+    };
+    let CombatReportStatus::Resolved(resolution) = &report.status else {
+        for (_, mut visibility) in &mut loss_rows {
+            *visibility = Visibility::Hidden;
+        }
+        if let Ok(mut visibility) = loot_root.single_mut() {
+            *visibility = Visibility::Hidden;
+        }
+        if let Ok(mut visibility) = loot_empty.single_mut() {
+            *visibility = Visibility::Hidden;
+        }
+        return;
+    };
+
+    for (marker, mut visibility) in &mut loss_rows {
+        *visibility = if resolution.attacker_losses.get(marker.0).is_some() {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+    }
+    for (marker, mut icon) in &mut loss_icons {
+        if let Some(loss) = resolution.attacker_losses.get(marker.0) {
+            icon.image = entity_visuals.ship(loss.craftable);
+            icon.color = Color::WHITE;
+        }
+    }
+    for (marker, mut text) in &mut loss_texts {
+        text.0 = resolution
+            .attacker_losses
+            .get(marker.0)
+            .map(|loss| {
+                format!(
+                    "{}\n{} perdu(s)",
+                    craftable_definition(loss.craftable).name,
+                    loss.quantity
+                )
+            })
+            .unwrap_or_default();
+    }
+
+    let salvage = resolution.salvage_recovered;
+    let has_loot = !salvage.is_zero();
+    if let Ok(mut visibility) = loot_root.single_mut() {
+        *visibility = if has_loot {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+    }
+    if let Ok(mut visibility) = loot_empty.single_mut() {
+        *visibility = if has_loot {
+            Visibility::Hidden
+        } else {
+            Visibility::Inherited
+        };
+    }
+    for (marker, mut text) in &mut loot_texts {
+        text.0 = match marker.0 {
+            ResourceHudKind::Metal => format!("+{}", salvage.metal),
+            ResourceHudKind::Crystal => format!("+{}", salvage.crystal),
+            ResourceHudKind::Fuel => format!("+{}", salvage.fuel),
+            ResourceHudKind::Energy => String::new(),
+        };
+    }
+}
+
+/// COMBAT-UX-001-J §33: the banner's large screen title — distinct from
+/// `combat_outcome_label` (lowercase prose, used by the detailed-report
+/// dump's technical summary line).
+fn combat_outcome_banner_label(outcome: CombatOutcome) -> &'static str {
+    match outcome {
+        CombatOutcome::AttackerVictory => "VICTOIRE",
+        CombatOutcome::DefenderVictory => "DÉFAITE",
+        CombatOutcome::Stalemate => "AFFRONTEMENT INDÉCIS",
+        CombatOutcome::MutualDestruction => "DESTRUCTION MUTUELLE",
+        CombatOutcome::Retreat { .. } => "REPLI",
+    }
+}
+
+fn combat_outcome_banner_color(outcome: CombatOutcome) -> Color {
+    match outcome {
+        CombatOutcome::AttackerVictory => Color::srgb(0.42, 0.92, 0.78),
+        CombatOutcome::DefenderVictory => Color::srgb(1.0, 0.42, 0.36),
+        CombatOutcome::Retreat { .. } => Color::srgb(0.95, 0.78, 0.42),
+        CombatOutcome::Stalemate | CombatOutcome::MutualDestruction => {
+            Color::srgb(0.78, 0.82, 0.86)
+        }
+    }
+}
+
+/// Doc §33/§38's own example phrasing — one fixed line per outcome, not
+/// fabricated per-battle data (doc §25 "rien n'est inventé"): `galactic_sim`
+/// exposes no "what actually happened narratively" field to draw from.
+fn combat_outcome_flavor_line(outcome: CombatOutcome) -> &'static str {
+    match outcome {
+        CombatOutcome::AttackerVictory => "Défenses orbitales neutralisées.",
+        CombatOutcome::DefenderVictory => "Flotte repoussée.",
+        CombatOutcome::Stalemate => "Aucune des deux flottes n'a pris l'avantage.",
+        CombatOutcome::MutualDestruction => "Aucune des deux flottes n'a survécu.",
+        CombatOutcome::Retreat {
+            retreating_side: RetreatingSide::Attacker,
+        } => "Flotte extraite avant l'anéantissement.",
+        CombatOutcome::Retreat {
+            retreating_side: RetreatingSide::Defender,
+        } => "L'ennemi s'est replié.",
+    }
+}
+
+/// COMBAT-UX-001-J §33's "VOTRE FLOTTE" column.
+fn combat_fleet_summary_lines(report: &CombatReport, resolution: &CombatResolution) -> String {
+    let engaged: u64 = report
         .attacker
         .ships
         .iter()
         .map(|stack| stack.quantity)
         .sum();
-    let attacker_survivors: u64 = resolution
+    let survivors: u64 = resolution
         .attacker_survivors
         .iter()
         .map(|stack| stack.quantity)
         .sum();
-    let attacker_losses: u64 = resolution
+    let losses: u64 = resolution
         .attacker_losses
         .iter()
         .map(|loss| loss.quantity)
         .sum();
-    let defender_engaged: u32 = report
+    if losses > 0 {
+        format!("{engaged} engagés\n{survivors} survivants\n{losses} perte(s)")
+    } else {
+        format!("{engaged} engagés\n{survivors} survivants")
+    }
+}
+
+/// COMBAT-UX-001-J §33's "ENNEMI" column.
+fn combat_enemy_summary_lines(report: &CombatReport, resolution: &CombatResolution) -> String {
+    let engaged: u32 = report
         .defender
         .forces
         .iter()
         .map(|stack| stack.quantity)
         .sum();
-    let defender_survivors: u32 = resolution
+    let survivors: u32 = resolution
         .defender_survivors
         .iter()
         .map(|stack| stack.quantity)
         .sum();
-    let defender_losses: u32 = resolution
+    let losses: u32 = resolution
         .defender_losses
         .iter()
         .map(|loss| loss.quantity)
         .sum();
-    let salvage = resolution.salvage_recovered;
-    let loot = if salvage.is_zero() {
-        "Aucun butin récupéré.".to_string()
-    } else {
-        format!(
-            "Butin récupéré : +{} métal, +{} cristal, +{} carburant.",
-            salvage.metal, salvage.crystal, salvage.fuel
-        )
-    };
-    let moment = combat_decisive_moment_line(&report.round_history);
-
-    format!(
-        "{banner}\n{target_label}\n\n\
-         Votre flotte : {attacker_engaged} engagés, {attacker_survivors} survivants, {attacker_losses} perdus.\n\
-         Ennemi : {defender_engaged} détectés, {defender_survivors} restants, {defender_losses} neutralisés.\n\n\
-         {loot}{moment}"
-    )
+    format!("{engaged} détectés\n{survivors} restants\n{losses} neutralisé(s)")
 }
 
 /// V1 heuristic (doc §12.5): the round with the most combined damage, or the
@@ -2656,31 +3904,48 @@ fn combat_decisive_moment_line(round_history: &[CombatRoundRecord]) -> String {
 type CombatPreReportControlsQuery<'w, 's> = Query<
     'w,
     's,
-    &'static mut Visibility,
+    (&'static mut Visibility, &'static mut Node),
     (With<CombatPreReportControls>, Without<CombatReturnRow>),
 >;
 
 type CombatReturnRowQuery<'w, 's> = Query<
     'w,
     's,
-    &'static mut Visibility,
+    (&'static mut Visibility, &'static mut Node),
     (With<CombatReturnRow>, Without<CombatPreReportControls>),
 >;
 
+/// See `update_combat_briefing_visibility`'s doc comment: `Visibility::Hidden`
+/// alone doesn't free flex layout space, so the hidden side of this
+/// mutually-exclusive pair also needs `Display::None` or it keeps reserving
+/// room in the content column for the briefing/planning card above it.
+///
+/// Retreat/AutoResolve/Validate aren't meaningful before a plan even exists
+/// (doc §11.3 — the briefing's only CTA is "PRÉPARER L'ASSAUT"), so this also
+/// hides them during `Briefing`, not just `FinalReport`.
 fn update_final_report_visibility(
     ui: Res<CombatUiState>,
     mut controls: CombatPreReportControlsQuery,
     mut return_row: CombatReturnRowQuery,
 ) {
     let in_final_report = ui.phase == CombatUiPhase::FinalReport;
-    let controls_visibility = if in_final_report {
-        Visibility::Hidden
-    } else {
+    let controls_shown = !in_final_report && ui.phase != CombatUiPhase::Briefing;
+    let controls_visibility = if controls_shown {
         Visibility::Inherited
+    } else {
+        Visibility::Hidden
     };
-    for mut visibility in &mut controls {
+    let controls_display = if controls_shown {
+        Display::Flex
+    } else {
+        Display::None
+    };
+    for (mut visibility, mut node) in &mut controls {
         if *visibility != controls_visibility {
             *visibility = controls_visibility;
+        }
+        if node.display != controls_display {
+            node.display = controls_display;
         }
     }
     let return_visibility = if in_final_report {
@@ -2688,9 +3953,17 @@ fn update_final_report_visibility(
     } else {
         Visibility::Hidden
     };
-    for mut visibility in &mut return_row {
+    let return_display = if in_final_report {
+        Display::Flex
+    } else {
+        Display::None
+    };
+    for (mut visibility, mut node) in &mut return_row {
         if *visibility != return_visibility {
             *visibility = return_visibility;
+        }
+        if node.display != return_display {
+            node.display = return_display;
         }
     }
 }
@@ -2741,9 +4014,9 @@ fn update_advanced_doctrines_visibility(
     }
     if let Ok(mut text) = toggle_label.single_mut() {
         text.0 = if ui.advanced_doctrines_expanded {
-            "Tactiques avancées ▲".to_string()
+            "Tactiques avancées [-]".to_string()
         } else {
-            "Tactiques avancées ▼".to_string()
+            "Tactiques avancées [+]".to_string()
         };
     }
 }
@@ -2767,27 +4040,46 @@ fn update_report_tabs_visibility(
 type CombatBriefingControlsQuery<'w, 's> = Query<
     'w,
     's,
-    &'static mut Visibility,
+    (&'static mut Visibility, &'static mut Node),
     (
         With<CombatBriefingControls>,
         Without<CombatHiddenDuringBriefing>,
+        Without<CombatRoundLogPanelRoot>,
     ),
 >;
 
 type CombatHiddenDuringBriefingQuery<'w, 's> = Query<
     'w,
     's,
-    &'static mut Visibility,
+    (&'static mut Visibility, &'static mut Node),
     (
         With<CombatHiddenDuringBriefing>,
         Without<CombatBriefingControls>,
+        Without<CombatRoundLogPanelRoot>,
     ),
 >;
 
+type CombatRoundLogPanelRootQuery<'w, 's> = Query<
+    'w,
+    's,
+    (&'static mut Visibility, &'static mut Node),
+    (
+        With<CombatRoundLogPanelRoot>,
+        Without<CombatBriefingControls>,
+        Without<CombatHiddenDuringBriefing>,
+    ),
+>;
+
+/// `Visibility::Hidden` alone doesn't free flex layout space in Bevy UI — a
+/// hidden sibling still claims its `flex_grow` share. The body row and the
+/// briefing card both have `flex_grow: 1.0` in the same column, so without
+/// also setting `Display::None` on the hidden one, the visible one gets
+/// squeezed to half the available height instead of all of it.
 fn update_combat_briefing_visibility(
     ui: Res<CombatUiState>,
     mut briefing: CombatBriefingControlsQuery,
     mut hidden_during_briefing: CombatHiddenDuringBriefingQuery,
+    mut round_log_panel: CombatRoundLogPanelRootQuery,
 ) {
     let in_briefing = ui.phase == CombatUiPhase::Briefing;
     let briefing_visibility = if in_briefing {
@@ -2795,19 +4087,72 @@ fn update_combat_briefing_visibility(
     } else {
         Visibility::Hidden
     };
-    for mut visibility in &mut briefing {
+    let briefing_display = if in_briefing {
+        Display::Flex
+    } else {
+        Display::None
+    };
+    for (mut visibility, mut node) in &mut briefing {
         if *visibility != briefing_visibility {
             *visibility = briefing_visibility;
         }
+        if node.display != briefing_display {
+            node.display = briefing_display;
+        }
     }
-    let rest_visibility = if in_briefing {
-        Visibility::Hidden
-    } else {
+    // The tactical body (3-column row + intel bar) belongs to planning/round
+    // phases only — it must also disappear during `FinalReport`, not just
+    // `Briefing`, or the empty "CARTE TACTIQUE" frame and the intel bar text
+    // are left floating above the victory/defeat screen (the battlefield
+    // panel's own content already hides itself for `FinalReport`, but its
+    // outer frame and heading don't, and `CombatPlanPanelRoot`'s columns are
+    // only `Visibility::Hidden`, not `Display::None`, so without this the
+    // whole row still reserves its flex space too).
+    let tactical_body_visible = matches!(
+        ui.phase,
+        CombatUiPhase::AwaitingDoctrine | CombatUiPhase::RoundPause
+    );
+    let rest_visibility = if tactical_body_visible {
         Visibility::Inherited
+    } else {
+        Visibility::Hidden
     };
-    for mut visibility in &mut hidden_during_briefing {
+    let rest_display = if tactical_body_visible {
+        Display::Flex
+    } else {
+        Display::None
+    };
+    for (mut visibility, mut node) in &mut hidden_during_briefing {
         if *visibility != rest_visibility {
             *visibility = rest_visibility;
+        }
+        if node.display != rest_display {
+            node.display = rest_display;
+        }
+    }
+    // Unlike the tactical body row, the round-log panel stays visible during
+    // `FinalReport` — it doubles as the detailed-report dump there. But only
+    // once "Rapport détaillé" is actually toggled on: `update_final_report`
+    // clears its text otherwise, and an empty bordered box sitting under
+    // the header reads as a rendering glitch, not an intentional panel.
+    let round_log_visible =
+        !in_briefing && (ui.phase != CombatUiPhase::FinalReport || ui.showing_detailed_report);
+    let round_log_visibility = if round_log_visible {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    };
+    let round_log_display = if round_log_visible {
+        Display::Flex
+    } else {
+        Display::None
+    };
+    for (mut visibility, mut node) in &mut round_log_panel {
+        if *visibility != round_log_visibility {
+            *visibility = round_log_visibility;
+        }
+        if node.display != round_log_display {
+            node.display = round_log_display;
         }
     }
 }
@@ -3028,32 +4373,173 @@ mod tests {
     }
 
     #[test]
-    fn combat_result_summary_text_reports_real_counts_loot_and_decisive_round() {
+    fn combat_outcome_helpers_report_real_counts_and_decisive_round() {
         let report = resolved_combat_report_fixture();
+        let CombatReportStatus::Resolved(resolution) = &report.status else {
+            unreachable!()
+        };
 
-        let summary = combat_result_summary_text(&report, "Hélianthe d");
-
-        assert!(summary.contains("VICTOIRE ATTAQUANTE"));
-        assert!(summary.contains("Hélianthe d"));
-        assert!(summary.contains("2 engagés, 1 survivants, 1 perdus"));
-        assert!(summary.contains("6 détectés, 2 restants, 4 neutralisés"));
-        assert!(summary.contains("+7 métal, +3 cristal, +0 carburant"));
+        assert_eq!(combat_outcome_banner_label(resolution.outcome), "VICTOIRE");
+        assert_eq!(
+            combat_fleet_summary_lines(&report, resolution),
+            "2 engagés\n1 survivants\n1 perte(s)"
+        );
+        assert_eq!(
+            combat_enemy_summary_lines(&report, resolution),
+            "6 détectés\n2 restants\n4 neutralisé(s)"
+        );
         // The destruction happens in round 1, which is also the heavier
         // round — both heuristics agree, so it must be picked.
-        assert!(summary.contains("MOMENT DÉCISIF — Round 1."));
+        assert_eq!(
+            combat_decisive_moment_line(&report.round_history).trim_start(),
+            "MOMENT DÉCISIF — Round 1."
+        );
+    }
+
+    /// COMBAT-UX-001-J §33/§35/§36: a real end-to-end run (not just the
+    /// pure-function checks above) — the visibility wiring across
+    /// `update_final_report`/`update_final_report_cards` is exactly what a
+    /// pure-function test can't catch.
+    #[test]
+    fn final_report_shows_banner_loss_cards_and_loot_cards_for_a_real_victory() {
+        let mut simulation = simulation_with_pending_combat();
+        let report = resolved_combat_report_fixture();
+        let mission_id = report.mission_id;
+        simulation.state_mut().combat_reports.push(report);
+
+        let mut app = bevy::app::App::new();
+        app.init_resource::<Assets<Image>>()
+            .init_resource::<crate::presentation::icons::IconAssets>()
+            .insert_resource(SimulationResource {
+                simulation,
+                pending_events: Vec::new(),
+            })
+            .insert_resource(CombatUiState {
+                current: Some(mission_id),
+                phase: CombatUiPhase::FinalReport,
+                briefed: HashSet::from([mission_id]),
+                ..Default::default()
+            })
+            .add_systems(bevy::app::Startup, spawn_combat_screen)
+            .add_systems(
+                bevy::app::Update,
+                (
+                    update_final_report,
+                    update_final_report_cards,
+                    update_combat_briefing_visibility,
+                )
+                    .chain(),
+            );
+        let (entity_visuals, resource_icons) = {
+            let mut images = app.world_mut().resource_mut::<Assets<Image>>();
+            (
+                EntityVisualCatalog::for_tests(&mut images),
+                ResourceIconAssets::for_tests(&mut images),
+            )
+        };
+        app.insert_resource(entity_visuals);
+        app.insert_resource(resource_icons);
+
+        app.update();
+
+        let world = app.world_mut();
+        let mut banner =
+            world.query_filtered::<(&Text, &TextColor), With<CombatResultBannerText>>();
+        let (banner_text, banner_color) = banner.single(world).unwrap();
+        assert_eq!(banner_text.0, "VICTOIRE");
+        assert_eq!(
+            banner_color.0,
+            combat_outcome_banner_color(CombatOutcome::AttackerVictory)
+        );
+
+        // Real bug found from a playtest screenshot: an empty bordered box
+        // was left sitting under the header whenever "Rapport détaillé"
+        // hadn't been toggled on yet.
+        let mut round_log_panel =
+            world.query_filtered::<&Visibility, With<CombatRoundLogPanelRoot>>();
+        assert_eq!(*round_log_panel.single(world).unwrap(), Visibility::Hidden);
+
+        let mut loss_rows = world.query::<(&CombatLossCardRow, &Visibility)>();
+        let visible_losses: Vec<_> = loss_rows
+            .iter(world)
+            .filter(|(_, visibility)| **visibility == Visibility::Inherited)
+            .collect();
+        assert_eq!(visible_losses.len(), 1, "exactly one lost ship type");
+
+        let mut loss_texts = world.query::<(&CombatLossCardText, &Text)>();
+        assert!(
+            loss_texts
+                .iter(world)
+                .any(|(_, text)| text.0.contains("1 perdu"))
+        );
+
+        let mut loot_root = world.query_filtered::<&Visibility, With<CombatLootCardsRoot>>();
+        assert_eq!(*loot_root.single(world).unwrap(), Visibility::Inherited);
+        let mut loot_empty = world.query_filtered::<&Visibility, With<CombatLootEmptyText>>();
+        assert_eq!(*loot_empty.single(world).unwrap(), Visibility::Hidden);
+
+        let mut loot_texts = world.query::<(&CombatLootCardText, &Text)>();
+        let metal = loot_texts
+            .iter(world)
+            .find(|(marker, _)| marker.0 == ResourceHudKind::Metal)
+            .unwrap()
+            .1;
+        assert_eq!(metal.0, "+7");
     }
 
     #[test]
-    fn combat_result_summary_text_reports_no_loot_when_nothing_was_recovered() {
+    fn final_report_hides_loss_and_loot_cards_when_there_are_none() {
+        let mut simulation = simulation_with_pending_combat();
         let mut report = resolved_combat_report_fixture();
         let CombatReportStatus::Resolved(resolution) = &mut report.status else {
             unreachable!()
         };
+        resolution.attacker_losses.clear();
         resolution.salvage_recovered = galactic_domain::ResourceStock::ZERO;
+        let mission_id = report.mission_id;
+        simulation.state_mut().combat_reports.push(report);
 
-        let summary = combat_result_summary_text(&report, "Hélianthe d");
+        let mut app = bevy::app::App::new();
+        app.init_resource::<Assets<Image>>()
+            .init_resource::<crate::presentation::icons::IconAssets>()
+            .insert_resource(SimulationResource {
+                simulation,
+                pending_events: Vec::new(),
+            })
+            .insert_resource(CombatUiState {
+                current: Some(mission_id),
+                phase: CombatUiPhase::FinalReport,
+                briefed: HashSet::from([mission_id]),
+                ..Default::default()
+            })
+            .add_systems(bevy::app::Startup, spawn_combat_screen)
+            .add_systems(
+                bevy::app::Update,
+                (update_final_report, update_final_report_cards).chain(),
+            );
+        let (entity_visuals, resource_icons) = {
+            let mut images = app.world_mut().resource_mut::<Assets<Image>>();
+            (
+                EntityVisualCatalog::for_tests(&mut images),
+                ResourceIconAssets::for_tests(&mut images),
+            )
+        };
+        app.insert_resource(entity_visuals);
+        app.insert_resource(resource_icons);
 
-        assert!(summary.contains("Aucun butin récupéré."));
+        app.update();
+
+        let world = app.world_mut();
+        let mut loss_rows = world.query::<(&CombatLossCardRow, &Visibility)>();
+        assert!(
+            loss_rows
+                .iter(world)
+                .all(|(_, visibility)| *visibility == Visibility::Hidden)
+        );
+        let mut loot_root = world.query_filtered::<&Visibility, With<CombatLootCardsRoot>>();
+        assert_eq!(*loot_root.single(world).unwrap(), Visibility::Hidden);
+        let mut loot_empty = world.query_filtered::<&Visibility, With<CombatLootEmptyText>>();
+        assert_eq!(*loot_empty.single(world).unwrap(), Visibility::Inherited);
     }
 
     #[test]
@@ -3608,6 +5094,11 @@ mod tests {
             })
             .add_systems(bevy::app::Startup, spawn_combat_screen)
             .add_systems(bevy::app::Update, update_reserve_intervention_visibility);
+        let resource_icons = {
+            let mut images = app.world_mut().resource_mut::<Assets<Image>>();
+            ResourceIconAssets::for_tests(&mut images)
+        };
+        app.insert_resource(resource_icons);
 
         app.update();
 
@@ -3661,6 +5152,11 @@ mod tests {
                 )
                     .chain(),
             );
+        let resource_icons = {
+            let mut images = app.world_mut().resource_mut::<Assets<Image>>();
+            ResourceIconAssets::for_tests(&mut images)
+        };
+        app.insert_resource(resource_icons);
 
         // Let the draft populate from the pending combat first.
         app.update();
@@ -3746,6 +5242,15 @@ mod tests {
                 )
                     .chain(),
             );
+        let (entity_visuals, resource_icons) = {
+            let mut images = app.world_mut().resource_mut::<Assets<Image>>();
+            (
+                EntityVisualCatalog::for_tests(&mut images),
+                ResourceIconAssets::for_tests(&mut images),
+            )
+        };
+        app.insert_resource(entity_visuals);
+        app.insert_resource(resource_icons);
 
         app.update();
 
@@ -3800,6 +5305,15 @@ mod tests {
                 )
                     .chain(),
             );
+        let (entity_visuals, resource_icons) = {
+            let mut images = app.world_mut().resource_mut::<Assets<Image>>();
+            (
+                EntityVisualCatalog::for_tests(&mut images),
+                ResourceIconAssets::for_tests(&mut images),
+            )
+        };
+        app.insert_resource(entity_visuals);
+        app.insert_resource(resource_icons);
 
         app.update();
 
@@ -3818,7 +5332,7 @@ mod tests {
             button.0 == group_panel::DraftAction::Confirm && background.0 == disabled
         }));
         assert!(buttons.iter(world).any(|(button, background)| {
-            matches!(button.0, group_panel::DraftAction::CycleRole(_)) && background.0 == disabled
+            matches!(button.0, group_panel::DraftAction::SetRole(_)) && background.0 == disabled
         }));
     }
 
@@ -3849,6 +5363,15 @@ mod tests {
                 )
                     .chain(),
             );
+        let (entity_visuals, resource_icons) = {
+            let mut images = app.world_mut().resource_mut::<Assets<Image>>();
+            (
+                EntityVisualCatalog::for_tests(&mut images),
+                ResourceIconAssets::for_tests(&mut images),
+            )
+        };
+        app.insert_resource(entity_visuals);
+        app.insert_resource(resource_icons);
 
         app.update();
         assert_eq!(
@@ -3902,6 +5425,11 @@ mod tests {
                 bevy::app::Update,
                 update_combat_planning_controls_visibility,
             );
+        let resource_icons = {
+            let mut images = app.world_mut().resource_mut::<Assets<Image>>();
+            ResourceIconAssets::for_tests(&mut images)
+        };
+        app.insert_resource(resource_icons);
 
         app.update();
         let world = app.world_mut();
@@ -3926,7 +5454,7 @@ mod tests {
 
     /// COMBAT-UX-001-D: the advanced-doctrine row starts collapsed, and
     /// toggling it flips both its `Visibility` and the toggle button's own
-    /// label (▼/▲) — a real end-to-end run, not just a compile check.
+    /// label ([+]/[-]) — a real end-to-end run, not just a compile check.
     #[test]
     fn toggling_advanced_doctrines_shows_the_row_and_flips_the_label() {
         let simulation = simulation_with_pending_combat();
@@ -3947,6 +5475,11 @@ mod tests {
             })
             .add_systems(bevy::app::Startup, spawn_combat_screen)
             .add_systems(bevy::app::Update, update_advanced_doctrines_visibility);
+        let resource_icons = {
+            let mut images = app.world_mut().resource_mut::<Assets<Image>>();
+            ResourceIconAssets::for_tests(&mut images)
+        };
+        app.insert_resource(resource_icons);
 
         app.update();
         {
@@ -3954,7 +5487,7 @@ mod tests {
             let mut row = world.query_filtered::<&Visibility, With<AdvancedDoctrinesRow>>();
             assert_eq!(row.single(world).unwrap(), Visibility::Hidden);
             let mut label = world.query_filtered::<&Text, With<AdvancedDoctrinesToggleLabel>>();
-            assert_eq!(label.single(world).unwrap().0, "Tactiques avancées ▼");
+            assert_eq!(label.single(world).unwrap().0, "Tactiques avancées [+]");
         }
 
         app.world_mut()
@@ -3965,7 +5498,7 @@ mod tests {
         let mut row = world.query_filtered::<&Visibility, With<AdvancedDoctrinesRow>>();
         assert_eq!(row.single(world).unwrap(), Visibility::Inherited);
         let mut label = world.query_filtered::<&Text, With<AdvancedDoctrinesToggleLabel>>();
-        assert_eq!(label.single(world).unwrap().0, "Tactiques avancées ▲");
+        assert_eq!(label.single(world).unwrap().0, "Tactiques avancées [-]");
     }
 
     #[test]
@@ -3988,21 +5521,87 @@ mod tests {
             })
             .add_systems(bevy::app::Startup, spawn_combat_screen)
             .add_systems(bevy::app::Update, update_command_panel);
+        let resource_icons = {
+            let mut images = app.world_mut().resource_mut::<Assets<Image>>();
+            ResourceIconAssets::for_tests(&mut images)
+        };
+        app.insert_resource(resource_icons);
 
         app.update();
 
         let world = app.world_mut();
+        // COMBAT-UX-001-J §29: "visible uniquement après le premier round" —
+        // at round 0 the PC widget stays hidden entirely, not shown with a
+        // placeholder sentence.
+        let mut pc_root = world.query_filtered::<&Visibility, With<CombatCommandPointsRoot>>();
+        assert_eq!(*pc_root.single(world).unwrap(), Visibility::Hidden);
+
         let mut texts = world.query::<&Text>();
         let rendered_text = texts
             .iter(world)
             .map(|text| text.0.as_str())
             .collect::<Vec<_>>()
             .join("\n");
-        let starting_points = combat_rules().command().starting_points();
-        assert!(rendered_text.contains("COMMANDEMENT"));
-        assert!(rendered_text.contains(&format!("{starting_points}/{starting_points} PC")));
-        assert!(rendered_text.contains("Disponible après le premier engagement"));
         assert!(rendered_text.contains("Lancer l'assaut"));
+    }
+
+    /// COMBAT-UX-001-J §29: once a round has resolved, the PC widget becomes
+    /// visible and shows the header/meter/count as 3 distinct lines.
+    #[test]
+    fn command_panel_shows_pc_widget_after_round_one() {
+        let mut simulation = simulation_with_pending_combat_using(2);
+        let mission_id = simulation.state().pending_combats[0].mission_id;
+        simulation.apply_player_action(GameAction::ChooseCombatDoctrine {
+            mission_id,
+            round: 1,
+            doctrine: None,
+            intervention: None,
+        });
+        assert!(
+            simulation.state().pending_combat(mission_id).is_some(),
+            "the 2-frigate fixture should still be pending after one round"
+        );
+
+        let mut app = bevy::app::App::new();
+        app.init_resource::<Assets<Image>>()
+            .init_resource::<crate::presentation::icons::IconAssets>()
+            .init_resource::<group_panel::CombatPlanDraftState>()
+            .insert_resource(SimulationResource {
+                simulation,
+                pending_events: Vec::new(),
+            })
+            .insert_resource(CombatUiState {
+                current: Some(mission_id),
+                phase: CombatUiPhase::AwaitingDoctrine,
+                ..Default::default()
+            })
+            .add_systems(bevy::app::Startup, spawn_combat_screen)
+            .add_systems(bevy::app::Update, update_command_panel);
+        let resource_icons = {
+            let mut images = app.world_mut().resource_mut::<Assets<Image>>();
+            ResourceIconAssets::for_tests(&mut images)
+        };
+        app.insert_resource(resource_icons);
+
+        app.update();
+
+        let world = app.world_mut();
+        let mut pc_root = world.query_filtered::<&Visibility, With<CombatCommandPointsRoot>>();
+        assert_eq!(*pc_root.single(world).unwrap(), Visibility::Inherited);
+
+        let mut meter = world.query_filtered::<&Text, With<CombatCommandPointsMeterText>>();
+        assert!(meter.single(world).unwrap().0.contains('#'));
+
+        let mut available = world.query_filtered::<&Text, With<CombatCommandPointsAvailableText>>();
+        assert!(available.single(world).unwrap().0.contains("disponible"));
+
+        let mut texts = world.query::<&Text>();
+        let rendered_text = texts
+            .iter(world)
+            .map(|text| text.0.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered_text.contains("POINTS DE COMMANDEMENT"));
     }
 
     /// Real end-to-end run (not just a compile-time check — see the
@@ -4029,11 +5628,15 @@ mod tests {
             })
             .add_systems(bevy::app::Startup, spawn_combat_screen)
             .add_systems(bevy::app::Update, update_combat_briefing);
-        let entity_visuals = {
+        let (entity_visuals, resource_icons) = {
             let mut images = app.world_mut().resource_mut::<Assets<Image>>();
-            EntityVisualCatalog::for_tests(&mut images)
+            (
+                EntityVisualCatalog::for_tests(&mut images),
+                ResourceIconAssets::for_tests(&mut images),
+            )
         };
         app.insert_resource(entity_visuals);
+        app.insert_resource(resource_icons);
 
         app.update();
 
@@ -4081,8 +5684,23 @@ mod tests {
             .add_systems(bevy::app::Startup, spawn_combat_screen)
             .add_systems(
                 bevy::app::Update,
-                (update_final_report, update_report_tabs_visibility).chain(),
+                (
+                    update_final_report,
+                    update_final_report_cards,
+                    update_report_tabs_visibility,
+                    update_combat_briefing_visibility,
+                )
+                    .chain(),
             );
+        let (entity_visuals, resource_icons) = {
+            let mut images = app.world_mut().resource_mut::<Assets<Image>>();
+            (
+                EntityVisualCatalog::for_tests(&mut images),
+                ResourceIconAssets::for_tests(&mut images),
+            )
+        };
+        app.insert_resource(entity_visuals);
+        app.insert_resource(resource_icons);
 
         app.update();
         {
@@ -4097,6 +5715,12 @@ mod tests {
             );
             let mut bar = world.query_filtered::<&Visibility, With<ReportTabBar>>();
             assert_eq!(bar.single(world).unwrap(), Visibility::Inherited);
+            // Real regression: the detailed-report dump above is worthless
+            // if its container is hidden — `CombatRoundLogPanelRoot` must
+            // stay visible during `FinalReport`, unlike the tactical body
+            // row it used to live inside.
+            let mut panel = world.query_filtered::<&Visibility, With<CombatRoundLogPanelRoot>>();
+            assert_eq!(panel.single(world).unwrap(), Visibility::Inherited);
         }
 
         app.world_mut().resource_mut::<CombatUiState>().report_tab = CombatReportTab::Timeline;
@@ -4326,11 +5950,15 @@ mod tests {
                 )
                     .chain(),
             );
-        let entity_visuals = {
+        let (entity_visuals, resource_icons) = {
             let mut images = app.world_mut().resource_mut::<Assets<Image>>();
-            EntityVisualCatalog::for_tests(&mut images)
+            (
+                EntityVisualCatalog::for_tests(&mut images),
+                ResourceIconAssets::for_tests(&mut images),
+            )
         };
         app.insert_resource(entity_visuals);
+        app.insert_resource(resource_icons);
 
         app.update();
 
@@ -4345,7 +5973,7 @@ mod tests {
         assert!(rendered_text.contains("Alpha"));
         assert!(rendered_text.contains("Beta"));
         assert!(rendered_text.contains("Gamma"));
-        assert!(rendered_text.contains("ORBITE"));
+        assert!(rendered_text.contains("Round"));
         assert!(rendered_text.contains("CONTACTS"));
 
         let mut rows = world.query::<(&battlefield::BattlefieldRow, &Visibility)>();
@@ -4394,11 +6022,15 @@ mod tests {
             })
             .add_systems(bevy::app::Startup, spawn_combat_screen)
             .add_systems(bevy::app::Update, battlefield::update_battlefield_panel);
-        let entity_visuals = {
+        let (entity_visuals, resource_icons) = {
             let mut images = app.world_mut().resource_mut::<Assets<Image>>();
-            EntityVisualCatalog::for_tests(&mut images)
+            (
+                EntityVisualCatalog::for_tests(&mut images),
+                ResourceIconAssets::for_tests(&mut images),
+            )
         };
         app.insert_resource(entity_visuals);
+        app.insert_resource(resource_icons);
 
         app.update();
 
@@ -4412,6 +6044,65 @@ mod tests {
         assert!(rendered_text.contains("Round 1"));
         assert!(rendered_text.contains("résolu"));
         assert!(rendered_text.contains("Tir :") || rendered_text.contains("impact"));
+    }
+
+    /// COMBAT-UX-001-J §27: rows that actually dealt or took damage this
+    /// round get a `UiTransform` scale pulse — a real end-to-end run (not a
+    /// pure-function check on `round_scale_pulse` alone) confirming the
+    /// query wiring in `update_battlefield_panel`'s row loop is correct.
+    #[test]
+    fn battlefield_panel_applies_round_animation_transform_to_rows_that_acted() {
+        let mut simulation = simulation_with_pending_combat_using(2);
+        let mission_id = simulation.state().pending_combats[0].mission_id;
+        simulation.apply_player_action(GameAction::ChooseCombatDoctrine {
+            mission_id,
+            round: 1,
+            doctrine: None,
+            intervention: None,
+        });
+        assert!(
+            simulation.state().pending_combat(mission_id).is_some(),
+            "the 2-frigate fixture should still be pending after one round"
+        );
+
+        let mut ui_state = CombatUiState {
+            current: Some(mission_id),
+            phase: CombatUiPhase::RoundPause,
+            ..Default::default()
+        };
+        // Land inside the impact window — see `round_scale_pulse`.
+        ui_state.round_pause_timer.tick(Duration::from_millis(400));
+
+        let mut app = bevy::app::App::new();
+        app.init_resource::<Assets<Image>>()
+            .init_resource::<crate::presentation::icons::IconAssets>()
+            .init_resource::<group_panel::CombatPlanDraftState>()
+            .insert_resource(SimulationResource {
+                simulation,
+                pending_events: Vec::new(),
+            })
+            .insert_resource(ui_state)
+            .add_systems(bevy::app::Startup, spawn_combat_screen)
+            .add_systems(bevy::app::Update, battlefield::update_battlefield_panel);
+        let (entity_visuals, resource_icons) = {
+            let mut images = app.world_mut().resource_mut::<Assets<Image>>();
+            (
+                EntityVisualCatalog::for_tests(&mut images),
+                ResourceIconAssets::for_tests(&mut images),
+            )
+        };
+        app.insert_resource(entity_visuals);
+        app.insert_resource(resource_icons);
+
+        app.update();
+
+        let world = app.world_mut();
+        let mut rows = world.query::<(&battlefield::BattlefieldRow, &UiTransform)>();
+        assert!(
+            rows.iter(world)
+                .any(|(_, transform)| transform.scale != Vec2::ONE),
+            "at least one row that took part in the resolved round should show the scale pulse"
+        );
     }
 
     #[test]
@@ -4463,6 +6154,11 @@ mod tests {
             })
             .add_systems(bevy::app::Startup, spawn_combat_screen)
             .add_systems(bevy::app::Update, update_combat_columns);
+        let resource_icons = {
+            let mut images = app.world_mut().resource_mut::<Assets<Image>>();
+            ResourceIconAssets::for_tests(&mut images)
+        };
+        app.insert_resource(resource_icons);
 
         app.update();
 

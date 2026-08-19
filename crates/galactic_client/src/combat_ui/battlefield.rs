@@ -20,12 +20,14 @@ use super::group_panel::{
     DraftActionButton,
 };
 use super::{
-    CombatRoundLogText, CombatUiPhase, CombatUiState, UiPointerBlocker, combat_unit_name,
-    doctrine_name, integrity_reveal_text, quantity_reveal_text, target_class_label,
+    CombatUiPhase, CombatUiState, UiPointerBlocker, combat_unit_name, doctrine_name,
+    integrity_reveal_text, quantity_reveal_text, target_class_label,
 };
 
 const MAX_BATTLEFIELD_CONTACTS: usize = 5;
-pub(super) const BATTLEFIELD_PANEL_WIDTH_PERCENT: f32 = 52.0;
+/// COMBAT-UX-001-J §13: "la carte doit toujours être plus grande que chacune
+/// des colonnes" (target 55-62%, up from the previous 52%).
+pub(super) const BATTLEFIELD_PANEL_WIDTH_PERCENT: f32 = 58.0;
 pub(super) const BATTLEFIELD_GROUP_LANE_WIDTH_PERCENT: f32 = 38.0;
 pub(super) const BATTLEFIELD_ORBIT_LANE_WIDTH_PERCENT: f32 = 23.0;
 pub(super) const BATTLEFIELD_CONTACT_LANE_WIDTH_PERCENT: f32 = 35.0;
@@ -56,6 +58,19 @@ pub(super) struct BattlefieldIcon(pub(super) BattlefieldIconKind);
 pub(super) enum BattlefieldIconKind {
     Group(CombatGroupPlanId),
     Enemy(usize),
+    Planet,
+}
+
+/// COMBAT-UX-001-J §15: Alpha reads cyan/green, Beta blue, Gamma violet —
+/// applied consistently to battlefield tokens, trajectories, and the "VOS
+/// FORCES" cards (`group_panel::group_identity_color`, which must stay in
+/// sync with this).
+pub(super) fn group_identity_color(id: CombatGroupPlanId) -> Color {
+    match id {
+        CombatGroupPlanId::Alpha => Color::srgb(0.42, 0.92, 0.78),
+        CombatGroupPlanId::Beta => Color::srgb(0.46, 0.68, 0.98),
+        CombatGroupPlanId::Gamma => Color::srgb(0.76, 0.56, 0.98),
+    }
 }
 
 #[derive(Component, Clone, Copy, PartialEq, Eq)]
@@ -67,10 +82,10 @@ pub(super) enum BattlefieldRowKind {
     Enemy(usize),
 }
 
-struct GroupAggregate {
-    quantity: u64,
-    integrity_percent: u8,
-    primary: Option<CombatUnitRef>,
+pub(super) struct GroupAggregate {
+    pub(super) quantity: u64,
+    pub(super) integrity_percent: u8,
+    pub(super) primary: Option<CombatUnitRef>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,14 +156,8 @@ pub(super) fn spawn_battlefield_panel(parent: &mut ChildSpawnerCommands, icon_as
                 .with_children(|heading| {
                     heading.spawn((
                         Text::new("CARTE TACTIQUE"),
-                        ui_text_font(12.0),
+                        ui_text_font(super::FONT_SECTION_TITLE_PX),
                         TextColor(Color::srgba(0.78, 0.86, 1.0, 0.88)),
-                    ));
-                    heading.spawn((
-                        Text::new("Zone orbitale"),
-                        ui_text_font(11.0),
-                        TextColor(Color::srgba(0.70, 0.78, 0.86, 0.78)),
-                        CombatRoundLogText,
                     ));
                 });
 
@@ -167,7 +176,7 @@ pub(super) fn spawn_battlefield_panel(parent: &mut ChildSpawnerCommands, icon_as
                 .with_children(|content| {
                     content.spawn((
                         Text::new("PLAN :"),
-                        ui_text_font(11.0),
+                        ui_text_font(super::FONT_SECONDARY_PX),
                         TextColor(Color::srgb(0.88, 0.92, 1.0)),
                         BattlefieldText(BattlefieldTextKind::Plan),
                     ));
@@ -183,7 +192,7 @@ pub(super) fn spawn_battlefield_panel(parent: &mut ChildSpawnerCommands, icon_as
                         })
                         .with_children(|map| {
                             spawn_group_lane(map, placeholder.clone());
-                            spawn_orbit_lane(map);
+                            spawn_orbit_lane(map, placeholder.clone());
                             spawn_contact_lane(map, placeholder);
                         });
                 });
@@ -206,6 +215,12 @@ fn spawn_group_lane(parent: &mut ChildSpawnerCommands, placeholder: Handle<Image
             flex_direction: FlexDirection::Column,
             justify_content: JustifyContent::Center,
             row_gap: Val::Px(10.0),
+            // Defensive: with several lines of text per card, 3 cards can
+            // exceed the lane's allotted height — `justify_content: Center`
+            // on an overflowing column renders past *both* edges of the box
+            // (confirmed via a real screenshot: the top card's text bled
+            // into the "PLAN :" label above), so clip rather than bleed.
+            overflow: Overflow::clip(),
             ..default()
         })
         .with_children(|lane| {
@@ -226,10 +241,15 @@ fn spawn_group_lane(parent: &mut ChildSpawnerCommands, placeholder: Handle<Image
                         ..default()
                     },
                     BackgroundColor(Color::srgba(0.04, 0.07, 0.08, 0.78)),
-                    Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
+                    Outline::new(
+                        Val::Px(1.0),
+                        Val::ZERO,
+                        group_identity_color(id).with_alpha(0.55),
+                    ),
                     BattlefieldRow(BattlefieldRowKind::Group(id)),
                     DraftActionButton(DraftAction::AssignSelected(id)),
                     UiPointerBlocker,
+                    UiTransform::IDENTITY,
                 ))
                 .with_children(|row| {
                     row.spawn((
@@ -256,13 +276,13 @@ fn spawn_group_lane(parent: &mut ChildSpawnerCommands, placeholder: Handle<Image
                         .with_children(|texts| {
                             texts.spawn((
                                 Text::new(""),
-                                ui_text_font(10.0),
+                                ui_text_font(super::FONT_SECONDARY_PX),
                                 TextColor(Color::srgb(0.84, 0.92, 0.94)),
                                 BattlefieldText(BattlefieldTextKind::Group(id)),
                             ));
                             texts.spawn((
                                 Text::new(""),
-                                ui_text_font(10.0),
+                                ui_text_font(super::FONT_SECONDARY_PX),
                                 TextColor(Color::srgba(0.76, 0.84, 0.90, 0.82)),
                                 BattlefieldText(BattlefieldTextKind::Trajectory(id)),
                             ));
@@ -272,28 +292,38 @@ fn spawn_group_lane(parent: &mut ChildSpawnerCommands, placeholder: Handle<Image
         });
 }
 
-fn spawn_orbit_lane(parent: &mut ChildSpawnerCommands) {
+/// COMBAT-UX-001-J §16.2: the planet needs to be "un point d'ancrage
+/// visuel," not a tiny icon — a real per-kind illustration
+/// (`EntityVisualCatalog::planet`, already used for the 3D strategic scene,
+/// never before wired into `bevy_ui`) in a circular-clipped frame, with the
+/// round/target caption below it rather than overlaid on the art.
+fn spawn_orbit_lane(parent: &mut ChildSpawnerCommands, placeholder: Handle<Image>) {
     parent
         .spawn(Node {
             width: Val::Percent(BATTLEFIELD_ORBIT_LANE_WIDTH_PERCENT),
             height: Val::Percent(100.0),
             min_height: Val::Px(0.0),
+            flex_direction: FlexDirection::Column,
             justify_content: JustifyContent::Center,
             align_items: AlignItems::Center,
+            row_gap: Val::Px(8.0),
             ..default()
         })
         .with_children(|lane| {
             lane.spawn((
                 Node {
-                    width: Val::Px(132.0),
-                    height: Val::Px(132.0),
+                    width: Val::Px(168.0),
+                    height: Val::Px(168.0),
                     max_width: Val::Percent(100.0),
-                    max_height: Val::Percent(100.0),
-                    justify_content: JustifyContent::Center,
-                    align_items: AlignItems::Center,
-                    padding: UiRect::all(Val::Px(10.0)),
+                    max_height: Val::Percent(78.0),
+                    // Same defensive fix as the Résultat screen's planet
+                    // circle: without this, a Column flex item with tight
+                    // vertical room shrinks height only, squeezing the
+                    // circle into a pill.
+                    flex_shrink: 0.0,
                     border: UiRect::all(Val::Px(2.0)),
                     border_radius: BorderRadius::all(Val::Percent(50.0)),
+                    overflow: Overflow::clip(),
                     ..default()
                 },
                 BackgroundColor(Color::srgba(0.06, 0.08, 0.09, 0.82)),
@@ -303,14 +333,40 @@ fn spawn_orbit_lane(parent: &mut ChildSpawnerCommands) {
                     Color::srgba(0.42, 0.70, 0.86, 0.38),
                 ),
             ))
-            .with_children(|orbit| {
-                orbit.spawn((
-                    Text::new("PLANÈTE\nORBITE"),
-                    ui_text_font(11.0),
-                    TextColor(Color::srgb(0.86, 0.92, 0.96)),
-                    BattlefieldText(BattlefieldTextKind::Planet),
+            .with_children(|circle| {
+                circle.spawn((
+                    ImageNode {
+                        image: placeholder,
+                        color: Color::WHITE,
+                        ..default()
+                    },
+                    Node {
+                        width: Val::Percent(115.0),
+                        height: Val::Percent(115.0),
+                        position_type: PositionType::Absolute,
+                        // Center the oversized image within the circular
+                        // clip — without this it anchors top-left, cropping
+                        // the top-left arc instead of an even margin (only
+                        // visible once the planet art gained a transparent
+                        // background; opaque art hid this for two cycles).
+                        left: Val::Percent(-7.5),
+                        top: Val::Percent(-7.5),
+                        // `Overflow::clip()` on the parent only clips to its
+                        // rectangular bounding box, not a circle — the image
+                        // needs its own border_radius to actually render
+                        // round instead of square-cornered.
+                        border_radius: BorderRadius::all(Val::Percent(50.0)),
+                        ..default()
+                    },
+                    BattlefieldIcon(BattlefieldIconKind::Planet),
                 ));
             });
+            lane.spawn((
+                Text::new(""),
+                ui_text_font(super::FONT_SECONDARY_PX),
+                TextColor(Color::srgb(0.86, 0.92, 0.96)),
+                BattlefieldText(BattlefieldTextKind::Planet),
+            ));
         });
 }
 
@@ -331,7 +387,7 @@ fn spawn_contact_lane(parent: &mut ChildSpawnerCommands, placeholder: Handle<Ima
         .with_children(|lane| {
             lane.spawn((
                 Text::new("CONTACTS"),
-                ui_text_font(11.0),
+                ui_text_font(super::FONT_SECONDARY_PX),
                 TextColor(Color::srgba(1.0, 0.84, 0.78, 0.88)),
             ));
             for slot in 0..MAX_BATTLEFIELD_CONTACTS {
@@ -353,6 +409,7 @@ fn spawn_contact_lane(parent: &mut ChildSpawnerCommands, placeholder: Handle<Ima
                     Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
                     Visibility::Hidden,
                     BattlefieldRow(BattlefieldRowKind::Enemy(slot)),
+                    UiTransform::IDENTITY,
                 ))
                 .with_children(|row| {
                     row.spawn((
@@ -376,7 +433,7 @@ fn spawn_contact_lane(parent: &mut ChildSpawnerCommands, placeholder: Handle<Ima
                             ..default()
                         },
                         Text::new(""),
-                        ui_text_font(10.0),
+                        ui_text_font(super::FONT_SECONDARY_PX),
                         TextColor(Color::srgb(0.94, 0.84, 0.80)),
                         BattlefieldText(BattlefieldTextKind::Enemy(slot)),
                     ));
@@ -386,7 +443,14 @@ fn spawn_contact_lane(parent: &mut ChildSpawnerCommands, placeholder: Handle<Ima
 }
 
 type BattlefieldRootQuery<'w, 's> =
-    Query<'w, 's, &'static mut Visibility, With<BattlefieldPanelRoot>>;
+    Query<'w, 's, (&'static mut Visibility, &'static mut Node), With<BattlefieldPanelRoot>>;
+
+/// COMBAT-UX-001-J §25: "la carte devient dominante" once the Forces/
+/// Paramètres columns disappear during `RoundPause` — those columns are
+/// hidden via `Display::None` (see `group_panel::update_combat_plan_panel`),
+/// which frees their flex-layout width; the battlefield panel's own fixed
+/// `BATTLEFIELD_PANEL_WIDTH_PERCENT` must widen to actually claim it.
+pub(super) const BATTLEFIELD_PANEL_DOMINANT_WIDTH_PERCENT: f32 = 96.0;
 
 type BattlefieldMapContentQuery<'w, 's> = Query<
     'w,
@@ -411,6 +475,7 @@ type BattlefieldRowQuery<'w, 's> = Query<
         &'static mut Visibility,
         &'static mut BackgroundColor,
         &'static mut Outline,
+        &'static mut UiTransform,
     ),
     (
         Without<BattlefieldPanelRoot>,
@@ -429,10 +494,76 @@ pub(super) fn round_animation_progress(ui: &CombatUiState) -> f32 {
     (ui.round_pause_timer.elapsed_secs() / duration).clamp(0.0, 1.0)
 }
 
-pub(super) fn round_animation_intensity(progress: f32) -> f32 {
+/// COMBAT-UX-001-J §26: a staged timeline (anticipation → impact/losses →
+/// settle) rather than a continuous pulse for the whole `RoundPause`
+/// duration — proportions match the doc's ~0.2/0.8/1.5s beats scaled to
+/// whatever the actual `round_pause_timer` duration is.
+fn round_animation_envelope(progress: f32) -> f32 {
     let progress = progress.clamp(0.0, 1.0);
-    let pulse = (progress * std::f32::consts::TAU * 2.0).sin().abs();
-    0.35 + pulse * 0.65
+    const RAMP_END: f32 = 0.13;
+    const HOLD_END: f32 = 0.53;
+    if progress < RAMP_END {
+        progress / RAMP_END
+    } else if progress < HOLD_END {
+        1.0
+    } else {
+        1.0 - (progress - HOLD_END) / (1.0 - HOLD_END)
+    }
+}
+
+pub(super) fn round_animation_intensity(progress: f32) -> f32 {
+    0.35 + round_animation_envelope(progress) * 0.65
+}
+
+/// COMBAT-UX-001-J §27 "scale pulse" — a brief pop during the impact window,
+/// applied only to rows that actually dealt or took damage this round (see
+/// the call site's `group_took_hit`/`visual.is_some()` gating). No particle
+/// system, no projectile rendering — just `UiTransform.scale` on the
+/// existing card, per the doc's own "pas besoin d'une simulation 3D
+/// complexe."
+pub(super) fn round_scale_pulse(progress: f32) -> f32 {
+    let progress = progress.clamp(0.0, 1.0);
+    const PULSE_START: f32 = 0.13;
+    const PULSE_PEAK: f32 = 0.27;
+    const PULSE_END: f32 = 0.45;
+    const PEAK_SCALE: f32 = 1.06;
+    if !(PULSE_START..=PULSE_END).contains(&progress) {
+        1.0
+    } else if progress < PULSE_PEAK {
+        let t = (progress - PULSE_START) / (PULSE_PEAK - PULSE_START);
+        1.0 + (PEAK_SCALE - 1.0) * t
+    } else {
+        let t = (progress - PULSE_PEAK) / (PULSE_END - PULSE_PEAK);
+        PEAK_SCALE - (PEAK_SCALE - 1.0) * t
+    }
+}
+
+/// COMBAT-UX-001-J §27 "petit shake" — deterministic (no `rand` dependency,
+/// keeps the round-pause render reproducible for tests/screenshots), decays
+/// to zero by the end of the impact window.
+pub(super) fn round_shake_offset(progress: f32) -> Vec2 {
+    let progress = progress.clamp(0.0, 1.0);
+    const SHAKE_START: f32 = 0.13;
+    const SHAKE_END: f32 = 0.45;
+    if !(SHAKE_START..=SHAKE_END).contains(&progress) {
+        return Vec2::ZERO;
+    }
+    let local = (progress - SHAKE_START) / (SHAKE_END - SHAKE_START);
+    let decay = 1.0 - local;
+    let wave = (local * std::f32::consts::TAU * 5.0).sin();
+    Vec2::new(wave * 3.0 * decay, 0.0)
+}
+
+fn round_row_transform(active: bool, scale_pulse: f32, shake_offset: Vec2) -> UiTransform {
+    if active {
+        UiTransform {
+            scale: Vec2::splat(scale_pulse),
+            translation: Val2::new(Val::Px(shake_offset.x), Val::Px(shake_offset.y)),
+            ..UiTransform::IDENTITY
+        }
+    } else {
+        UiTransform::IDENTITY
+    }
 }
 
 fn exchange_damage(exchanges: &[CombatStackExchange], target: CombatStackId) -> u128 {
@@ -562,8 +693,14 @@ pub(super) fn update_battlefield_panel(
     } else {
         Visibility::Hidden
     };
-    for mut visibility in &mut roots {
+    let root_width = if ui.phase == CombatUiPhase::RoundPause {
+        Val::Percent(BATTLEFIELD_PANEL_DOMINANT_WIDTH_PERCENT)
+    } else {
+        Val::Percent(BATTLEFIELD_PANEL_WIDTH_PERCENT)
+    };
+    for (mut visibility, mut node) in &mut roots {
         *visibility = root_visibility;
+        node.width = root_width;
     }
 
     let Some(mission_id) = ui.current else {
@@ -600,13 +737,16 @@ pub(super) fn update_battlefield_panel(
         .then(|| round_history(pending).last())
         .flatten();
     let round_visual = round_record.map(|record| round_visual_summary(record, active_plan));
+    let animation_progress = round_animation_progress(&ui);
     let animation_intensity = if round_record.is_some() {
-        round_animation_intensity(round_animation_progress(&ui))
+        round_animation_intensity(animation_progress)
     } else {
         0.0
     };
+    let scale_pulse = round_scale_pulse(animation_progress);
+    let shake_offset = round_shake_offset(animation_progress);
 
-    for (row, mut visibility, mut background, mut outline) in &mut rows {
+    for (row, mut visibility, mut background, mut outline, mut transform) in &mut rows {
         match row.0 {
             BattlefieldRowKind::Group(id) => {
                 *visibility = Visibility::Inherited;
@@ -620,7 +760,10 @@ pub(super) fn update_battlefield_panel(
                     .unwrap_or(CombatGroupRole::Reserve);
                 let visual = round_visual.as_ref().and_then(|summary| summary.group(id));
                 background.0 = animated_group_background(role, active, visual, animation_intensity);
-                outline.color = animated_group_outline(role, active, visual, animation_intensity);
+                outline.color = animated_group_outline(id, active, visual, animation_intensity);
+                let took_action = visual
+                    .is_some_and(|visual| group_took_hit(visual) || visual.outgoing_damage > 0);
+                *transform = round_row_transform(took_action, scale_pulse, shake_offset);
             }
             BattlefieldRowKind::Enemy(slot) => {
                 let stack = enemy.stacks.get(slot);
@@ -636,6 +779,7 @@ pub(super) fn update_battlefield_panel(
                 });
                 background.0 = enemy_background(visual, animation_intensity);
                 outline.color = enemy_outline(visual, animation_intensity);
+                *transform = round_row_transform(visual.is_some(), scale_pulse, shake_offset);
             }
         }
     }
@@ -645,10 +789,18 @@ pub(super) fn update_battlefield_panel(
             BattlefieldTextKind::Plan => {
                 format!("PLAN : {}", doctrine_name(active_plan.doctrine()))
             }
-            BattlefieldTextKind::Planet => format!(
-                "PLANÈTE\nORBITE\n{}",
-                planet_round_label(ui.phase, pending.round(), pending.maximum_rounds())
-            ),
+            BattlefieldTextKind::Planet => {
+                let planet_name = simulation
+                    .simulation()
+                    .universe_repository()
+                    .planet(pending.planet_id)
+                    .map(|planet| planet.name.as_str())
+                    .unwrap_or("Planète inconnue");
+                format!(
+                    "{planet_name}\n{}",
+                    planet_round_label(ui.phase, pending.round(), pending.maximum_rounds())
+                )
+            }
             BattlefieldTextKind::Group(id) => active_plan
                 .groups()
                 .find(|group| group.id == id)
@@ -713,6 +865,16 @@ pub(super) fn update_battlefield_panel(
                     icon.color = Color::srgba(1.0, 1.0, 1.0, 0.0);
                 }
             }
+            BattlefieldIconKind::Planet => {
+                if let Some(planet) = simulation
+                    .simulation()
+                    .universe_repository()
+                    .planet(pending.planet_id)
+                {
+                    icon.image = entity_visuals.planet(pending.planet_id, planet.kind);
+                    icon.color = Color::WHITE;
+                }
+            }
         }
     }
 }
@@ -725,14 +887,17 @@ fn planet_round_label(phase: CombatUiPhase, round: u16, maximum_rounds: u16) -> 
     }
 }
 
-fn unit_image(identity: CombatUnitRef, entity_visuals: &EntityVisualCatalog) -> Handle<Image> {
+pub(super) fn unit_image(
+    identity: CombatUnitRef,
+    entity_visuals: &EntityVisualCatalog,
+) -> Handle<Image> {
     match identity {
         CombatUnitRef::Ship(craftable) => entity_visuals.ship(craftable),
         CombatUnitRef::PlanetaryForce(id) => entity_visuals.force(id),
     }
 }
 
-fn group_aggregate(
+pub(super) fn group_aggregate(
     group: CombatPlanDraftGroupView<'_>,
     allied: &[AlliedStackView],
 ) -> GroupAggregate {
@@ -832,9 +997,9 @@ fn trajectory_text(
 
 pub(super) fn trajectory_label(role: CombatGroupRole) -> &'static str {
     match role {
-        CombatGroupRole::Assault => "attaque ──────────►",
-        CombatGroupRole::Screen => "écran - - - - ◯",
-        CombatGroupRole::Bombardment => "bombardement ╌╌╌╌╌►",
+        CombatGroupRole::Assault => "attaque ---------->",
+        CombatGroupRole::Screen => "écran . . . . o",
+        CombatGroupRole::Bombardment => "bombardement ========>",
         CombatGroupRole::Reserve => "RÉSERVE inactive",
     }
 }
@@ -883,6 +1048,7 @@ fn group_round_text(round: Option<&RoundGroupVisual>, enemy: &[CombatStackView])
 }
 
 fn enemy_contact_text(stack: &CombatStackView, round: Option<&RoundTargetVisual>) -> String {
+    let identity_known = stack.identity.is_some();
     let mut identity = stack
         .identity
         .map(combat_unit_name)
@@ -895,12 +1061,18 @@ fn enemy_contact_text(stack: &CombatStackView, round: Option<&RoundTargetVisual>
         .unwrap_or_else(|| "Contact inconnu".to_string());
     identity.push_str(" · ");
     identity.push_str(enemy_contact_domain_label(stack));
-    let mut text = format!(
-        "{}\n{}\n{}",
-        identity,
-        quantity_reveal_text(stack.quantity),
-        integrity_reveal_text(stack.integrity)
-    );
+    let mut lines = vec![identity];
+    // Once identity is revealed, the "Contact {classe}" fallback above no
+    // longer applies and the class was silently dropped — playtest
+    // feedback: "on ne sait pas ce qui est une cible légère ou une cible
+    // lourde". Target class is known from an earlier intel tier than
+    // identity, so it's always available here too; surface it explicitly.
+    if identity_known && let Some(class) = stack.target_class {
+        lines.push(format!("Classe : {}", target_class_label(class)));
+    }
+    lines.push(quantity_reveal_text(stack.quantity));
+    lines.push(integrity_reveal_text(stack.integrity));
+    let mut text = lines.join("\n");
     if let Some(round) = round {
         text.push('\n');
         text.push_str(&target_round_text(round));
@@ -995,14 +1167,11 @@ fn group_background(role: CombatGroupRole, active: bool) -> Color {
     }
 }
 
-fn group_outline(role: CombatGroupRole, active: bool) -> Color {
-    let alpha = if active { 0.62 } else { 0.28 };
-    match role {
-        CombatGroupRole::Assault => Color::srgba(0.38, 0.92, 0.78, alpha),
-        CombatGroupRole::Screen => Color::srgba(0.54, 0.78, 0.96, alpha),
-        CombatGroupRole::Bombardment => Color::srgba(0.96, 0.72, 0.42, alpha),
-        CombatGroupRole::Reserve => Color::srgba(0.72, 0.74, 0.78, alpha),
-    }
+/// COMBAT-UX-001-J §15: the group's identity color, not its role — role is
+/// already conveyed by the card's text and by `trajectory_label`'s glyph.
+fn group_outline(id: CombatGroupPlanId, active: bool) -> Color {
+    let alpha = if active { 0.75 } else { 0.32 };
+    group_identity_color(id).with_alpha(alpha)
 }
 
 fn group_took_hit(visual: &RoundGroupVisual) -> bool {
@@ -1031,13 +1200,13 @@ fn animated_group_background(
 }
 
 fn animated_group_outline(
-    role: CombatGroupRole,
+    id: CombatGroupPlanId,
     active: bool,
     visual: Option<&RoundGroupVisual>,
     intensity: f32,
 ) -> Color {
     let Some(visual) = visual else {
-        return group_outline(role, active);
+        return group_outline(id, active);
     };
     let alpha = 0.60 + intensity * 0.35;
     if group_took_hit(visual) {
@@ -1047,7 +1216,7 @@ fn animated_group_outline(
     } else if visual.stayed_in_reserve {
         Color::srgba(0.72, 0.74, 0.78, 0.44)
     } else {
-        group_outline(role, active)
+        group_outline(id, active)
     }
 }
 

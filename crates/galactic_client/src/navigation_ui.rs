@@ -17,6 +17,7 @@ use super::{
     navigate_to_galaxy, navigate_to_sector, navigate_to_selection, panel_background, panel_outline,
     ui_text_font,
 };
+use crate::presentation::components::BreadcrumbBarRoot;
 
 const NAVIGATION_Z_INDEX: i32 = 140;
 const MAX_SEARCH_ROWS: usize = 12;
@@ -450,6 +451,7 @@ fn spawn_navigation_panels(mut commands: Commands) {
             Interaction::None,
             UiPointerBlocker,
             GlobalZIndex(NAVIGATION_Z_INDEX),
+            BreadcrumbBarRoot,
         ))
         .with_children(|bar| {
             for slot in 0..MAX_BREADCRUMB_SEGMENTS {

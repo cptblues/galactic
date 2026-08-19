@@ -1574,6 +1574,7 @@ pub(crate) struct InspectorPanelWidgets<'w, 's> {
 pub(crate) fn update_info_panel(
     simulation: Res<SimulationResource>,
     open_panel: Res<OpenPanel>,
+    combat: Res<crate::combat_ui::CombatUiState>,
     mut panel_state: ResMut<InspectorPanelState>,
     mut tab_state: ResMut<InspectorTabState>,
     mut widgets: InspectorPanelWidgets,
@@ -1586,11 +1587,14 @@ pub(crate) fn update_info_panel(
         panel_state.hidden_for_selection = None;
     }
     let hidden_for_selection = panel_state.hidden_for_selection == Some(selection);
-    let visibility = if *open_panel == OpenPanel::None && !hidden_for_selection {
-        Visibility::Inherited
-    } else {
-        Visibility::Hidden
-    };
+    // COMBAT-UX-001-J §9: the strategic planet panel must be masked while
+    // combat is on screen, not just visually covered by its backdrop.
+    let visibility =
+        if *open_panel == OpenPanel::None && !hidden_for_selection && combat.current.is_none() {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
     for mut root in &mut widgets.roots {
         if *root != visibility {
             *root = visibility;

@@ -22,6 +22,7 @@ pub(crate) struct StrategicCameraInput<'w> {
     windows: Res<'w, OpenWindows>,
     intro_pitch: Res<'w, IntroPitchUiState>,
     victory: Res<'w, VictoryUiState>,
+    combat_ui: Res<'w, crate::combat_ui::CombatUiState>,
 }
 
 pub(crate) fn update_strategic_camera(
@@ -45,6 +46,7 @@ pub(crate) fn update_strategic_camera(
             OpenPanel::Navigation | OpenPanel::Objectives
         )
         || input.windows.any_visible()
+        || input.combat_ui.current.is_some()
     {
         return;
     }

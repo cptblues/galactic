@@ -282,7 +282,6 @@ impl EntityVisualCatalog {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn planet(&self, planet_id: PlanetId, kind: PlanetKind) -> Handle<Image> {
         let Some(variants) = self.planets.get(&kind) else {
             return self.fallback_planet.clone();

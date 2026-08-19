@@ -9,11 +9,13 @@ use crate::{
     SimulationResource,
     presentation::{
         components::UiPointerBlocker,
+        entity_visuals::EntityVisualCatalog,
         scene::{action_button_color, action_button_outline, panel_outline, ui_text_font},
         shortcuts::apply_simulation_command,
     },
 };
 
+use super::battlefield;
 use super::{CombatUiPhase, CombatUiState, combat_unit_name};
 
 pub(super) const MAX_DRAFT_STACK_ROWS: usize = 8;
@@ -145,15 +147,15 @@ impl CombatPlanDraft {
         self.groups.iter_mut().find(|group| group.id == id)
     }
 
-    fn cycle_role(&mut self, id: CombatGroupPlanId) {
+    fn set_role(&mut self, id: CombatGroupPlanId, role: CombatGroupRole) {
         if let Some(group) = self.group_mut(id) {
-            group.role = next_group_role(group.role);
+            group.role = role;
         }
     }
 
-    fn cycle_priority(&mut self, id: CombatGroupPlanId) {
+    fn set_priority(&mut self, id: CombatGroupPlanId, priority: CombatTargetPriority) {
         if let Some(group) = self.group_mut(id) {
-            group.target_priority = next_target_priority(group.target_priority);
+            group.target_priority = priority;
         }
     }
 }
@@ -164,6 +166,14 @@ pub(super) struct CombatPlanDraftState {
     synced_round: Option<u16>,
     draft: Option<CombatPlanDraft>,
     selected_stack: Option<CombatStackId>,
+    /// Which group's Rôle/Priorité controls the "PARAMÈTRES SÉLECTIONNÉS"
+    /// column currently shows (doc §20/§21) — purely presentational, not
+    /// part of the plan itself. Named distinctly from
+    /// `CombatPlanDraft::selected_group(stack_id)` (which answers "which
+    /// group is this *stack* in") to avoid confusing the two. Defaults to
+    /// Alpha the first time a draft is built and otherwise survives
+    /// rebuilds (round changes), only reset by `clear()`.
+    focused_group: Option<CombatGroupPlanId>,
     dirty: bool,
 }
 
@@ -173,6 +183,9 @@ impl CombatPlanDraftState {
         self.synced_round = Some(pending.round());
         self.draft = Some(CombatPlanDraft::from_pending(pending));
         self.selected_stack = None;
+        if self.focused_group.is_none() {
+            self.focused_group = Some(CombatGroupPlanId::Alpha);
+        }
         self.dirty = false;
     }
 
@@ -181,11 +194,16 @@ impl CombatPlanDraftState {
         self.synced_round = None;
         self.draft = None;
         self.selected_stack = None;
+        self.focused_group = None;
         self.dirty = false;
     }
 
     pub(super) fn draft(&self) -> Option<&CombatPlanDraft> {
         self.draft.as_ref()
+    }
+
+    pub(super) fn focused_group(&self) -> Option<CombatGroupPlanId> {
+        self.focused_group
     }
 
     pub(super) fn is_dirty(&self) -> bool {
@@ -220,15 +238,32 @@ pub(super) struct DraftStackRow(usize);
 #[derive(Component)]
 pub(super) struct DraftStackText(usize);
 
+/// "VOS FORCES" column: one per `CombatGroupPlanId`, the dynamic
+/// role/count/integrity line under the (static) group name.
 #[derive(Component)]
-pub(super) struct DraftGroupText(CombatGroupPlanId);
+pub(super) struct ForcesGroupSummaryText(pub(super) CombatGroupPlanId);
+
+#[derive(Component)]
+pub(super) struct ForcesGroupIcon(pub(super) CombatGroupPlanId);
+
+/// "PARAMÈTRES SÉLECTIONNÉS" column: names whichever group
+/// `CombatPlanDraftState::focused_group` currently points at.
+#[derive(Component)]
+pub(super) struct SelectedGroupHeaderText;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum DraftAction {
     SelectStack(usize),
+    /// Assigns the selected stack (if any) to this group, *and* focuses the
+    /// "PARAMÈTRES SÉLECTIONNÉS" column on it regardless — the same click
+    /// works whether the user is assigning a stack or just wants to check/
+    /// change this group's role and priority.
     AssignSelected(CombatGroupPlanId),
-    CycleRole(CombatGroupPlanId),
-    CyclePriority(CombatGroupPlanId),
+    /// Sets `CombatPlanDraftState::focused_group`'s role/priority directly
+    /// (doc §21: "l'utilisateur doit voir toutes les valeurs" — a grid of
+    /// direct-select buttons, not a single cycling button).
+    SetRole(CombatGroupRole),
+    SetPriority(CombatTargetPriority),
     Confirm,
     Reset,
 }
@@ -236,36 +271,41 @@ pub(super) enum DraftAction {
 #[derive(Component, Clone, Copy)]
 pub(super) struct DraftActionButton(pub(super) DraftAction);
 
-/// The "PARAMÈTRES SÉLECTIONNÉS" column heading — plan-wide Reset/Confirm
-/// actions, not per-stack, so it lives at the top of the parameters column
-/// rather than the "VOS FORCES" stack list (see `spawn_stack_row`).
+/// The "PARAMÈTRES SÉLECTIONNÉS" column heading — just the title. Reset/
+/// Confirm used to live here too, but that put them at the top of a
+/// scrolling column above every control they act on — playtest feedback:
+/// "Confirmer le plan tout en haut n'est pas logique, surtout quand il y a
+/// du scroll." They're now a pinned footer outside the scroll area, see
+/// `spawn_plan_footer`.
 pub(super) fn spawn_plan_heading(parent: &mut ChildSpawnerCommands) {
+    parent.spawn((
+        Text::new("PARAMÈTRES SÉLECTIONNÉS"),
+        ui_text_font(super::FONT_SECTION_TITLE_PX),
+        TextColor(Color::srgba(0.78, 0.86, 1.0, 0.88)),
+        DraftHeadingText,
+    ));
+}
+
+/// Plan-wide Reset/Confirm actions — spawned as a sibling of the
+/// Paramètres column's scrollable content (not inside it), so they stay
+/// visible regardless of scroll position. See `spawn_plan_heading`.
+pub(super) fn spawn_plan_footer(parent: &mut ChildSpawnerCommands) {
     parent
-        .spawn(Node {
-            width: Val::Percent(100.0),
-            flex_direction: FlexDirection::Row,
-            justify_content: JustifyContent::SpaceBetween,
-            align_items: AlignItems::Center,
-            column_gap: Val::Px(8.0),
-            ..default()
-        })
-        .with_children(|heading| {
-            heading.spawn((
-                Text::new("PARAMÈTRES SÉLECTIONNÉS"),
-                ui_text_font(12.0),
-                TextColor(Color::srgba(0.78, 0.86, 1.0, 0.88)),
-                DraftHeadingText,
-            ));
-            heading
-                .spawn(Node {
-                    flex_direction: FlexDirection::Row,
-                    column_gap: Val::Px(6.0),
-                    ..default()
-                })
-                .with_children(|actions| {
-                    spawn_draft_button(actions, DraftAction::Reset, "Réinitialiser");
-                    spawn_draft_button(actions, DraftAction::Confirm, "Confirmer le plan");
-                });
+        .spawn((
+            Node {
+                width: Val::Percent(100.0),
+                flex_direction: FlexDirection::Row,
+                justify_content: JustifyContent::Center,
+                column_gap: Val::Px(6.0),
+                padding: UiRect::top(Val::Px(8.0)),
+                border: UiRect::top(Val::Px(1.0)),
+                ..default()
+            },
+            BorderColor::all(panel_outline()),
+        ))
+        .with_children(|actions| {
+            spawn_draft_button(actions, DraftAction::Reset, "Réinitialiser");
+            spawn_draft_button(actions, DraftAction::Confirm, "Confirmer le plan");
         });
 }
 
@@ -296,62 +336,152 @@ pub(super) fn spawn_stack_row(list: &mut ChildSpawnerCommands, slot: usize) {
     .with_children(|row| {
         row.spawn((
             Text::new(""),
-            ui_text_font(10.0),
+            ui_text_font(super::FONT_SECONDARY_PX),
             TextColor(Color::srgb(0.82, 0.92, 0.88)),
             DraftStackText(slot),
         ));
     });
 }
 
-/// The 3 group cards, stacked vertically to fit the narrow "PARAMÈTRES
-/// SÉLECTIONNÉS" column (COMBAT-UX-001-C's mockup keeps role/priority
-/// controls in that same right-hand panel rather than a wide row).
-pub(super) fn spawn_group_cards(parent: &mut ChildSpawnerCommands) {
+const ALL_GROUP_ROLES: [CombatGroupRole; 4] = [
+    CombatGroupRole::Assault,
+    CombatGroupRole::Screen,
+    CombatGroupRole::Bombardment,
+    CombatGroupRole::Reserve,
+];
+const ALL_TARGET_PRIORITIES: [CombatTargetPriority; 6] = [
+    CombatTargetPriority::Any,
+    CombatTargetPriority::Light,
+    CombatTargetPriority::Medium,
+    CombatTargetPriority::Heavy,
+    CombatTargetPriority::Damaged,
+    CombatTargetPriority::Support,
+];
+
+/// "VOS FORCES" column content (doc §14): one compact card per group, with
+/// the group's dominant ship image — reusing `battlefield`'s exact
+/// aggregate/identity logic rather than recomputing it, so the two panels
+/// can never disagree. Each card is `DraftAction::AssignSelected` — clicking
+/// it both assigns the currently-selected stack (if any) *and* focuses the
+/// "PARAMÈTRES SÉLECTIONNÉS" column on this group (doc §20's "selected
+/// state").
+pub(super) fn spawn_forces_group_cards(
+    parent: &mut ChildSpawnerCommands,
+    placeholder: Handle<Image>,
+) {
+    for id in CombatGroupPlanId::ALL {
+        parent
+            .spawn((
+                Button,
+                Node {
+                    width: Val::Percent(100.0),
+                    flex_direction: FlexDirection::Row,
+                    align_items: AlignItems::Center,
+                    column_gap: Val::Px(8.0),
+                    padding: UiRect::all(Val::Px(7.0)),
+                    border: UiRect::all(Val::Px(1.0)),
+                    border_radius: BorderRadius::all(Val::Px(5.0)),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.04, 0.06, 0.08, 0.74)),
+                Outline::new(
+                    Val::Px(1.0),
+                    Val::ZERO,
+                    battlefield::group_identity_color(id).with_alpha(0.5),
+                ),
+                DraftActionButton(DraftAction::AssignSelected(id)),
+                UiPointerBlocker,
+            ))
+            .with_children(|card| {
+                card.spawn((
+                    ImageNode {
+                        image: placeholder.clone(),
+                        color: Color::WHITE,
+                        ..default()
+                    },
+                    Node {
+                        width: Val::Px(36.0),
+                        height: Val::Px(36.0),
+                        flex_shrink: 0.0,
+                        ..default()
+                    },
+                    ForcesGroupIcon(id),
+                ));
+                card.spawn((Node {
+                    flex_grow: 1.0,
+                    min_width: Val::Px(0.0),
+                    flex_direction: FlexDirection::Column,
+                    row_gap: Val::Px(2.0),
+                    ..default()
+                },))
+                    .with_children(|texts| {
+                        texts.spawn((
+                            Text::new(group_label(id)),
+                            ui_text_font(super::FONT_SECTION_TITLE_PX),
+                            TextColor(battlefield::group_identity_color(id)),
+                        ));
+                        texts.spawn((
+                            Text::new(""),
+                            ui_text_font(super::FONT_SECONDARY_PX),
+                            TextColor(Color::srgba(0.80, 0.86, 0.90, 0.88)),
+                            ForcesGroupSummaryText(id),
+                        ));
+                    });
+            });
+    }
+}
+
+/// "PARAMÈTRES SÉLECTIONNÉS" column: role/priority controls for whichever
+/// group is currently selected (doc §21) — a grid of direct-select buttons
+/// per value rather than one button cycling through them, so every option
+/// is visible at once and the active one is obviously highlighted.
+pub(super) fn spawn_selected_group_params(parent: &mut ChildSpawnerCommands) {
+    parent.spawn((
+        Text::new(""),
+        ui_text_font(super::FONT_SECTION_TITLE_PX),
+        TextColor(Color::srgb(0.92, 0.96, 1.0)),
+        SelectedGroupHeaderText,
+    ));
+
+    parent.spawn((
+        Text::new("RÔLE"),
+        ui_text_font(super::FONT_SECONDARY_PX),
+        TextColor(Color::srgba(0.78, 0.86, 1.0, 0.72)),
+    ));
     parent
         .spawn(Node {
             width: Val::Percent(100.0),
-            flex_direction: FlexDirection::Column,
-            row_gap: Val::Px(DRAFT_GROUP_CARD_GAP_PX),
+            flex_wrap: FlexWrap::Wrap,
+            column_gap: Val::Px(6.0),
+            row_gap: Val::Px(6.0),
             ..default()
         })
-        .with_children(|groups| {
-            for id in CombatGroupPlanId::ALL {
-                groups
-                    .spawn((
-                        Node {
-                            width: Val::Percent(100.0),
-                            flex_direction: FlexDirection::Column,
-                            row_gap: Val::Px(4.0),
-                            padding: UiRect::all(Val::Px(6.0)),
-                            border: UiRect::all(Val::Px(1.0)),
-                            border_radius: BorderRadius::all(Val::Px(5.0)),
-                            ..default()
-                        },
-                        BackgroundColor(Color::srgba(0.04, 0.06, 0.08, 0.74)),
-                        Outline::new(Val::Px(1.0), Val::ZERO, panel_outline()),
-                    ))
-                    .with_children(|card| {
-                        card.spawn((
-                            Text::new(""),
-                            ui_text_font(10.0),
-                            TextColor(Color::srgb(0.84, 0.90, 0.96)),
-                            DraftGroupText(id),
-                        ));
-                        card.spawn(Node {
-                            flex_direction: FlexDirection::Row,
-                            column_gap: Val::Px(4.0),
-                            ..default()
-                        })
-                        .with_children(|buttons| {
-                            spawn_draft_button(
-                                buttons,
-                                DraftAction::AssignSelected(id),
-                                "Assigner",
-                            );
-                            spawn_draft_button(buttons, DraftAction::CycleRole(id), "Rôle");
-                            spawn_draft_button(buttons, DraftAction::CyclePriority(id), "Cible");
-                        });
-                    });
+        .with_children(|grid| {
+            for role in ALL_GROUP_ROLES {
+                spawn_draft_button(grid, DraftAction::SetRole(role), role_label(role));
+            }
+        });
+
+    parent.spawn((
+        Text::new("PRIORITÉ"),
+        ui_text_font(super::FONT_SECONDARY_PX),
+        TextColor(Color::srgba(0.78, 0.86, 1.0, 0.72)),
+    ));
+    parent
+        .spawn(Node {
+            width: Val::Percent(100.0),
+            flex_wrap: FlexWrap::Wrap,
+            column_gap: Val::Px(6.0),
+            row_gap: Val::Px(6.0),
+            ..default()
+        })
+        .with_children(|grid| {
+            for priority in ALL_TARGET_PRIORITIES {
+                spawn_draft_button(
+                    grid,
+                    DraftAction::SetPriority(priority),
+                    priority_label(priority),
+                );
             }
         });
 }
@@ -378,7 +508,7 @@ fn spawn_draft_button(parent: &mut ChildSpawnerCommands, action: DraftAction, la
         .with_children(|button| {
             button.spawn((
                 Text::new(label),
-                ui_text_font(10.0),
+                ui_text_font(super::FONT_SECONDARY_PX),
                 TextColor(Color::srgb(0.94, 0.96, 1.0)),
             ));
         });
@@ -453,8 +583,11 @@ fn apply_draft_action(
             }
         }
         DraftAction::AssignSelected(group_id) => {
+            state.focused_group = Some(group_id);
             let Some(stack_id) = state.selected_stack else {
-                ui.feedback = "Sélectionnez une unité avant de l'assigner.".to_string();
+                // No stack selected — a bare click just focuses this
+                // group's params on the right, which is a normal, silent
+                // action, not an error worth a feedback message.
                 return;
             };
             let Some(draft) = state.draft.as_mut() else {
@@ -463,18 +596,24 @@ fn apply_draft_action(
             draft.assign_stack(stack_id, group_id);
             state.dirty = true;
         }
-        DraftAction::CycleRole(group_id) => {
+        DraftAction::SetRole(role) => {
+            let Some(group_id) = state.focused_group else {
+                return;
+            };
             let Some(draft) = state.draft.as_mut() else {
                 return;
             };
-            draft.cycle_role(group_id);
+            draft.set_role(group_id, role);
             state.dirty = true;
         }
-        DraftAction::CyclePriority(group_id) => {
+        DraftAction::SetPriority(priority) => {
+            let Some(group_id) = state.focused_group else {
+                return;
+            };
             let Some(draft) = state.draft.as_mut() else {
                 return;
             };
-            draft.cycle_priority(group_id);
+            draft.set_priority(group_id, priority);
             state.dirty = true;
         }
         DraftAction::Confirm => {
@@ -533,20 +672,9 @@ type DraftStackTextQuery<'w, 's> = Query<
     's,
     (&'static DraftStackText, &'static mut Text),
     (
-        Without<DraftGroupText>,
-        Without<super::CombatHeaderText>,
-        Without<super::CombatIntelBarText>,
-        Without<super::CombatRoundLogText>,
-        Without<super::CombatFeedbackText>,
-    ),
->;
-
-type DraftGroupTextQuery<'w, 's> = Query<
-    'w,
-    's,
-    (&'static DraftGroupText, &'static mut Text),
-    (
-        Without<DraftStackText>,
+        Without<ForcesGroupSummaryText>,
+        Without<DraftHeadingText>,
+        Without<SelectedGroupHeaderText>,
         Without<super::CombatHeaderText>,
         Without<super::CombatIntelBarText>,
         Without<super::CombatRoundLogText>,
@@ -561,13 +689,48 @@ type DraftHeadingTextQuery<'w, 's> = Query<
     (
         With<DraftHeadingText>,
         Without<DraftStackText>,
-        Without<DraftGroupText>,
+        Without<ForcesGroupSummaryText>,
+        Without<SelectedGroupHeaderText>,
         Without<super::CombatHeaderText>,
         Without<super::CombatIntelBarText>,
         Without<super::CombatRoundLogText>,
         Without<super::CombatFeedbackText>,
     ),
 >;
+
+type ForcesGroupSummaryTextQuery<'w, 's> = Query<
+    'w,
+    's,
+    (&'static ForcesGroupSummaryText, &'static mut Text),
+    (
+        Without<DraftStackText>,
+        Without<DraftHeadingText>,
+        Without<SelectedGroupHeaderText>,
+        Without<super::CombatHeaderText>,
+        Without<super::CombatIntelBarText>,
+        Without<super::CombatRoundLogText>,
+        Without<super::CombatFeedbackText>,
+    ),
+>;
+
+type SelectedGroupHeaderTextQuery<'w, 's> = Query<
+    'w,
+    's,
+    &'static mut Text,
+    (
+        With<SelectedGroupHeaderText>,
+        Without<DraftStackText>,
+        Without<DraftHeadingText>,
+        Without<ForcesGroupSummaryText>,
+        Without<super::CombatHeaderText>,
+        Without<super::CombatIntelBarText>,
+        Without<super::CombatRoundLogText>,
+        Without<super::CombatFeedbackText>,
+    ),
+>;
+
+type ForcesGroupIconQuery<'w, 's> =
+    Query<'w, 's, (&'static ForcesGroupIcon, &'static mut ImageNode)>;
 
 type DraftStackRowQuery<'w, 's> = Query<
     'w,
@@ -600,19 +763,27 @@ pub(super) fn update_combat_plan_panel(
     ui: Res<CombatUiState>,
     simulation: Res<SimulationResource>,
     draft: Res<CombatPlanDraftState>,
-    mut roots: Query<&mut Visibility, With<CombatPlanPanelRoot>>,
+    entity_visuals: Res<EntityVisualCatalog>,
+    mut roots: Query<(&mut Visibility, &mut Node), With<CombatPlanPanelRoot>>,
     mut heading_texts: DraftHeadingTextQuery,
     mut stack_rows: DraftStackRowQuery,
     mut stack_texts: DraftStackTextQuery,
-    mut group_texts: DraftGroupTextQuery,
+    mut forces_icons: ForcesGroupIconQuery,
+    mut forces_texts: ForcesGroupSummaryTextQuery,
+    mut selected_header: SelectedGroupHeaderTextQuery,
     mut buttons: DraftButtonQuery,
 ) {
     let visible = ui.current.is_some() && ui.phase == CombatUiPhase::AwaitingDoctrine;
-    for mut visibility in &mut roots {
+    for (mut visibility, mut node) in &mut roots {
         *visibility = if visible {
             Visibility::Inherited
         } else {
             Visibility::Hidden
+        };
+        node.display = if visible {
+            Display::Flex
+        } else {
+            Display::None
         };
     }
 
@@ -667,18 +838,68 @@ pub(super) fn update_combat_plan_panel(
         }
     }
 
-    for (marker, mut text) in &mut group_texts {
+    for (marker, mut text) in &mut forces_texts {
         let Some(group) = draft_ref.and_then(|draft| draft.group(marker.0)) else {
             text.0.clear();
             continue;
         };
-        text.0 = format!(
-            "{}\n{}\n{}\n{} unité(s)",
-            group_label(group.id),
-            role_label(group.role),
-            priority_label(group.target_priority),
-            group.stacks.len(),
+        let aggregate = battlefield::group_aggregate(
+            CombatPlanDraftGroupView {
+                id: group.id,
+                stacks: &group.stacks,
+                role: group.role,
+                target_priority: group.target_priority,
+            },
+            &allied,
         );
+        text.0 = if aggregate.quantity > 0 {
+            format!(
+                "{} · {}\n{} unité(s) · intégrité {}%",
+                role_label(group.role),
+                priority_label(group.target_priority),
+                aggregate.quantity,
+                aggregate.integrity_percent,
+            )
+        } else {
+            format!(
+                "{} · {}\nvide",
+                role_label(group.role),
+                priority_label(group.target_priority),
+            )
+        };
+    }
+
+    for (marker, mut icon) in &mut forces_icons {
+        let identity = draft_ref
+            .and_then(|draft| draft.group(marker.0))
+            .and_then(|group| {
+                battlefield::group_aggregate(
+                    CombatPlanDraftGroupView {
+                        id: group.id,
+                        stacks: &group.stacks,
+                        role: group.role,
+                        target_priority: group.target_priority,
+                    },
+                    &allied,
+                )
+                .primary
+            });
+        if let Some(identity) = identity {
+            icon.image = battlefield::unit_image(identity, &entity_visuals);
+            icon.color = Color::WHITE;
+        } else {
+            icon.color = Color::srgba(1.0, 1.0, 1.0, 0.22);
+        }
+    }
+
+    if let Ok(mut text) = selected_header.single_mut() {
+        // Explicit sentence, not a bare group name — playtest feedback: the
+        // link between clicking a group on the left and this column
+        // updating on the right wasn't obvious from color-matching alone.
+        text.0 = match draft.focused_group() {
+            Some(id) => format!("Groupe sélectionné : {}", group_label(id)),
+            None => "Aucun groupe sélectionné".to_string(),
+        };
     }
 
     for (button, mut background, mut outline, interaction) in &mut buttons {
@@ -699,22 +920,29 @@ fn draft_button_state(
     match action {
         DraftAction::SelectStack(_) => (true, false),
         DraftAction::AssignSelected(group_id) => {
-            let active = state.selected_stack.is_some_and(|stack_id| {
+            // Always clickable (a bare click just focuses the group), and
+            // highlighted when it's the one "PARAMÈTRES SÉLECTIONNÉS" shows.
+            (true, state.focused_group == Some(group_id))
+        }
+        DraftAction::SetRole(role) => {
+            let active = state.focused_group.is_some_and(|group_id| {
                 state
                     .draft
                     .as_ref()
-                    .and_then(|draft| draft.selected_group(stack_id))
-                    == Some(group_id)
+                    .and_then(|draft| draft.group(group_id))
+                    .is_some_and(|group| group.role == role)
             });
-            (state.selected_stack.is_some(), active)
+            (state.focused_group.is_some(), active)
         }
-        DraftAction::CycleRole(group_id) | DraftAction::CyclePriority(group_id) => {
-            let available = state
-                .draft
-                .as_ref()
-                .and_then(|draft| draft.group(group_id))
-                .is_some_and(|group| !group.stacks.is_empty());
-            (available, false)
+        DraftAction::SetPriority(priority) => {
+            let active = state.focused_group.is_some_and(|group_id| {
+                state
+                    .draft
+                    .as_ref()
+                    .and_then(|draft| draft.group(group_id))
+                    .is_some_and(|group| group.target_priority == priority)
+            });
+            (state.focused_group.is_some(), active)
         }
         DraftAction::Confirm => (state.draft.is_some(), state.dirty),
         DraftAction::Reset => (state.draft.is_some(), false),
@@ -734,26 +962,6 @@ fn default_group_priority(id: CombatGroupPlanId) -> CombatTargetPriority {
         CombatGroupPlanId::Alpha => CombatTargetPriority::Any,
         CombatGroupPlanId::Beta => CombatTargetPriority::Light,
         CombatGroupPlanId::Gamma => CombatTargetPriority::Heavy,
-    }
-}
-
-fn next_group_role(role: CombatGroupRole) -> CombatGroupRole {
-    match role {
-        CombatGroupRole::Assault => CombatGroupRole::Screen,
-        CombatGroupRole::Screen => CombatGroupRole::Bombardment,
-        CombatGroupRole::Bombardment => CombatGroupRole::Reserve,
-        CombatGroupRole::Reserve => CombatGroupRole::Assault,
-    }
-}
-
-fn next_target_priority(priority: CombatTargetPriority) -> CombatTargetPriority {
-    match priority {
-        CombatTargetPriority::Any => CombatTargetPriority::Light,
-        CombatTargetPriority::Light => CombatTargetPriority::Medium,
-        CombatTargetPriority::Medium => CombatTargetPriority::Heavy,
-        CombatTargetPriority::Heavy => CombatTargetPriority::Damaged,
-        CombatTargetPriority::Damaged => CombatTargetPriority::Support,
-        CombatTargetPriority::Support => CombatTargetPriority::Any,
     }
 }
 

@@ -1,6 +1,7 @@
 mod benchmark;
 mod combat_ui;
 mod craft_ui;
+mod debug_screenshot;
 mod fleet_ui;
 mod graphics_settings_ui;
 mod mission_wizard;
@@ -17,6 +18,7 @@ use benchmark::{
 };
 use combat_ui::CombatUiPlugin;
 use craft_ui::CraftUiPlugin;
+use debug_screenshot::{AutoScreenshotState, tick_auto_screenshot};
 use fleet_ui::FleetUiPlugin;
 use graphics_settings_ui::GraphicsSettingsUiPlugin;
 use mission_wizard::MissionWizardPlugin;
@@ -46,11 +48,11 @@ use presentation::input::{
     update_pointer_tooltip,
 };
 use presentation::inspector_panel::{
-    combat_outcome_label, combat_report_statistics_text, combat_report_summary_text,
-    combat_report_text, combat_report_timeline_text, combat_report_units_text,
-    format_strategic_duration, handle_inspector_buttons, handle_inspector_tab_buttons,
-    mission_error_text, mission_kind_label, mission_next_deadline, mission_phase_label_for_kind,
-    mission_result_text, mission_target_label, update_info_panel, update_ui,
+    combat_report_statistics_text, combat_report_summary_text, combat_report_text,
+    combat_report_timeline_text, combat_report_units_text, format_strategic_duration,
+    handle_inspector_buttons, handle_inspector_tab_buttons, mission_error_text, mission_kind_label,
+    mission_next_deadline, mission_phase_label_for_kind, mission_result_text, mission_target_label,
+    update_info_panel, update_ui,
 };
 use presentation::overlays::{
     FleetTrailSpawnTimer, advance_fleet_trail_particles, compute_label_budget,
@@ -62,15 +64,15 @@ use presentation::procedural_materials::{
     atmosphere_material, star_halo_material, star_material, territory_tint_material,
 };
 use presentation::scene::{
-    PlanetVisualMaterialCache, UI_ICON_SIZE_LARGE, UI_ICON_SIZE_SMALL, accent_craft_amber,
-    accent_fleet_blue, accent_research_violet, action_button_color, action_button_outline,
-    handle_game_window_drag, handle_help_toggle_button, handle_intro_pitch_buttons,
-    handle_scroll_areas, handle_tab_bar_galaxy_button, handle_victory_modal_buttons,
-    panel_background, panel_outline, rebuild_strategic_view_if_requested, spawn_scene,
-    spawn_strategic_view, spawn_ui, ui_text_font, update_camera_graphics_preset,
-    update_command_dock_buttons, update_game_window_roots, update_help_visibility,
-    update_intro_pitch_visibility, update_resource_bar, update_scroll_indicators,
-    update_sun_light_preset, update_victory_modal, update_victory_state,
+    PlanetVisualMaterialCache, ResourceIconAssets, UI_ICON_SIZE_LARGE, UI_ICON_SIZE_SMALL,
+    accent_craft_amber, accent_fleet_blue, accent_research_violet, action_button_color,
+    action_button_outline, handle_game_window_drag, handle_help_toggle_button,
+    handle_intro_pitch_buttons, handle_scroll_areas, handle_tab_bar_galaxy_button,
+    handle_victory_modal_buttons, panel_background, panel_outline,
+    rebuild_strategic_view_if_requested, spawn_scene, spawn_strategic_view, spawn_ui, ui_text_font,
+    update_camera_graphics_preset, update_command_dock_buttons, update_game_window_roots,
+    update_help_visibility, update_intro_pitch_visibility, update_resource_bar,
+    update_scroll_indicators, update_sun_light_preset, update_victory_modal, update_victory_state,
     update_window_resolution_preset,
 };
 use presentation::shortcuts::{apply_simulation_command, apply_ui_action, replace_simulation};
@@ -98,7 +100,10 @@ use bevy::render::{
 use bevy::text::{FontAtlasSet, FontCx, FontSource};
 use bevy::window::PresentMode;
 use galactic_domain::{PlanetKind, StarClass, SystemId, UniverseConfig, UniverseScalePreset};
-use galactic_sim::{GameEvent, GameEventKind, Simulation, SystemVisibility, seed_debug_scenario};
+use galactic_sim::{
+    GameAction, GameEvent, GameEventKind, Simulation, SystemVisibility, auto_resolve_debug_combat,
+    seed_debug_pending_combat, seed_debug_scenario,
+};
 
 fn default_asset_folder() -> String {
     let cwd = PathBuf::from(".");
@@ -119,8 +124,7 @@ fn default_asset_folder() -> String {
 use galactic_domain::{PlanetId, ResourceStock, WorldPosition};
 #[cfg(test)]
 use galactic_sim::{
-    GameAction, KnowledgeLevel, MVP_HOME_SYSTEM_ID, MissionPhase, MissionResult, MissionTarget,
-    SelectionTarget,
+    KnowledgeLevel, MVP_HOME_SYSTEM_ID, MissionPhase, MissionResult, MissionTarget, SelectionTarget,
 };
 #[cfg(test)]
 use presentation::colony_management_ui::{active_management_colony, colony_list_label};
@@ -158,27 +162,49 @@ use presentation::strategic_navigation::{
     HistoryDirection, StrategicViewMode, UniverseLod, history_shortcut, navigate_history,
     projected_universe_position,
 };
-#[cfg(test)]
 use std::time::Duration;
 
 pub(crate) const UNIVERSE_VERTICAL_EXAGGERATION: f32 = 3.4;
 const INITIAL_OBSERVATION_SYSTEM_LIMIT: usize = 14;
 
 pub fn run() {
-    let (scale_preset, benchmark, dev_combat_fleet) =
-        match parse_launch_args(std::env::args().skip(1)) {
-            Ok(parsed) => parsed,
-            Err(message) => {
-                eprintln!("{message}");
-                return;
-            }
-        };
+    let (
+        scale_preset,
+        benchmark,
+        dev_combat_fleet,
+        dev_combat_encounter,
+        dev_combat_skip_briefing,
+        dev_combat_skip_to_result,
+        dev_combat_skip_to_round_pause,
+        auto_screenshot,
+    ) = match parse_launch_args(std::env::args().skip(1)) {
+        Ok(parsed) => parsed,
+        Err(message) => {
+            eprintln!("{message}");
+            return;
+        }
+    };
     let mut plugin = ClientPlugin::new(scale_preset);
     if let Some(config) = benchmark {
         plugin = plugin.with_benchmark(config);
     }
     if dev_combat_fleet {
         plugin = plugin.with_dev_combat_fleet();
+    }
+    if dev_combat_encounter {
+        plugin = plugin.with_dev_combat_encounter();
+    }
+    if dev_combat_skip_briefing {
+        plugin = plugin.with_dev_combat_skip_briefing();
+    }
+    if dev_combat_skip_to_result {
+        plugin = plugin.with_dev_combat_skip_to_result();
+    }
+    if dev_combat_skip_to_round_pause {
+        plugin = plugin.with_dev_combat_skip_to_round_pause();
+    }
+    if let Some(path) = auto_screenshot {
+        plugin = plugin.with_auto_screenshot(path);
     }
     App::new().add_plugins(plugin).run();
 }
@@ -187,6 +213,11 @@ pub struct ClientPlugin {
     scale_preset: UniverseScalePreset,
     benchmark: Option<BenchmarkConfig>,
     dev_combat_fleet: bool,
+    dev_combat_encounter: bool,
+    dev_combat_skip_briefing: bool,
+    dev_combat_skip_to_result: bool,
+    dev_combat_skip_to_round_pause: bool,
+    auto_screenshot: Option<PathBuf>,
 }
 
 impl ClientPlugin {
@@ -195,6 +226,11 @@ impl ClientPlugin {
             scale_preset,
             benchmark: None,
             dev_combat_fleet: false,
+            dev_combat_encounter: false,
+            dev_combat_skip_briefing: false,
+            dev_combat_skip_to_result: false,
+            dev_combat_skip_to_round_pause: false,
+            auto_screenshot: None,
         }
     }
 
@@ -209,6 +245,57 @@ impl ClientPlugin {
     /// `--dev-combat` launch flag.
     pub(crate) const fn with_dev_combat_fleet(mut self) -> Self {
         self.dev_combat_fleet = true;
+        self
+    }
+
+    /// Implies `with_dev_combat_fleet`, and additionally launches an attack
+    /// on a nearby hostile outpost and fast-forwards until it opens a
+    /// pending combat — so the client starts up already showing the combat
+    /// screen. Debug-only: wired from `--dev-combat-encounter`, used by the
+    /// COMBAT-UX-001-J visual-polish verification loop.
+    pub(crate) const fn with_dev_combat_encounter(mut self) -> Self {
+        self.dev_combat_fleet = true;
+        self.dev_combat_encounter = true;
+        self
+    }
+
+    /// Debug-only: after a short delay, captures the primary window's own
+    /// render output to `path` and exits — never an OS-level screen capture,
+    /// see `debug_screenshot`. Wired from `--auto-screenshot <path>`.
+    pub(crate) fn with_auto_screenshot(mut self, path: PathBuf) -> Self {
+        self.auto_screenshot = Some(path);
+        self
+    }
+
+    /// Debug-only: marks the `--dev-combat-encounter` mission as already
+    /// briefed, so the combat screen opens straight into `AwaitingDoctrine`
+    /// (the 3-column Planification layout) instead of the `Briefing` card —
+    /// useful for the COMBAT-UX-001-J screenshot loop when verifying phases
+    /// past the briefing. Wired from `--dev-combat-skip-briefing`.
+    pub(crate) const fn with_dev_combat_skip_briefing(mut self) -> Self {
+        self.dev_combat_skip_briefing = true;
+        self
+    }
+
+    /// Debug-only: auto-resolves the `--dev-combat-encounter` mission and
+    /// opens the combat screen straight into `FinalReport` (the
+    /// victory/defeat screen) — used by the COMBAT-UX-001-J screenshot loop
+    /// to verify the Résultat phase. Wired from
+    /// `--dev-combat-skip-to-result`.
+    pub(crate) const fn with_dev_combat_skip_to_result(mut self) -> Self {
+        self.dev_combat_skip_to_result = true;
+        self
+    }
+
+    /// Debug-only: resolves round 1 of the `--dev-combat-encounter` mission
+    /// (via a real `GameAction::ChooseCombatDoctrine`, not a bypass) and
+    /// opens the combat screen straight into `RoundPause`, with the round
+    /// timer pre-ticked into the impact window — used by the
+    /// COMBAT-UX-001-J screenshot loop to verify the PC widget, intervention
+    /// costs, round summary panel, and round animation without playing a
+    /// round by hand. Wired from `--dev-combat-skip-to-round-pause`.
+    pub(crate) const fn with_dev_combat_skip_to_round_pause(mut self) -> Self {
+        self.dev_combat_skip_to_round_pause = true;
         self
     }
 }
@@ -228,6 +315,60 @@ impl Plugin for ClientPlugin {
         if self.dev_combat_fleet {
             seed_debug_scenario(simulation.state_mut())
                 .expect("the debug scenario must always be a valid fleet composition");
+        }
+        if self.dev_combat_encounter {
+            seed_debug_pending_combat(&mut simulation);
+            let mission_id = simulation
+                .state()
+                .pending_combats
+                .first()
+                .map(|pending| pending.mission_id);
+            if self.dev_combat_skip_to_result {
+                if let Some(mission_id) = mission_id {
+                    auto_resolve_debug_combat(&mut simulation);
+                    app.insert_resource(combat_ui::CombatUiState {
+                        current: Some(mission_id),
+                        phase: combat_ui::CombatUiPhase::FinalReport,
+                        briefed: [mission_id].into_iter().collect(),
+                        ..Default::default()
+                    });
+                }
+            } else if self.dev_combat_skip_to_round_pause {
+                if let Some(mission_id) = mission_id {
+                    simulation.apply_player_action(GameAction::ChooseCombatDoctrine {
+                        mission_id,
+                        round: 1,
+                        doctrine: None,
+                        intervention: None,
+                    });
+                    // A long duration (real rounds use 1.5s) held at the same
+                    // ~27% progress so the screenshot loop's fixed capture
+                    // delay (`AutoScreenshotState`, 6s) lands well before
+                    // `tick_round_pause` would otherwise auto-advance past
+                    // this phase — animation curves key off normalized
+                    // progress, not wall-clock duration, so this doesn't
+                    // change what's rendered, only how long it holds still.
+                    let mut round_pause_timer = Timer::from_seconds(20.0, TimerMode::Once);
+                    round_pause_timer.tick(Duration::from_millis(5400));
+                    app.insert_resource(combat_ui::CombatUiState {
+                        current: Some(mission_id),
+                        phase: combat_ui::CombatUiPhase::RoundPause,
+                        briefed: [mission_id].into_iter().collect(),
+                        round_pause_timer,
+                        ..Default::default()
+                    });
+                }
+            } else if self.dev_combat_skip_briefing
+                && let Some(mission_id) = mission_id
+            {
+                app.insert_resource(combat_ui::CombatUiState {
+                    queue: vec![mission_id],
+                    current: Some(mission_id),
+                    phase: combat_ui::CombatUiPhase::AwaitingDoctrine,
+                    briefed: [mission_id].into_iter().collect(),
+                    ..Default::default()
+                });
+            }
         }
         let navigation =
             StrategicNavigation::for_universe(self.scale_preset, simulation.universe());
@@ -266,6 +407,7 @@ impl Plugin for ClientPlugin {
         .init_resource::<EntityVisualCatalog>()
         .init_resource::<PlanetVisualMaterialCache>()
         .init_resource::<IconAssets>()
+        .init_resource::<ResourceIconAssets>()
         .insert_resource(navigation)
         .init_resource::<ViewRebuildRequest>()
         .init_resource::<NavigationHistory>()
@@ -278,7 +420,12 @@ impl Plugin for ClientPlugin {
         .init_resource::<MemoryDiagnostics>()
         .init_resource::<DebugOverlayState>()
         .init_resource::<HelpUiState>()
-        .init_resource::<IntroPitchUiState>()
+        // Skip the first-launch intro pitch on debug launches — it would
+        // otherwise block the view every time, defeating the purpose of
+        // `--dev-combat`/`--dev-combat-encounter`.
+        .insert_resource(IntroPitchUiState {
+            visible: !self.dev_combat_fleet,
+        })
         .init_resource::<VictoryUiState>()
         .init_resource::<InspectorTabState>()
         .init_resource::<InspectorPanelState>()
@@ -286,6 +433,9 @@ impl Plugin for ClientPlugin {
 
         if let Some(config) = self.benchmark.clone() {
             app.insert_resource(benchmark::BenchmarkState::new(config));
+        }
+        if let Some(path) = self.auto_screenshot.clone() {
+            app.insert_resource(AutoScreenshotState::new(path, 6.0));
         }
 
         app.add_plugins(SimulationBridgePlugin)
@@ -301,7 +451,7 @@ impl Plugin for ClientPlugin {
             .add_plugins(CombatUiPlugin)
             .add_plugins(NotificationsUiPlugin)
             .add_systems(Startup, log_startup)
-            .add_systems(Update, log_memory_diagnostics);
+            .add_systems(Update, (log_memory_diagnostics, tick_auto_screenshot));
     }
 }
 
@@ -336,9 +486,22 @@ fn take_flag_value(
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn parse_launch_args(
     args: impl IntoIterator<Item = String>,
-) -> Result<(UniverseScalePreset, Option<BenchmarkConfig>, bool), String> {
+) -> Result<
+    (
+        UniverseScalePreset,
+        Option<BenchmarkConfig>,
+        bool,
+        bool,
+        bool,
+        bool,
+        bool,
+        Option<PathBuf>,
+    ),
+    String,
+> {
     let mut args = args.into_iter();
     let mut preset = UniverseScalePreset::default();
     let mut benchmark_enabled = false;
@@ -346,6 +509,11 @@ fn parse_launch_args(
     let mut benchmark_preset = None;
     let mut benchmark_export_dir = None;
     let mut dev_combat_fleet = false;
+    let mut dev_combat_encounter = false;
+    let mut dev_combat_skip_briefing = false;
+    let mut dev_combat_skip_to_result = false;
+    let mut dev_combat_skip_to_round_pause = false;
+    let mut auto_screenshot = None;
 
     while let Some(argument) = args.next() {
         if let Some(value) = take_flag_value(&argument, "--scale", &mut args)? {
@@ -356,6 +524,14 @@ fn parse_launch_args(
             benchmark_enabled = true;
         } else if argument == "--dev-combat" {
             dev_combat_fleet = true;
+        } else if argument == "--dev-combat-encounter" {
+            dev_combat_encounter = true;
+        } else if argument == "--dev-combat-skip-briefing" {
+            dev_combat_skip_briefing = true;
+        } else if argument == "--dev-combat-skip-to-result" {
+            dev_combat_skip_to_result = true;
+        } else if argument == "--dev-combat-skip-to-round-pause" {
+            dev_combat_skip_to_round_pause = true;
         } else if let Some(value) = take_flag_value(&argument, "--benchmark-resolution", &mut args)?
         {
             benchmark_resolution = Some(BenchmarkResolution::from_slug(&value).ok_or_else(|| {
@@ -369,11 +545,15 @@ fn parse_launch_args(
             })?);
         } else if let Some(value) = take_flag_value(&argument, "--benchmark-export", &mut args)? {
             benchmark_export_dir = Some(std::path::PathBuf::from(value));
+        } else if let Some(value) = take_flag_value(&argument, "--auto-screenshot", &mut args)? {
+            auto_screenshot = Some(std::path::PathBuf::from(value));
         } else {
             return Err(format!(
                 "Option inconnue « {argument} ». Utiliser --scale test|mvp|stress, --benchmark, \
                  --benchmark-resolution 720p|1080p, --benchmark-preset low|medium|high, \
-                 --benchmark-export <dossier>, --dev-combat."
+                 --benchmark-export <dossier>, --dev-combat, --dev-combat-encounter, \
+                 --dev-combat-skip-briefing, --dev-combat-skip-to-result, \
+                 --dev-combat-skip-to-round-pause, --auto-screenshot <fichier>."
             ));
         }
     }
@@ -392,7 +572,16 @@ fn parse_launch_args(
         config
     });
 
-    Ok((preset, benchmark, dev_combat_fleet))
+    Ok((
+        preset,
+        benchmark,
+        dev_combat_fleet,
+        dev_combat_encounter,
+        dev_combat_skip_briefing,
+        dev_combat_skip_to_result,
+        dev_combat_skip_to_round_pause,
+        auto_screenshot,
+    ))
 }
 
 pub struct SimulationBridgePlugin;
@@ -928,13 +1117,13 @@ VmSwap:\t      2048 kB
 
     #[test]
     fn benchmark_flag_absent_means_no_benchmark_config() {
-        let (_, benchmark, _) = parse_launch_args(Vec::<String>::new()).expect("parses");
+        let (_, benchmark, ..) = parse_launch_args(Vec::<String>::new()).expect("parses");
         assert!(benchmark.is_none());
     }
 
     #[test]
     fn benchmark_flag_alone_runs_the_full_matrix() {
-        let (_, benchmark, _) =
+        let (_, benchmark, ..) =
             parse_launch_args(["--benchmark"].map(str::to_string)).expect("parses");
         let config = benchmark.expect("benchmark enabled");
         assert_eq!(config.resolutions.len(), 2);
@@ -943,7 +1132,7 @@ VmSwap:\t      2048 kB
 
     #[test]
     fn benchmark_resolution_and_preset_flags_restrict_the_matrix() {
-        let (_, benchmark, _) = parse_launch_args(
+        let (_, benchmark, ..) = parse_launch_args(
             [
                 "--benchmark",
                 "--benchmark-resolution",
@@ -963,7 +1152,7 @@ VmSwap:\t      2048 kB
 
     #[test]
     fn benchmark_export_flag_overrides_the_output_directory() {
-        let (_, benchmark, _) = parse_launch_args(
+        let (_, benchmark, ..) = parse_launch_args(
             ["--benchmark", "--benchmark-export", "/tmp/my-benchmarks"].map(str::to_string),
         )
         .expect("parses");
@@ -991,12 +1180,73 @@ VmSwap:\t      2048 kB
 
     #[test]
     fn dev_combat_flag_defaults_to_off_and_can_be_enabled() {
-        let (_, _, dev_combat_fleet) = parse_launch_args(Vec::<String>::new()).expect("parses");
+        let (_, _, dev_combat_fleet, ..) = parse_launch_args(Vec::<String>::new()).expect("parses");
         assert!(!dev_combat_fleet);
 
-        let (_, _, dev_combat_fleet) =
+        let (_, _, dev_combat_fleet, ..) =
             parse_launch_args(["--dev-combat"].map(str::to_string)).expect("parses");
         assert!(dev_combat_fleet);
+    }
+
+    #[test]
+    fn dev_combat_encounter_flag_implies_dev_combat_fleet_and_defaults_to_off() {
+        let (_, _, dev_combat_fleet, dev_combat_encounter, ..) =
+            parse_launch_args(Vec::<String>::new()).expect("parses");
+        assert!(!dev_combat_fleet);
+        assert!(!dev_combat_encounter);
+
+        let (_, _, _, dev_combat_encounter, ..) =
+            parse_launch_args(["--dev-combat-encounter"].map(str::to_string)).expect("parses");
+        assert!(dev_combat_encounter);
+    }
+
+    #[test]
+    fn dev_combat_skip_briefing_flag_defaults_to_off_and_can_be_enabled() {
+        let (_, _, _, _, dev_combat_skip_briefing, ..) =
+            parse_launch_args(Vec::<String>::new()).expect("parses");
+        assert!(!dev_combat_skip_briefing);
+
+        let (_, _, _, _, dev_combat_skip_briefing, ..) =
+            parse_launch_args(["--dev-combat-skip-briefing"].map(str::to_string)).expect("parses");
+        assert!(dev_combat_skip_briefing);
+    }
+
+    #[test]
+    fn dev_combat_skip_to_result_flag_defaults_to_off_and_can_be_enabled() {
+        let (_, _, _, _, _, dev_combat_skip_to_result, _, _) =
+            parse_launch_args(Vec::<String>::new()).expect("parses");
+        assert!(!dev_combat_skip_to_result);
+
+        let (_, _, _, _, _, dev_combat_skip_to_result, _, _) =
+            parse_launch_args(["--dev-combat-skip-to-result"].map(str::to_string)).expect("parses");
+        assert!(dev_combat_skip_to_result);
+    }
+
+    #[test]
+    fn dev_combat_skip_to_round_pause_flag_defaults_to_off_and_can_be_enabled() {
+        let (_, _, _, _, _, _, dev_combat_skip_to_round_pause, _) =
+            parse_launch_args(Vec::<String>::new()).expect("parses");
+        assert!(!dev_combat_skip_to_round_pause);
+
+        let (_, _, _, _, _, _, dev_combat_skip_to_round_pause, _) =
+            parse_launch_args(["--dev-combat-skip-to-round-pause"].map(str::to_string))
+                .expect("parses");
+        assert!(dev_combat_skip_to_round_pause);
+    }
+
+    #[test]
+    fn auto_screenshot_flag_captures_the_target_path() {
+        let (_, _, _, _, _, _, _, auto_screenshot) =
+            parse_launch_args(Vec::<String>::new()).expect("parses");
+        assert!(auto_screenshot.is_none());
+
+        let (_, _, _, _, _, _, _, auto_screenshot) =
+            parse_launch_args(["--auto-screenshot", "/tmp/combat.png"].map(str::to_string))
+                .expect("parses");
+        assert_eq!(
+            auto_screenshot,
+            Some(std::path::PathBuf::from("/tmp/combat.png"))
+        );
     }
 
     #[test]
